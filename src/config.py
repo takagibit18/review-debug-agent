@@ -7,7 +7,14 @@ them as a validated Pydantic model for use across all modules.
 import os
 
 from dotenv import load_dotenv
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+)
 
 load_dotenv()
 

@@ -26,7 +26,9 @@ def main(ctx: click.Context, model: str | None, verbose: bool) -> None:
 
 @main.command()
 @click.argument("path", default=".")
-@click.option("--diff", is_flag=True, help="Analyse staged git diff instead of full files.")
+@click.option(
+    "--diff", is_flag=True, help="Analyse staged git diff instead of full files."
+)
 @click.pass_context
 def review(ctx: click.Context, path: str, diff: bool) -> None:
     """Run a structured code review on the target path or diff."""
@@ -35,7 +37,9 @@ def review(ctx: click.Context, path: str, diff: bool) -> None:
 
 @main.command()
 @click.argument("path", default=".")
-@click.option("--error-log", type=click.Path(exists=True), help="Path to error log file.")
+@click.option(
+    "--error-log", type=click.Path(exists=True), help="Path to error log file."
+)
 @click.pass_context
 def debug(ctx: click.Context, path: str, error_log: str | None) -> None:
     """Analyse a codebase to locate and suggest fixes for bugs."""

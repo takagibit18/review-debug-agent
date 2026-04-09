@@ -18,7 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
 async def run_smoke_test() -> None:
     """Send one request and print normalized response fields."""
     from src.models import Message, ModelClient, ModelClientError
-#import local modules inside the function:instead of import at the top of the file
+
+    # import local modules inside the function:instead of import at the top of the file
     client = ModelClient()
     try:
         response = await client.chat(

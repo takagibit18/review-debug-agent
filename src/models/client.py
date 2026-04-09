@@ -32,7 +32,9 @@ from src.models.schemas import Message, ModelConfig, ModelResponse, TokenUsage
 class ModelClient:
     """Async OpenAI-compatible client with retries and usage tracking."""
 
-    def __init__(self, settings: Settings | None = None, *, max_retries: int = 3) -> None:
+    def __init__(
+        self, settings: Settings | None = None, *, max_retries: int = 3
+    ) -> None:
         self._settings = settings or get_settings()
         if not self._settings.openai_api_key:
             raise AuthenticationError("OPENAI_API_KEY is empty or missing")
