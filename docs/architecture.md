@@ -40,6 +40,8 @@
 | Models | `src/models/` | Analyzer Agent |
 | Config | `src/config.py` | Shared |
 
+**接口契约**：CLI、编排层、工具层及与 Analyzer 相关的跨层约定见 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md)。
+
 ## Key Design Decisions
 
 ### 5-Phase Agent Loop
