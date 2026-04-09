@@ -72,12 +72,8 @@ docker compose up --build
 ├── tests/                 # 测试
 ├── eval/                  # 评测集与评测脚本
 │   └── fixtures/          # 评测用例
-├── docs/                  # 项目文档（架构/契约/规划）
-│   ├── architecture.md
-│   ├── shared_contracts.md
-│   └── project_plan.md
+├── docs/                  # 项目文档
 ├── cli.py                 # CLI 入口（Click）
-├── agent.md               # Agent 开发约束与知识索引入口
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
@@ -126,7 +122,6 @@ mypy src/             # type check
 ## 协作约定
 
 本项目采用 PR + Issue 驱动的协作模式，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-若使用 AI Agent 协作开发，请先阅读 [agent.md](agent.md)（渐进式知识索引与编码约束）。
 
 ## License
 
