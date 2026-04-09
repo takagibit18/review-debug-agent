@@ -7,9 +7,11 @@ them as a validated Pydantic model for use across all modules.
 import os
 
 from dotenv import load_dotenv
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 load_dotenv()
+
+_base_url_adapter = TypeAdapter(AnyHttpUrl)
 
 
 class Settings(BaseModel):
@@ -21,7 +23,7 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("OPENAI_API_KEY", ""),
         min_length=1,
     )
-    openai_base_url: AnyHttpUrl = Field(
+    openai_base_url: str = Field(
         default_factory=lambda: os.getenv(
             "OPENAI_BASE_URL", "https://api.openai.com/v1"
         ),
@@ -42,6 +44,18 @@ class Settings(BaseModel):
         if isinstance(value, str):
             return value.strip()
         return str(value).strip()
+
+    @field_validator("openai_base_url", mode="before")
+    @classmethod
+    def _validate_openai_base_url(cls, value: object) -> str:
+        if value is None:
+            raw = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        else:
+            raw = str(value).strip()
+            if not raw:
+                raw = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        _base_url_adapter.validate_python(raw)
+        return raw
 
 
 def get_settings() -> Settings:
