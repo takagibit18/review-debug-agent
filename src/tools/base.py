@@ -31,6 +31,14 @@ class ToolSpec(BaseModel):
     safety: ToolSafety = ToolSafety.READONLY
 
 
+class ToolResult(BaseModel):
+    """Standardized serializable tool execution envelope."""
+
+    ok: bool = Field(default=True)
+    data: Any = Field(default=None)
+    error: str | None = Field(default=None)
+
+
 class BaseTool(ABC):
     """Abstract base for all agent tools."""
 
