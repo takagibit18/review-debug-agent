@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from src.analyzer.context_state import ContextState
+from src.analyzer.output_formatter import ReviewReport
+
 
 
 class ModelConfig(BaseModel):
@@ -54,3 +57,60 @@ class ModelResponse(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     model: str = Field(default="", description="Provider model id in response")
     finish_reason: str = Field(default="", description="Provider finish reason")
+
+class ReviewRequest(BaseModel):
+    """Structured input for a review run."""
+
+    repo_path: str
+    diff_mode: bool = False
+    diff_text: str | None = None
+    model_name: str | None = None
+    verbose: bool = False
+
+
+class DebugRequest(BaseModel):
+    """Structured input for a debug run."""
+
+    repo_path: str
+    error_log_path: str | None = None
+    error_log_text: str | None = None
+    model_name: str | None = None
+    verbose: bool = False
+
+
+class ReviewResponse(BaseModel):
+    """Structured output for a review run."""
+
+    run_id: str
+    report: ReviewReport
+    context: ContextState
+
+
+class DebugStep(BaseModel):
+    """A single debug step in the structured debug response."""
+
+    title: str
+    detail: str
+    location: str = ""
+    evidence: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class SuggestedCommand(BaseModel):
+    """A suggested command that the user may choose to run."""
+
+    command: str
+    rationale: str
+    risk: Literal["low", "medium", "high"] = "medium"
+
+
+class DebugResponse(BaseModel):
+    """Structured output for a debug run."""
+
+    run_id: str
+    summary: str
+    hypotheses: list[str]
+    steps: list[DebugStep]
+    suggested_commands: list[SuggestedCommand] = Field(default_factory=list)
+    suggested_patch: str | None = None
+    context: ContextState
