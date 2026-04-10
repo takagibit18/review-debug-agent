@@ -4,13 +4,16 @@ Provides ``review`` and ``debug`` subcommands via Click.
 """
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 import click
 
 from src import __version__
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.orchestrator.agent_loop import AgentOrchestrator
+
+T = TypeVar("T")
 
 
 @click.group()
@@ -53,9 +56,9 @@ def _render_debug_response(response: DebugResponse, verbose: bool) -> None:
 
 
 def _run_async_command(
-    operation: Awaitable[ReviewResponse | DebugResponse],
+    operation: Coroutine[Any, Any, T],
     command_name: str,
-) -> ReviewResponse | DebugResponse:
+) -> T:
     """Run one async CLI operation and convert failures into user-facing errors."""
     try:
         return asyncio.run(operation)

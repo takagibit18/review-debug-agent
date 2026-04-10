@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -151,4 +151,25 @@ class DebugResponse(BaseModel):
     context: ContextState = Field(
         ...,
         description="Session context for audit and debugging",
+    )
+
+
+class AnalysisPlan(BaseModel):
+    """Structured plan produced by the analyze phase."""
+
+    needs_tools: bool = Field(
+        default=False,
+        description="Whether tool execution is required in this iteration",
+    )
+    tool_calls: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Raw tool-call payloads parsed from model output",
+    )
+    draft_review: ReviewReport | None = Field(
+        default=None,
+        description="Optional draft review result produced by model",
+    )
+    draft_debug: DebugResponse | None = Field(
+        default=None,
+        description="Optional draft debug result produced by model",
     )

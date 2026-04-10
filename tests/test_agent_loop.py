@@ -1,0 +1,90 @@
+"""Unit tests for orchestrator loop behavior."""
+
+from __future__ import annotations
+
+import asyncio
+
+from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
+from src.orchestrator.agent_loop import AgentOrchestrator
+from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
+
+
+class DummyEchoTool(BaseTool):
+    """Simple test tool that echoes its input."""
+
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="echo_tool",
+            description="Echo payload",
+            parameters={
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+            safety=ToolSafety.READONLY,
+        )
+
+    async def execute(self, **kwargs):
+        return {"echo": kwargs.get("value", "")}
+
+
+def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = AgentOrchestrator()
+    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+
+    continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
+    assert len(continue_steps) == 1
+    assert response.context.decisions[-1].result == "stop:model_completed"
+    assert response.run_id
+
+
+def test_debug_run_stops_at_iteration_limit(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    registry = ToolRegistry()
+    registry.register(DummyEchoTool())
+    orchestrator = AgentOrchestrator(registry=registry)
+
+    async def _always_needs_tool(state, request, tool_specs):  # type: ignore[no-untyped-def]
+        return AnalysisPlan(
+            needs_tools=True,
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "echo_tool",
+                        "arguments": '{"value":"iteration"}',
+                    }
+                }
+            ],
+        )
+
+    monkeypatch.setattr(orchestrator, "analyze", _always_needs_tool)
+    response = asyncio.run(orchestrator.run_debug(DebugRequest(repo_path=".")))
+
+    continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
+    assert len(continue_steps) == 3
+    assert continue_steps[-1].result == "stop:max_iterations"
+
+
+def test_execute_tools_uses_registry(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    registry = ToolRegistry()
+    registry.register(DummyEchoTool())
+    orchestrator = AgentOrchestrator(registry=registry)
+    state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
+    plan = AnalysisPlan(
+        needs_tools=True,
+        tool_calls=[
+            {
+                "function": {
+                    "name": "echo_tool",
+                    "arguments": '{"value":"ok"}',
+                }
+            }
+        ],
+    )
+
+    results = asyncio.run(orchestrator.execute_tools(plan, registry, state))
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert results[0].data == {"echo": "ok"}
