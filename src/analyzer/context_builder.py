@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from src.analyzer.context_state import ContextState, DecisionStep
 from src.analyzer.schemas import DebugRequest, ReviewRequest
 
+_tiktoken: Any
 try:
-    import tiktoken
+    import tiktoken as _tiktoken_module
+
+    _tiktoken = _tiktoken_module
 except Exception:  # noqa: BLE001
-    tiktoken = None
+    _tiktoken = None
 
 
 class ContextPart(BaseModel):
@@ -84,9 +88,9 @@ class ContextBuilder:
     def estimate_tokens(self, text: str) -> int:
         if not text:
             return 0
-        if tiktoken is None:
+        if _tiktoken is None:
             return max(1, len(text) // 4)
-        encoding = tiktoken.get_encoding("cl100k_base")
+        encoding = _tiktoken.get_encoding("cl100k_base")
         return len(encoding.encode(text))
 
     def truncate_context(self, parts: list[ContextPart], budget: int) -> list[ContextPart]:

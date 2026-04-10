@@ -209,6 +209,8 @@ class AgentOrchestrator:
         self._total_tokens += self._latest_tokens
         self._budget_exhausted = self._result_processor.is_budget_exhausted(self._total_tokens)
 
+        response: ReviewResponse | DebugResponse
+        blocking_error: bool
         if self._is_review_mode(state):
             response, blocking_error = self._result_processor.format_review(
                 plan, tool_results, state
