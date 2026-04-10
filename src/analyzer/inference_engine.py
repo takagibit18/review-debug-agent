@@ -18,7 +18,7 @@ from src.analyzer.prompts import (
 )
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest
 from src.models.client import ModelClient
-from src.models.schemas import Message, ModelConfig
+from src.models.schemas import ModelConfig
 from src.tools.base import ToolSpec
 
 
