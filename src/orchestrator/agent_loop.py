@@ -52,6 +52,7 @@ class AgentOrchestrator:
         tool_results = self.execute_tools(plan, None, state)
         response = self.format_result(state, tool_results, plan)
         self.should_continue(state, response)
+        assert isinstance(response, ReviewResponse)
         return response
 
     async def run_debug(self, request: DebugRequest) -> DebugResponse:
@@ -61,6 +62,7 @@ class AgentOrchestrator:
         tool_results = self.execute_tools(plan, None, state)
         response = self.format_result(state, tool_results, plan)
         self.should_continue(state, response)
+        assert isinstance(response, DebugResponse)
         return response
 
     @staticmethod
