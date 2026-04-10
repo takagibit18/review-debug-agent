@@ -65,7 +65,7 @@ CLI 只允许依赖 `run_review()` 与 `run_debug()`；禁止依赖内部 phase 
 
 | 类型 | 固定路径 | 说明 |
 |------|----------|------|
-| `ReviewRequest` / `DebugRequest` / `ReviewResponse` / `DebugResponse` | [`src/models/schemas.py`](../src/models/schemas.py) | 与 `ModelConfig` 等并列，供 CLI 与编排层共用 |
+| `ReviewRequest` / `DebugRequest` / `ReviewResponse` / `DebugResponse` | [`src/analyzer/schemas.py`](../src/analyzer/schemas.py) | 供 CLI 与编排层共用，避免 `models` 反向依赖分析层 |
 | `ReviewReport` / `ReviewIssue` | [`src/analyzer/output_formatter.py`](../src/analyzer/output_formatter.py) | 分析侧权威定义 |
 | `ContextState` | [`src/analyzer/context_state.py`](../src/analyzer/context_state.py) | 会话状态权威定义 |
 
@@ -305,7 +305,7 @@ class AnalysisPlan(BaseModel):
 ## 15. 确定性约束清单（验收用）
 
 1. 公开编排入口固定为 `run_review()` / `run_debug()`。
-2. 跨层请求与响应模型固定在 `src/models/schemas.py`，`ReviewReport` 由 analyzer 维护。
+2. 跨层请求与响应模型固定在 `src/analyzer/schemas.py`，`ReviewReport` 由 analyzer 维护。
 3. `ReviewResponse` 固定为 `run_id + report + context`。
 4. `DebugResponse` 固定包含 `location/evidence/confidence` 与 `suggested_commands`。
 5. CLI 禁止直接调用 `ToolRegistry` 与高危工具。
