@@ -17,6 +17,7 @@ from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError
 from src.tools import create_default_registry
 from src.tools.base import ToolRegistry, ToolResult
+from src.tools.exceptions import ToolError
 
 
 class AgentOrchestrator:
@@ -187,6 +188,12 @@ class AgentOrchestrator:
             try:
                 data = await tool.execute(**args)
                 results.append(ToolResult(ok=True, data=data))
+            except ToolError as exc:
+                err = f"Tool execution failed for {tool_name}: {exc}"
+                state.errors.append(
+                    ErrorDetail(file=exc.path, message=err, category="runtime")
+                )
+                results.append(ToolResult(ok=False, error=err))
             except Exception as exc:  # noqa: BLE001
                 err = f"Tool execution failed for {tool_name}: {exc}"
                 state.errors.append(
