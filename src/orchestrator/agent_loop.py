@@ -15,6 +15,7 @@ from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, Revi
 from src.analyzer.result_processor import ResultProcessor
 from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError
+from src.tools import create_default_registry
 from src.tools.base import ToolRegistry, ToolResult
 
 
@@ -22,7 +23,7 @@ class AgentOrchestrator:
     """5-phase orchestrator for review/debug sessions."""
 
     def __init__(self, registry: ToolRegistry | None = None) -> None:
-        self._registry = registry or ToolRegistry()
+        self._registry = registry or create_default_registry()
         self._context_builder = ContextBuilder()
         self._result_processor = ResultProcessor()
         self._model_client: ModelClient | None = None
