@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
+from src.tools.exceptions import FileNotFoundToolError, PatternError
 
 
 class GlobToolInput(BaseModel):
@@ -39,11 +40,37 @@ class GlobTool(BaseTool):
         """Return matched file paths with deterministic ordering."""
         data = GlobToolInput(**kwargs)
         root = Path(data.path).resolve()
-        matches = sorted(
-            (path.resolve() for path in root.glob(data.pattern)),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
+        if not root.exists():
+            raise FileNotFoundToolError(
+                f"Directory not found: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            )
+        if not root.is_dir():
+            raise FileNotFoundToolError(
+                f"Path is not a directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            )
+
+        try:
+            matches = sorted(
+                (path.resolve() for path in root.glob(data.pattern)),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except ValueError as exc:
+            raise PatternError(
+                f"Invalid glob pattern: {data.pattern}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
+        except OSError as exc:
+            raise FileNotFoundToolError(
+                f"Failed to list directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
         selected = matches[: data.limit]
         return {
             "root_path": str(root),

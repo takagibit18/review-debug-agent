@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
+from src.tools.exceptions import FileNotFoundToolError, FileReadError
 
 
 class ListDirToolInput(BaseModel):
@@ -47,22 +48,61 @@ class ListDirTool(BaseTool):
         """Return directory entries with lightweight metadata."""
         data = ListDirToolInput(**kwargs)
         root = Path(data.path).resolve()
-        iterator = root.rglob("*") if data.recursive else root.iterdir()
+        if not root.exists():
+            raise FileNotFoundToolError(
+                f"Directory not found: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            )
+        if not root.is_dir():
+            raise FileNotFoundToolError(
+                f"Path is not a directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            )
+
+        try:
+            iterator = root.rglob("*") if data.recursive else root.iterdir()
+        except (NotADirectoryError, FileNotFoundError) as exc:
+            raise FileNotFoundToolError(
+                f"Directory not found: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
+        except PermissionError as exc:
+            raise FileReadError(
+                f"Permission denied while listing directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
 
         entries: list[dict[str, Any]] = []
-        for entry in sorted(iterator, key=lambda item: str(item.resolve())):
-            if not data.include_hidden and entry.name.startswith("."):
-                continue
-            entry_type = "directory" if entry.is_dir() else "file" if entry.is_file() else "other"
-            entries.append(
-                {
-                    "path": str(entry.resolve()),
-                    "name": entry.name,
-                    "type": entry_type,
-                }
-            )
-            if len(entries) >= data.limit:
-                break
+        try:
+            for entry in sorted(iterator, key=lambda item: str(item.resolve())):
+                if not data.include_hidden and entry.name.startswith("."):
+                    continue
+                entry_type = "directory" if entry.is_dir() else "file" if entry.is_file() else "other"
+                entries.append(
+                    {
+                        "path": str(entry.resolve()),
+                        "name": entry.name,
+                        "type": entry_type,
+                    }
+                )
+                if len(entries) >= data.limit:
+                    break
+        except PermissionError as exc:
+            raise FileReadError(
+                f"Permission denied while listing directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
+        except OSError as exc:
+            raise FileReadError(
+                f"Failed to list directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
 
         return {
             "root_path": str(root),

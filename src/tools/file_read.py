@@ -8,6 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
+from src.tools.exceptions import FileNotFoundToolError, FileReadError
 
 
 class FileReadInput(BaseModel):
@@ -39,7 +40,20 @@ class FileReadTool(BaseTool):
         """Read and return file content with metadata."""
         data = FileReadInput(**kwargs)
         path = Path(data.file_path).resolve()
-        content = path.read_text(encoding="utf-8")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise FileNotFoundToolError(
+                f"File not found: {path}",
+                tool_name=self.spec().name,
+                path=str(path),
+            ) from exc
+        except OSError as exc:
+            raise FileReadError(
+                f"Failed to read file: {path}",
+                tool_name=self.spec().name,
+                path=str(path),
+            ) from exc
         lines = content.splitlines()
         selected_lines = lines[data.offset :]
         if data.limit is not None:

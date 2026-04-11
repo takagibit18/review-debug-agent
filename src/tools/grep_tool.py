@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
+from src.tools.exceptions import FileNotFoundToolError, PatternError
 
 
 class GrepToolInput(BaseModel):
@@ -50,13 +51,46 @@ class GrepTool(BaseTool):
         data = GrepToolInput(**kwargs)
         root = Path(data.path).resolve()
         flags = 0 if data.case_sensitive else re.IGNORECASE
-        regex = re.compile(data.pattern, flags)
+        try:
+            regex = re.compile(data.pattern, flags)
+        except re.error as exc:
+            raise PatternError(
+                f"Invalid regex pattern: {data.pattern}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
+
+        if not root.exists():
+            raise FileNotFoundToolError(
+                f"Directory not found: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            )
+        if not root.is_dir():
+            raise FileNotFoundToolError(
+                f"Path is not a directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            )
 
         pattern = data.glob or "**/*"
-        candidate_paths = sorted(
-            (path.resolve() for path in root.glob(pattern) if path.is_file()),
-            key=lambda path: str(path),
-        )
+        try:
+            candidate_paths = sorted(
+                (path.resolve() for path in root.glob(pattern) if path.is_file()),
+                key=lambda path: str(path),
+            )
+        except ValueError as exc:
+            raise PatternError(
+                f"Invalid glob pattern: {pattern}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
+        except OSError as exc:
+            raise FileNotFoundToolError(
+                f"Failed to list directory: {root}",
+                tool_name=self.spec().name,
+                path=str(root),
+            ) from exc
 
         matches: list[dict[str, Any]] = []
         truncated = False
