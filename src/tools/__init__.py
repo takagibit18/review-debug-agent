@@ -11,10 +11,12 @@ Tools are categorised by safety level:
 
 from src.tools.base import ToolRegistry
 from src.tools.file_read import FileReadTool
+from src.tools.glob_tool import GlobTool
 
 
 def create_default_registry() -> ToolRegistry:
     """Build the default tool registry for one orchestrator session."""
     registry = ToolRegistry()
     registry.register(FileReadTool())
+    registry.register(GlobTool())
     return registry

@@ -9,6 +9,7 @@ from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
 from src.tools.file_read import FileReadTool
+from src.tools.glob_tool import GlobTool
 
 
 class DummyEchoTool(BaseTool):
@@ -118,3 +119,33 @@ def test_execute_tools_supports_file_read_tool(monkeypatch) -> None:
     assert results[0].ok is True
     assert results[0].data["file_path"] == str(target_file)
     assert results[0].data["content"].startswith('1: """Unit tests for orchestrator loop behavior."""')
+
+
+def test_execute_tools_supports_glob_tool() -> None:
+    registry = ToolRegistry()
+    registry.register(GlobTool())
+    orchestrator = AgentOrchestrator(registry=registry)
+    state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
+    repo_root = Path(__file__).resolve().parent.parent
+    plan = AnalysisPlan(
+        needs_tools=True,
+        tool_calls=[
+            {
+                "function": {
+                    "name": "glob_files",
+                    "arguments": (
+                        '{"pattern": "tests/test_file_read_tool.py", "path": "'
+                        + str(repo_root).replace("\\", "\\\\")
+                        + '"}'
+                    ),
+                }
+            }
+        ],
+    )
+
+    results = asyncio.run(orchestrator.execute_tools(plan, registry, state))
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert results[0].data["match_count"] == 1
+    assert results[0].data["matches"][0].endswith("tests\\test_file_read_tool.py")
