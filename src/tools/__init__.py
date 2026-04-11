@@ -8,3 +8,13 @@ Tools are categorised by safety level:
 - Write: requires confirmation / serialisation (e.g. apply_patch)
 - Execute: sandboxed execution (e.g. run_test)
 """
+
+from src.tools.base import ToolRegistry
+from src.tools.file_read import FileReadTool
+
+
+def create_default_registry() -> ToolRegistry:
+    """Build the default tool registry for one orchestrator session."""
+    registry = ToolRegistry()
+    registry.register(FileReadTool())
+    return registry

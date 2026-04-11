@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
+from src.tools.file_read import FileReadTool
 
 
 class DummyEchoTool(BaseTool):
@@ -88,3 +90,31 @@ def test_execute_tools_uses_registry(tmp_path, monkeypatch) -> None:
     assert len(results) == 1
     assert results[0].ok is True
     assert results[0].data == {"echo": "ok"}
+
+
+def test_execute_tools_supports_file_read_tool(monkeypatch) -> None:
+    registry = ToolRegistry()
+    registry.register(FileReadTool())
+    orchestrator = AgentOrchestrator(registry=registry)
+    state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
+    target_file = Path(__file__).resolve()
+    plan = AnalysisPlan(
+        needs_tools=True,
+        tool_calls=[
+            {
+                "function": {
+                    "name": "read_file",
+                    "arguments": (
+                        '{"file_path": "' + str(target_file).replace("\\", "\\\\") + '", "limit": 1}'
+                    ),
+                }
+            }
+        ],
+    )
+
+    results = asyncio.run(orchestrator.execute_tools(plan, registry, state))
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert results[0].data["file_path"] == str(target_file)
+    assert results[0].data["content"].startswith('1: """Unit tests for orchestrator loop behavior."""')
