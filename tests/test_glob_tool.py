@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from src.tools.base import ToolSafety
 from src.tools.glob_tool import GlobTool
@@ -31,7 +31,7 @@ def test_glob_tool_returns_matching_paths_from_repo() -> None:
     assert result["root_path"] == str(repo_root)
     assert result["pattern"] == "tests/test_file_read_tool.py"
     assert result["match_count"] == 1
-    assert result["matches"][0].endswith("tests\\test_file_read_tool.py")
+    assert PurePath(result["matches"][0]).parts[-2:] == ("tests", "test_file_read_tool.py")
     assert result["truncated"] is False
 
 

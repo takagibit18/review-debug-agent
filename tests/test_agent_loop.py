@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
 from src.orchestrator.agent_loop import AgentOrchestrator
@@ -148,4 +148,7 @@ def test_execute_tools_supports_glob_tool() -> None:
     assert len(results) == 1
     assert results[0].ok is True
     assert results[0].data["match_count"] == 1
-    assert results[0].data["matches"][0].endswith("tests\\test_file_read_tool.py")
+    assert PurePath(results[0].data["matches"][0]).parts[-2:] == (
+        "tests",
+        "test_file_read_tool.py",
+    )
