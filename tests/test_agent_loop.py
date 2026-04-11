@@ -11,6 +11,7 @@ from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
 from src.tools.file_read import FileReadTool
 from src.tools.grep_tool import GrepTool
 from src.tools.glob_tool import GlobTool
+from src.tools.list_dir_tool import ListDirTool
 
 
 class DummyEchoTool(BaseTool):
@@ -188,3 +189,32 @@ def test_execute_tools_supports_grep_tool() -> None:
         "test_file_read_tool.py",
     )
     assert "test_file_read_tool_reads_full_file" in results[0].data["matches"][0]["line_text"]
+
+
+def test_execute_tools_supports_list_dir_tool() -> None:
+    registry = ToolRegistry()
+    registry.register(ListDirTool())
+    orchestrator = AgentOrchestrator(registry=registry)
+    state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
+    target_dir = Path(__file__).resolve().parent.parent / "src" / "tools"
+    plan = AnalysisPlan(
+        needs_tools=True,
+        tool_calls=[
+            {
+                "function": {
+                    "name": "list_dir",
+                    "arguments": '{"path": "'
+                    + str(target_dir.resolve()).replace("\\", "\\\\")
+                    + '", "limit": 20}',
+                }
+            }
+        ],
+    )
+
+    results = asyncio.run(orchestrator.execute_tools(plan, registry, state))
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    names = {entry["name"] for entry in results[0].data["entries"]}
+    assert "file_read.py" in names
+    assert "grep_tool.py" in names
