@@ -4,6 +4,9 @@ from click.testing import CliRunner
 
 import cli
 from cli import main
+from src.analyzer.context_state import ContextState
+from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.schemas import DebugResponse, ReviewResponse
 
 
 def test_cli_help(cli_runner: CliRunner) -> None:
@@ -96,3 +99,37 @@ def test_debug_command_rejects_missing_path(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(main, ["debug", "missing-path-for-cli-test"])
     assert result.exit_code != 0
     assert "does not exist" in result.output
+
+
+def test_review_command_passes_model_override(cli_runner: CliRunner, monkeypatch) -> None:
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        assert request.model_name == "gpt-test"
+        return ReviewResponse(
+            run_id="run-review-model",
+            report=ReviewReport(summary="ok"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
+    result = cli_runner.invoke(main, ["--model", "gpt-test", "review", "."])
+    assert result.exit_code == 0
+    assert "Run ID: run-review-model" in result.output
+
+
+def test_debug_command_passes_verbose_flag(cli_runner: CliRunner, monkeypatch) -> None:
+    async def _run_debug(self, request):  # type: ignore[no-untyped-def]
+        assert request.verbose is True
+        return DebugResponse(
+            run_id="run-debug-verbose",
+            summary="ok",
+            hypotheses=[],
+            steps=[],
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_debug", _run_debug)
+
+    result = cli_runner.invoke(main, ["--verbose", "debug", "."])
+    assert result.exit_code == 0
+    assert "Run ID: run-debug-verbose" in result.output
