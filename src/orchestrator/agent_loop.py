@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import os
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -9,28 +11,37 @@ from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
-from src.analyzer.event_log import EventEntry, EventLog
+from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.analyzer.result_processor import ResultProcessor
+from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError
+from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
 from src.tools import create_default_registry
-from src.tools.base import ToolRegistry, ToolResult
+from src.tools.base import ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
 
 
 class AgentOrchestrator:
     """5-phase orchestrator for review/debug sessions."""
 
-    def __init__(self, registry: ToolRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry | None = None,
+        confirm_high_risk: Any | None = None,
+    ) -> None:
+        self._settings = get_settings()
         self._registry = registry or create_default_registry()
         self._context_builder = ContextBuilder()
-        self._result_processor = ResultProcessor()
+        self._result_processor = ResultProcessor(token_budget=self._settings.token_budget)
         self._model_client: ModelClient | None = None
+        self._confirm_high_risk = confirm_high_risk
         self._run_id = ""
         self._event_log: EventLog | None = None
         self._last_plan: AnalysisPlan | None = None
+        self._tool_feedback: list[dict[str, Any]] = []
         self._latest_tokens = 0
         self._total_tokens = 0
         self._iteration = 0
@@ -41,7 +52,10 @@ class AgentOrchestrator:
 
     async def run_review(self, request: ReviewRequest) -> ReviewResponse:
         """Run review mode through the orchestrator loop."""
-        self._reset_run(max_iterations=1)
+        self._reset_run(
+            max_iterations=self._settings.review_max_iterations,
+            repo_path=request.repo_path,
+        )
         state = self.prepare_context(request)
         response: ReviewResponse | DebugResponse | None = None
         while True:
@@ -58,7 +72,10 @@ class AgentOrchestrator:
 
     async def run_debug(self, request: DebugRequest) -> DebugResponse:
         """Run debug mode through the orchestrator loop."""
-        self._reset_run(max_iterations=3)
+        self._reset_run(
+            max_iterations=self._settings.debug_max_iterations,
+            repo_path=request.repo_path,
+        )
         state = self.prepare_context(request)
         response: ReviewResponse | DebugResponse | None = None
         while True:
@@ -81,14 +98,14 @@ class AgentOrchestrator:
             state.constraints.append("diff_mode")
         if isinstance(request, DebugRequest) and (request.error_log_path or request.error_log_text):
             state.constraints.append("error_log_provided")
-        self._record_event("phase_end", "prepare", {"elapsed_ms": int((perf_counter() - start) * 1000)})
+        self._record_event(EventType.PHASE_END, "prepare", {"elapsed_ms": int((perf_counter() - start) * 1000)})
         return state
 
     async def analyze(
         self,
         state: ContextState,
         request: ReviewRequest | DebugRequest,
-        tool_specs: list[Any],
+        tool_specs: list[ToolSpec],
     ) -> AnalysisPlan:
         """Run model analysis and return structured plan."""
         start = perf_counter()
@@ -124,12 +141,15 @@ class AgentOrchestrator:
             self._latest_tokens = 0
         else:
             try:
+                serialized_tools = build_tool_schemas(tool_specs) + build_submit_tool_schemas()
                 result, total_tokens = await engine.analyze(
                     state=state,
                     request=request,
                     tool_specs=tool_specs,
+                    tool_schemas=serialized_tools,
                     diff_text=diff_text,
                     error_log=error_log_text,
+                    tool_feedback=self._tool_feedback,
                 )
                 self._latest_tokens = total_tokens
             except ModelClientError as exc:
@@ -144,7 +164,7 @@ class AgentOrchestrator:
                 self._latest_tokens = 0
 
         self._record_event(
-            "model_call",
+            EventType.MODEL_CALL,
             "analyze",
             {
                 "needs_tools": result.needs_tools,
@@ -173,6 +193,7 @@ class AgentOrchestrator:
             return []
 
         results: list[ToolResult] = []
+        executed_feedback: list[dict[str, Any]] = []
         for raw_call in plan.tool_calls:
             call = self._parse_tool_call(raw_call)
             tool_name = call["name"]
@@ -185,6 +206,24 @@ class AgentOrchestrator:
                 )
                 results.append(ToolResult(ok=False, error=err))
                 continue
+            tool_spec = tool.spec()
+            if tool_spec.safety in {ToolSafety.WRITE, ToolSafety.EXECUTE}:
+                is_allowed = await self._is_high_risk_allowed(tool_spec, args)
+                if not is_allowed:
+                    err = f"Tool execution requires confirmation: {tool_name}"
+                    state.errors.append(
+                        ErrorDetail(file="", message=err, category="security")
+                    )
+                    results.append(ToolResult(ok=False, error=err))
+                    self._record_event(
+                        EventType.ERROR,
+                        "execute_tools",
+                        {"name": tool_name, "category": "security"},
+                    )
+                    executed_feedback.append(
+                        {"tool_call": raw_call, "result": results[-1]}
+                    )
+                    continue
             try:
                 data = await tool.execute(**args)
                 results.append(ToolResult(ok=True, data=data))
@@ -201,10 +240,12 @@ class AgentOrchestrator:
                 )
                 results.append(ToolResult(ok=False, error=err))
             self._record_event(
-                "tool_call",
+                EventType.TOOL_CALL,
                 "execute_tools",
                 {"name": tool_name, "ok": results[-1].ok},
             )
+            executed_feedback.append({"tool_call": raw_call, "result": results[-1]})
+        self._tool_feedback = executed_feedback
         return results
 
     def format_result(
@@ -231,7 +272,7 @@ class AgentOrchestrator:
         response.context = state
         response.run_id = self._run_id or str(uuid4())
         self._record_event(
-            "phase_end",
+            EventType.PHASE_END,
             "format",
             {
                 "blocking_error": blocking_error,
@@ -273,7 +314,7 @@ class AgentOrchestrator:
             )
         )
         self._record_event(
-            "decision",
+            EventType.DECISION,
             "continue",
             {
                 "model_completed": self._model_completed,
@@ -284,13 +325,17 @@ class AgentOrchestrator:
         )
         return not stop
 
-    def _reset_run(self, max_iterations: int) -> None:
+    def _reset_run(self, max_iterations: int, repo_path: str) -> None:
         self._run_id = str(uuid4())
+        configured_log_dir = Path(self._settings.event_log_dir)
+        if not configured_log_dir.is_absolute():
+            configured_log_dir = Path(repo_path) / configured_log_dir
         self._event_log = EventLog(
             run_id=self._run_id,
-            log_dir=Path(".cr-debug-agent") / "logs",
+            log_dir=configured_log_dir,
         )
         self._last_plan = None
+        self._tool_feedback = []
         self._latest_tokens = 0
         self._total_tokens = 0
         self._iteration = 0
@@ -298,7 +343,21 @@ class AgentOrchestrator:
         self._blocking_error = False
         self._budget_exhausted = False
         self._model_completed = False
-        self._record_event("phase_start", "prepare", {"run_id": self._run_id})
+        self._record_event(EventType.PHASE_START, "prepare", {"run_id": self._run_id})
+
+    async def _is_high_risk_allowed(
+        self,
+        tool_spec: ToolSpec,
+        arguments: dict[str, Any],
+    ) -> bool:
+        if os.getenv("CI", "").strip().lower() in {"1", "true", "yes"}:
+            return False
+        if self._confirm_high_risk is None:
+            return False
+        decision = self._confirm_high_risk(tool_spec, arguments)
+        if inspect.isawaitable(decision):
+            return bool(await decision)
+        return bool(decision)
 
     def _build_engine(self) -> InferenceEngine | None:
         if self._model_client is not None:
@@ -357,7 +416,7 @@ class AgentOrchestrator:
             ),
         )
 
-    def _record_event(self, event_type: str, phase: str, payload: dict[str, Any]) -> None:
+    def _record_event(self, event_type: EventType, phase: str, payload: dict[str, Any]) -> None:
         if self._event_log is None:
             return
         self._event_log.record(

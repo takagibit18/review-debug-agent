@@ -16,30 +16,37 @@
 - **请求/响应契约** — `ReviewRequest`, `ReviewResponse`, `DebugRequest`, `DebugResponse`, `DebugStep`, `SuggestedCommand`（[src/analyzer/schemas.py](../src/analyzer/schemas.py)）
 - **工具基础** — `BaseTool`, `ToolSpec`, `ToolSafety`, `ToolRegistry`（[src/tools/base.py](../src/tools/base.py)）
 - **配置** — `Settings`, `get_settings()`（[src/config.py](../src/config.py)）
+- **契约中间模型** — `AnalysisPlan`（[src/analyzer/schemas.py](../src/analyzer/schemas.py)）、`ToolResult`（[src/tools/base.py](../src/tools/base.py)）
+- **Prompt 与消息** — `SYSTEM_PROMPT_*`、`build_review_messages` / `build_debug_messages`（[src/analyzer/prompts.py](../src/analyzer/prompts.py)）
+- **编排层工具 schema** — `build_tool_schemas`、`build_submit_tool_schemas`（[src/orchestrator/tool_schemas.py](../src/orchestrator/tool_schemas.py)，契约 §9.2）
+- **事件日志** — `EventType`、`EventEntry`、`EventLog`（[src/analyzer/event_log.py](../src/analyzer/event_log.py)）
+- **上下文构建** — `ContextBuilder`（[src/analyzer/context_builder.py](../src/analyzer/context_builder.py)）
+- **推理引擎** — `InferenceEngine`（[src/analyzer/inference_engine.py](../src/analyzer/inference_engine.py)）
+- **结果处理** — `ResultProcessor`（[src/analyzer/result_processor.py](../src/analyzer/result_processor.py)）
+- **编排主循环** — `AgentOrchestrator`（[src/orchestrator/agent_loop.py](../src/orchestrator/agent_loop.py)）
 
-### 1.2 已由契约固定但代码待实现
+### 1.2 仍与计划有差距的演进项（可选迭代）
 
+以下不影响当前契约闭环，可作为后续增强：
 
-| 契约模型                                             | 定义位置                                    | 代码状态                     |
-| ------------------------------------------------ | --------------------------------------- | ------------------------ |
-| `AgentOrchestrator.run_review()` / `run_debug()` | cli_tools_orchestrator_contract.md §3   | `agent_loop.py` 仅 TODO 桩 |
-| `AnalysisPlan`                                   | cli_tools_orchestrator_contract.md §9.1 | 未实现                      |
-| `ToolResult` 信封                                  | cli_tools_orchestrator_contract.md §8.1 | 未实现                      |
-| 5 阶段函数签名                                         | cli_tools_orchestrator_contract.md §10  | 未实现                      |
+| 项 | 说明 |
+|------|------|
+| `ContextBuilder` 与截断 | `truncate_context` / `load_files` 等尚未接入 `prepare_context` 主路径；`load_diff` 当前为 `git diff --cached`（暂存区），与「工作区全量 diff」语义可能不同。 |
+| 事件日志粒度 | 计划中的「每 phase 成对 phase_start/end」与部分观测点仍可按需补全。 |
+| 异常兜底 | 计划中的「连续 2 次工具失败降级」等策略可按需细化。 |
 
+### 1.3 模块落地状态（与 §1.1 对应）
 
-### 1.3 本期开发范围
-
-
-| 模块                                   | 当前状态     | 位置                                                     |
-| ------------------------------------ | -------- | ------------------------------------------------------ |
-| 契约中间模型（`AnalysisPlan`, `ToolResult`） | 未实现      | `src/analyzer/schemas.py`（扩展）/ `src/tools/base.py`（扩展） |
-| Prompt 模板 + 消息构建                     | 不存在      | `src/analyzer/prompts.py`（新建）                          |
-| 事件日志（会话级持久化）                         | 不存在      | `src/analyzer/event_log.py`（新建）                        |
-| 上下文构建器                               | 不存在      | `src/analyzer/context_builder.py`（新建）                  |
-| 推理引擎                                 | 仅 TODO 桩 | `src/analyzer/inference_engine.py`                     |
-| 结果处理器                                | 不存在      | `src/analyzer/result_processor.py`（新建）                 |
-| Agent 编排主循环                          | 仅 TODO 桩 | `src/orchestrator/agent_loop.py`                       |
+| 模块 | 状态 | 位置 |
+|------|------|------|
+| 契约中间模型（`AnalysisPlan`, `ToolResult`） | 已实现 | `src/analyzer/schemas.py` / `src/tools/base.py` |
+| Prompt 模板 + 消息构建 | 已实现 | `src/analyzer/prompts.py` |
+| OpenAI function schema（工具 + submit 伪工具） | 已实现 | `src/orchestrator/tool_schemas.py`（由编排层组装后传入推理引擎） |
+| 事件日志（会话级 JSONL） | 已实现 | `src/analyzer/event_log.py` |
+| 上下文构建器 | 部分实现（见 §1.2） | `src/analyzer/context_builder.py` |
+| 推理引擎 | 已实现（含 `tool_feedback` 回灌） | `src/analyzer/inference_engine.py` |
+| 结果处理器 | 已实现 | `src/analyzer/result_processor.py` |
+| Agent 编排主循环 | 已实现（含高危门控、可配置轮次与 token） | `src/orchestrator/agent_loop.py` |
 
 
 ---
@@ -56,15 +63,15 @@
 
 - 系统提示词、任务模板定义为模块级常量
 - 通过 `build_review_messages()` / `build_debug_messages()` 组装完整消息序列
-- 通过 `build_tool_schemas()` 将 `ToolSpec` 列表转为 OpenAI function calling 格式
+- **OpenAI function calling 的 `tools` 列表**（含注册工具 + `submit_review` / `submit_debug` 伪工具）由编排层 [`src/orchestrator/tool_schemas.py`](../src/orchestrator/tool_schemas.py) 负责转换与维护（契约 `cli_tools_orchestrator_contract.md` §9.2），`AgentOrchestrator.analyze` 组装后传入 `InferenceEngine.analyze(..., tool_schemas=...)`
 - 理由：MVP 模板数量少（不超过 5 个），纯 Python 类型安全、IDE 友好，无需 Jinja2
 
 **（B）会话历史 / 事件日志** — `src/analyzer/event_log.py`
 
 - 内存短缓存：维护最近 N 条请求/响应对，供 `InferenceEngine` 在多轮循环中快速组装上下文
 - 会话级 JSONL 持久化：每个 session（run_id）一个 `.jsonl` 文件，追加写入事件记录（model call、tool call、decision、error）
-- 数据模型：`EventEntry(timestamp, run_id, event_type, phase, payload)` — Pydantic 模型，逐行 JSON 序列化
-- 存储路径：`{workspace}/.cr-debug-agent/logs/{run_id}.jsonl`（或由配置指定）
+- 数据模型：`EventType` 枚举：`EventEntry(timestamp, run_id, event_type, phase, payload)` — Pydantic 模型，逐行 JSON 序列化
+- 存储路径：环境变量 `EVENT_LOG_DIR`（默认 `.cr-debug-agent/logs`）。若为**相对路径**，则解析为 `{repo_path}/{EVENT_LOG_DIR}/{run_id}.jsonl`（`repo_path` 来自请求）；若为绝对路径则直接使用该目录下的 `{run_id}.jsonl`
 - 理由：
   - 内存缓存避免多轮循环中反复读盘
   - JSONL 追加写入性能好、可增量读取，天然适合事件流
@@ -116,15 +123,15 @@ MVP 阶段（本期）：
 **（B）轮次上限（Phase 5 判定）**
 
 - `should_continue()` 检查当前轮次是否达到最大值
-- 默认上限：Review 模式 1 轮，Debug 模式 3 轮
+- 默认上限：Review 模式 1 轮，Debug 模式 3 轮（可通过环境变量 `REVIEW_MAX_ITERATIONS`、`DEBUG_MAX_ITERATIONS` 覆盖，见 `Settings`）
 - 达到上限 -> 强制终止，输出已有结果
-- 上限值通过 `Settings` 或函数参数传入，不硬编码
+- 上限值通过 `Settings`（环境变量）读取
 
 **（C）Token 预算（Phase 4 判定）**
 
 - `format_result()` 阶段检查累计 token 用量是否超出预算
 - 超预算 -> 标记为 `budget_exhausted`，进入终止流程
-- 预算值由 `ModelConfig` 或 run 级参数控制
+- 预算值由 `Settings.token_budget`（环境变量 `TOKEN_BUDGET`，默认 12000）控制
 
 **异常兜底**：
 
@@ -167,7 +174,7 @@ graph TD
 
 ### M0: 契约中间模型补全（0.5 天）
 
-补全 `cli_tools_orchestrator_contract.md` 中已固定但代码未实现的 Pydantic 模型。
+**状态：已实现。** 以下为落地位置与形状备忘。
 
 - `**AnalysisPlan**` — 放入 `src/analyzer/schemas.py`
 
@@ -193,16 +200,14 @@ class ToolResult(BaseModel):
 
 ### M1: Prompt 模板 + Tool Schema 转换（1 天）
 
-- **文件**：`src/analyzer/prompts.py`（新建）
-- **内容**：
-  - `SYSTEM_PROMPT_REVIEW`：Review 系统提示词（角色、输出格式、可用工具说明）
-  - `SYSTEM_PROMPT_DEBUG`：Debug 系统提示词
-  - `build_review_messages(request: ReviewRequest, context: ContextState, diff: str, file_contents: dict[str, str]) -> list[Message]`
-  - `build_debug_messages(request: DebugRequest, context: ContextState, error_log: str, file_contents: dict[str, str]) -> list[Message]`
-  - `build_tool_schemas(specs: list[ToolSpec]) -> list[dict]`：将 `ToolSpec` 转为 OpenAI function calling 格式
-  - `build_submit_tool_schemas() -> list[dict]`：生成 `submit_review` / `submit_debug` 伪工具的 schema
+- **Analyzer（消息）**：`src/analyzer/prompts.py`
+  - `SYSTEM_PROMPT_REVIEW` / `SYSTEM_PROMPT_DEBUG`
+  - `build_review_messages(...)` / `build_debug_messages(...)` → `list[Message]`
+- **Orchestrator（工具 schema，契约 §9.2）**：`src/orchestrator/tool_schemas.py`
+  - `build_tool_schemas(specs: list[ToolSpec]) -> list[dict]`
+  - `build_submit_tool_schemas() -> list[dict]`（`submit_review` / `submit_debug`）
 - **依赖**：`Message`（models/schemas）、`ContextState`（context_state）、`ToolSpec`（tools/base）、请求模型（analyzer/schemas）
-- **交付标准**：消息组装逻辑单测、tool schema 格式合法性校验
+- **交付标准**：消息组装逻辑单测、编排层 tool schema 格式合法性校验（见 `tests/test_orchestrator_tool_schemas.py`）
 
 ### M1b: 事件日志系统（1 天）
 
@@ -237,19 +242,19 @@ class ToolResult(BaseModel):
 
 ### M3: 推理引擎（2 天）
 
-- **文件**：[src/analyzer/inference_engine.py](../src/analyzer/inference_engine.py)（重写）
+- **文件**：[src/analyzer/inference_engine.py](../src/analyzer/inference_engine.py)
 - **内容**：
   - `InferenceEngine` 类：封装 `analyze` 阶段（Phase 2）
-  - `async analyze(state: ContextState, request: ReviewRequest | DebugRequest, tool_specs: list[ToolSpec]) -> AnalysisPlan`
-    - 调用 `prompts` 模块组装消息
+  - `async analyze(..., tool_schemas: list[dict] | None = None, tool_feedback: list[dict] | None = None, ...) -> tuple[AnalysisPlan, int]`
+    - 调用 `prompts` 模块组装基础消息；若存在 `tool_feedback`，追加 assistant/tool 消息（上一轮工具结果回灌）
+    - `tools` 参数使用编排层传入的 `tool_schemas`（注册工具 + submit 伪工具）
     - 通过 `ModelClient.chat()` 调用模型
     - 解析 `ModelResponse.tool_calls`，区分普通工具调用和 submit 伪工具
     - 组装 `AnalysisPlan` 返回
-  - `_parse_tool_calls(raw: list[dict]) -> tuple[list[dict], ReviewReport | None, DebugResponse | None]`：分流工具调用
-  - `_parse_structured_output(arguments: str, target_model: type[BaseModel]) -> BaseModel`：JSON -> Pydantic
+  - `_parse_tool_calls`：分流工具调用与 submit 载荷
   - `_fallback_extract_json(content: str) -> dict | None`：正则兜底
   - 终止信号判定：`AnalysisPlan.needs_tools == False` 且 `draft_review` / `draft_debug` 非空 -> 标记可终止
-- **依赖**：`ModelClient`（models/client）、`prompts`（M1）、`AnalysisPlan`（M0）、请求/输出模型
+- **依赖**：`ModelClient`（models/client）、`prompts`（M1）、编排层 `tool_schemas`（M1）、`AnalysisPlan`（M0）、请求/输出模型
 - **交付标准**：
   - mock ModelClient 单测
   - 结构化输出解析 + 降级路径测试
@@ -271,9 +276,9 @@ class ToolResult(BaseModel):
 
 ### M5: AgentOrchestrator 主循环（2.5 天）
 
-- **文件**：[src/orchestrator/agent_loop.py](../src/orchestrator/agent_loop.py)（重写）
+- **文件**：[src/orchestrator/agent_loop.py](../src/orchestrator/agent_loop.py)
 - **内容**：
-  `AgentOrchestrator` 类（类名由 cli_tools_orchestrator_contract.md §3 固定）：
+  `AgentOrchestrator` 类（类名由 cli_tools_orchestrator_contract.md §3 固定），可选参数 `confirm_high_risk`：交互模式下对 `write` / `execute` 工具在回调返回 `True` 时才执行；未提供回调时默认拒绝高危工具；环境变量 `CI` 为真时强制拒绝。拒绝时写入 `ContextState.errors`，`category=security`（契约 §11）。
   ```python
   class AgentOrchestrator:
       async def run_review(self, request: ReviewRequest) -> ReviewResponse: ...
@@ -281,18 +286,18 @@ class ToolResult(BaseModel):
   ```
   内部 5 阶段实现（函数签名由契约 §10 固定）：
   1. `prepare_context(request) -> ContextState` — 委托 `ContextBuilder`
-  2. `analyze(state, request, tool_specs) -> AnalysisPlan` — 委托 `InferenceEngine`
+  2. `analyze(state, request, tool_specs) -> AnalysisPlan` — 组装 `tool_schemas` 后委托 `InferenceEngine`（含 `tool_feedback`）
   3. `execute_tools(plan, registry, state) -> list[ToolResult]` — 通过 `ToolRegistry` 分发执行
   4. `format_result(state, tool_results) -> ReviewResponse | DebugResponse` — 委托 `ResultProcessor`
   5. `should_continue(state, response) -> bool` — ABC 混合终止判定
   循环终止逻辑（对齐 §2.4 选型）：
   - **(A)** Phase 2 模型无 tool_use 且 Phase 4 stop hooks 无阻塞 -> `Terminal: completed`
-  - **(B)** Phase 5 检查轮次上限（review=1, debug=3）
-  - **(C)** Phase 4 检查 token 预算
+  - **(B)** Phase 5 检查轮次上限（默认 review=1、debug=3，可由 `Settings` 覆盖）
+  - **(C)** Phase 4 检查 token 预算（`TOKEN_BUDGET`）
   `DecisionStep.phase` 仅使用固定枚举值：`prepare` / `analyze` / `execute_tools` / `format` / `continue`
   `run_id` 使用 UUID4（契约 §12）
-  事件日志集成：在每个 phase 入口/出口调用 `EventLog.record()`
-- **依赖**：M0-M4 全部模块、`ToolRegistry`（tools/base）、`Settings`（config）、`EventLog`（M1b）
+  事件日志集成：`EventLog.record()`；日志目录见 §2.1（B）
+- **依赖**：M0-M4 全部模块、`ToolRegistry`（tools/base）、`Settings`（config）、`EventLog`（M1b）、`tool_schemas`（M1）
 - **交付标准**：
   - 完整 mock 端到端单测（mock ModelClient + mock Tools）
   - Review 单轮 + Debug 多轮场景
@@ -338,7 +343,7 @@ class ToolResult(BaseModel):
 
 - **工具实现**：`execute_tools()` 通过 `ToolRegistry` 调用工具并封装为 `ToolResult`。若工具尚未实现，Analyzer 侧先用 mock 占位。
 - **CLI 对接**：CLI 仅调用 `AgentOrchestrator.run_review(ReviewRequest)` / `run_debug(DebugRequest)`，渲染 `ReviewResponse` / `DebugResponse`。接口已由契约固定。
-- **安全门控**：`write` / `execute` 工具在交互模式下需用户确认、CI 模式默认拒绝（契约 §11）。编排层需预留确认回调接口。
+- **安全门控**：`write` / `execute` 工具在交互模式下需通过 `AgentOrchestrator(confirm_high_risk=...)` 确认、CI 模式默认拒绝（契约 §11）。实现见 `agent_loop`。
 - **工具异常**：工具侧异常统一放在 `src/tools/exceptions.py`（契约 §13），编排层捕获并写入 `ContextState.errors`。
 
 ---

@@ -124,15 +124,17 @@ CLI、未来 API 与 CI 校验应只依赖上述稳定字段；**增删字段** 
 
 ---
 
-## 5. Debug 结构化输出协议（待共同定稿）
+## 5. Debug 结构化输出协议（已定稿并已落地）
 
-产品目标见 [README](../README.md)（假设 → 验证步骤 → 建议补丁等）。当前仓库若尚无 `DebugReport` 等模型，**需在首次实现 debug 路径前** 确认：
+实现参考：`src/analyzer/schemas.py`（`DebugStep`、`SuggestedCommand`、`DebugResponse`）。
 
-- 是否单独定义 `DebugReport` / `DebugStep` 等 Pydantic 模型；
-- 与 `ReviewIssue` 是否共享 `location` / `evidence` 等字段语义；
-- 「建议执行的命令」是否结构化字段 + 用户确认流程（与沙箱策略一致）。
+产品目标见 [README](../README.md)（假设 → 验证步骤 → 建议补丁等）。字段与 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md) §6 一致。
 
-定稿后应落地到 `src/analyzer/`（或双方商定的包）并在本文档增补一节。
+- `DebugStep`：`title`、`detail`、`location`、`evidence`、`confidence`（与 `ReviewIssue` 在 location / evidence / confidence 语义上对齐）。
+- `SuggestedCommand`：`command`、`rationale`、`risk`（`low` | `medium` | `high`）；仅表示建议，不代表已执行。
+- `DebugResponse`：`run_id`、`summary`、`hypotheses`、`steps`、`suggested_commands`、`suggested_patch`、`context`。
+
+**变更约定**：增删字段需双方评审并同步契约文档。
 
 ---
 
@@ -146,6 +148,11 @@ CLI、未来 API 与 CI 校验应只依赖上述稳定字段；**增删字段** 
 | `OPENAI_BASE_URL` | 兼容 API 基地址 | 默认 OpenAI 官方 |
 | `MODEL_NAME` | 默认模型名 | 变更时评测基线可能需重跑 |
 | `LOG_LEVEL` | 日志级别 | 与可观测性约定一致 |
+| `REVIEW_MAX_ITERATIONS` | Review 模式最大循环轮次 | 默认 `1`，对应 `Settings.review_max_iterations` |
+| `DEBUG_MAX_ITERATIONS` | Debug 模式最大循环轮次 | 默认 `3`，对应 `Settings.debug_max_iterations` |
+| `TOKEN_BUDGET` | 单次运行累计 token 用量上限（用于终止判定） | 默认 `12000`，对应 `Settings.token_budget` |
+| `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.cr-debug-agent/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
+| `CI` | 常见 CI 环境变量 | 设为 `true`/`1`/`yes` 时，编排层对 `write`/`execute` 工具默认拒绝（与 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md) §11 一致） |
 
 新增全局配置项时，应更新 `Settings`、`.env.example`（如有）及本文档或 README。
 
@@ -198,3 +205,4 @@ CLI、未来 API 与 CI 校验应只依赖上述稳定字段；**增删字段** 
 | 日期 | 说明 |
 |------|------|
 | 2026-04-09 | 初稿：工具、状态、Review 输出、配置、观测与协作流程 |
+| 2026-04-12 | Debug 输出协议定稿落地；补充编排相关环境变量（轮次、token、事件日志、CI 与高危工具） |
