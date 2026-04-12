@@ -42,6 +42,22 @@ class Settings(BaseModel):
     log_level: str = Field(
         default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"),
     )
+    review_max_iterations: int = Field(
+        default_factory=lambda: os.getenv("REVIEW_MAX_ITERATIONS", "1"),
+        ge=1,
+    )
+    debug_max_iterations: int = Field(
+        default_factory=lambda: os.getenv("DEBUG_MAX_ITERATIONS", "3"),
+        ge=1,
+    )
+    token_budget: int = Field(
+        default_factory=lambda: os.getenv("TOKEN_BUDGET", "12000"),
+        ge=1,
+    )
+    event_log_dir: str = Field(
+        default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
+        min_length=1,
+    )
 
     @field_validator("openai_api_key", "model_name", mode="before")
     @classmethod
@@ -63,6 +79,14 @@ class Settings(BaseModel):
                 raw = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         _base_url_adapter.validate_python(raw)
         return raw
+
+    @field_validator("event_log_dir", mode="before")
+    @classmethod
+    def _validate_event_log_dir(cls, value: object) -> str:
+        if value is None:
+            return ".cr-debug-agent/logs"
+        raw = str(value).strip()
+        return raw or ".cr-debug-agent/logs"
 
 
 def get_settings() -> Settings:

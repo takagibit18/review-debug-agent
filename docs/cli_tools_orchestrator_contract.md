@@ -226,6 +226,7 @@ class AnalysisPlan(BaseModel):
 - 编排层必须通过 [`ModelClient.chat`](../src/models/client.py) 调用模型。
 - 模型消息与配置必须使用 [`src/models/schemas.py`](../src/models/schemas.py) 的 `Message`、`ModelConfig`、`ModelResponse`。
 - 工具列表转换必须由编排层固定函数完成，并在 `src/orchestrator/` 实现与维护。
+- **实现锚点**：[`src/orchestrator/tool_schemas.py`](../src/orchestrator/tool_schemas.py) 提供 `build_tool_schemas()` 与 `build_submit_tool_schemas()`；[`AgentOrchestrator`](../src/orchestrator/agent_loop.py) 在 `analyze` 阶段组装后传入 `InferenceEngine`。
 - 模型异常必须转为 `ContextState.errors` 或结构化降级结果，禁止裸抛到 CLI。
 
 ---
@@ -265,6 +266,8 @@ class AnalysisPlan(BaseModel):
 
 - CLI 禁止绕过编排层直接调用任何高危工具。
 - 被拒绝的高危调用必须写入 `ContextState.errors`，`category` 设为 `security`。
+
+**实现说明**：`AgentOrchestrator` 支持可选参数 `confirm_high_risk`（回调），在交互模式下对 `write` / `execute` 工具在回调返回允许时方可执行；**未提供回调时默认拒绝**高危工具（避免误将「交互模式」理解为自动放行）。环境变量 `CI` 为真时强制拒绝，与上表「非交互模式默认拒绝」一致。
 
 ---
 
@@ -330,3 +333,4 @@ class AnalysisPlan(BaseModel):
 |------|------|
 | 2026-04-09 | 初稿入库：CLI/编排/工具边界、请求响应、Analyzer/Model/Security/观测补充、协作前清单 |
 | 2026-04-09 | 收敛为确定性约束：定稿 Debug 对齐字段、`suggested_commands`、高危工具执行矩阵与固定验收清单 |
+| 2026-04-12 | §9.2 补充 `tool_schemas.py` 实现锚点；§11 补充 `confirm_high_risk` 与默认拒绝行为 |

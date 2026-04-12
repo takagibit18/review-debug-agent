@@ -10,16 +10,11 @@ from pydantic import ValidationError
 
 from src.analyzer.context_state import ContextState
 from src.analyzer.output_formatter import ReviewReport
-from src.analyzer.prompts import (
-    build_debug_messages,
-    build_review_messages,
-    build_submit_tool_schemas,
-    build_tool_schemas,
-)
+from src.analyzer.prompts import build_debug_messages, build_review_messages
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest
 from src.models.client import ModelClient
-from src.models.schemas import ModelConfig
-from src.tools.base import ToolSpec
+from src.models.schemas import Message, ModelConfig
+from src.tools.base import ToolResult, ToolSpec
 
 
 class InferenceEngine:
@@ -33,9 +28,11 @@ class InferenceEngine:
         state: ContextState,
         request: ReviewRequest | DebugRequest,
         tool_specs: list[ToolSpec],
+        tool_schemas: list[dict[str, Any]] | None = None,
         diff_text: str = "",
         error_log: str = "",
         file_contents: dict[str, str] | None = None,
+        tool_feedback: list[dict[str, Any]] | None = None,
     ) -> tuple[AnalysisPlan, int]:
         file_contents = file_contents or {}
         if isinstance(request, ReviewRequest):
@@ -43,7 +40,10 @@ class InferenceEngine:
         else:
             messages = build_debug_messages(request, state, error_log, file_contents)
 
-        tools = build_tool_schemas(tool_specs) + build_submit_tool_schemas()
+        if tool_feedback:
+            messages.extend(self._build_tool_feedback_messages(tool_feedback))
+
+        tools = tool_schemas or []
         config = ModelConfig(model=request.model_name) if request.model_name else None
         response = await self._model_client.chat(messages=messages, config=config, tools=tools)
         plan = self._parse_tool_calls(response.tool_calls, request)
@@ -140,3 +140,38 @@ class InferenceEngine:
             return None
         except Exception:  # noqa: BLE001
             return None
+
+    @staticmethod
+    def _build_tool_feedback_messages(tool_feedback: list[dict[str, Any]]) -> list[Message]:
+        messages: list[Message] = []
+        for item in tool_feedback:
+            raw_tool_call = item.get("tool_call", {})
+            if not isinstance(raw_tool_call, dict):
+                continue
+            function_block = raw_tool_call.get("function", {})
+            if not isinstance(function_block, dict):
+                continue
+
+            tool_result = item.get("result")
+            if isinstance(tool_result, ToolResult):
+                result_payload = tool_result.model_dump()
+            elif isinstance(tool_result, dict):
+                result_payload = tool_result
+            else:
+                result_payload = {"ok": False, "error": "invalid_tool_result"}
+
+            messages.append(
+                Message(
+                    role="assistant",
+                    content="",
+                    tool_calls=[raw_tool_call],
+                )
+            )
+            messages.append(
+                Message(
+                    role="tool",
+                    content=json.dumps(result_payload, ensure_ascii=True),
+                    tool_call_id=str(raw_tool_call.get("id", "")).strip(),
+                )
+            )
+        return messages

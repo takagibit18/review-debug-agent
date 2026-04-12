@@ -55,6 +55,7 @@ complete or a budget (token / time) is exhausted.
 
 Tools declare their safety level (`readonly` / `write` / `execute`).
 The executor uses this to decide concurrency and confirmation requirements.
+OpenAI-compatible **tool schemas** (registered tools plus `submit_*` pseudo-tools) are built in `src/orchestrator/tool_schemas.py` and passed into the inference layer by `AgentOrchestrator`.
 
 ### Structured Output
 
@@ -73,3 +74,4 @@ adjacent modules) to control token cost and reasoning noise.
 Every run logs a `run_id`, tool-call sequence, key intermediate results,
 wall-clock time, and token usage, enabling post-hoc debugging of
 false-positives or missed issues.
+Across loop iterations, **tool results are fed back** into the next model call (`tool_feedback` in the inference engine) so multi-step tool use remains coherent.
