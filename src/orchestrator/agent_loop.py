@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
-from src.analyzer.event_log import EventEntry, EventLog
+from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.analyzer.result_processor import ResultProcessor
@@ -98,7 +98,7 @@ class AgentOrchestrator:
             state.constraints.append("diff_mode")
         if isinstance(request, DebugRequest) and (request.error_log_path or request.error_log_text):
             state.constraints.append("error_log_provided")
-        self._record_event("phase_end", "prepare", {"elapsed_ms": int((perf_counter() - start) * 1000)})
+        self._record_event(EventType.PHASE_END, "prepare", {"elapsed_ms": int((perf_counter() - start) * 1000)})
         return state
 
     async def analyze(
@@ -164,7 +164,7 @@ class AgentOrchestrator:
                 self._latest_tokens = 0
 
         self._record_event(
-            "model_call",
+            EventType.MODEL_CALL,
             "analyze",
             {
                 "needs_tools": result.needs_tools,
@@ -216,7 +216,7 @@ class AgentOrchestrator:
                     )
                     results.append(ToolResult(ok=False, error=err))
                     self._record_event(
-                        "error",
+                        EventType.ERROR,
                         "execute_tools",
                         {"name": tool_name, "category": "security"},
                     )
@@ -240,7 +240,7 @@ class AgentOrchestrator:
                 )
                 results.append(ToolResult(ok=False, error=err))
             self._record_event(
-                "tool_call",
+                EventType.TOOL_CALL,
                 "execute_tools",
                 {"name": tool_name, "ok": results[-1].ok},
             )
@@ -272,7 +272,7 @@ class AgentOrchestrator:
         response.context = state
         response.run_id = self._run_id or str(uuid4())
         self._record_event(
-            "phase_end",
+            EventType.PHASE_END,
             "format",
             {
                 "blocking_error": blocking_error,
@@ -314,7 +314,7 @@ class AgentOrchestrator:
             )
         )
         self._record_event(
-            "decision",
+            EventType.DECISION,
             "continue",
             {
                 "model_completed": self._model_completed,
@@ -343,7 +343,7 @@ class AgentOrchestrator:
         self._blocking_error = False
         self._budget_exhausted = False
         self._model_completed = False
-        self._record_event("phase_start", "prepare", {"run_id": self._run_id})
+        self._record_event(EventType.PHASE_START, "prepare", {"run_id": self._run_id})
 
     async def _is_high_risk_allowed(
         self,
@@ -416,7 +416,7 @@ class AgentOrchestrator:
             ),
         )
 
-    def _record_event(self, event_type: str, phase: str, payload: dict[str, Any]) -> None:
+    def _record_event(self, event_type: EventType, phase: str, payload: dict[str, Any]) -> None:
         if self._event_log is None:
             return
         self._event_log.record(

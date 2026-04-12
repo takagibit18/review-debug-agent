@@ -43,15 +43,15 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"),
     )
     review_max_iterations: int = Field(
-        default_factory=lambda: os.getenv("REVIEW_MAX_ITERATIONS", "1"),
+        default_factory=lambda: int(os.getenv("REVIEW_MAX_ITERATIONS", "1")),
         ge=1,
     )
     debug_max_iterations: int = Field(
-        default_factory=lambda: os.getenv("DEBUG_MAX_ITERATIONS", "3"),
+        default_factory=lambda: int(os.getenv("DEBUG_MAX_ITERATIONS", "3")),
         ge=1,
     )
     token_budget: int = Field(
-        default_factory=lambda: os.getenv("TOKEN_BUDGET", "12000"),
+        default_factory=lambda: int(os.getenv("TOKEN_BUDGET", "12000")),
         ge=1,
     )
     event_log_dir: str = Field(
