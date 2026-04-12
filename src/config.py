@@ -28,7 +28,6 @@ class Settings(BaseModel):
 
     openai_api_key: str = Field(
         default_factory=lambda: os.getenv("OPENAI_API_KEY", ""),
-        min_length=1,
     )
     openai_base_url: str = Field(
         default_factory=lambda: os.getenv(
