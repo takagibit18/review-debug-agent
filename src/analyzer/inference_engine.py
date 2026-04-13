@@ -8,10 +8,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_state import ContextState
 from src.analyzer.output_formatter import ReviewReport
 from src.analyzer.prompts import build_debug_messages, build_review_messages
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest
+from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.schemas import Message, ModelConfig
 from src.tools.base import ToolResult, ToolSpec
@@ -33,12 +35,33 @@ class InferenceEngine:
         error_log: str = "",
         file_contents: dict[str, str] | None = None,
         tool_feedback: list[dict[str, Any]] | None = None,
+        prompt_input_token_budget: int | None = None,
     ) -> tuple[AnalysisPlan, int]:
         file_contents = file_contents or {}
+        budget = (
+            prompt_input_token_budget
+            if prompt_input_token_budget is not None
+            else get_settings().prompt_input_token_budget
+        )
+        cb = ContextBuilder()
         if isinstance(request, ReviewRequest):
-            messages = build_review_messages(request, state, diff_text, file_contents)
+            messages = build_review_messages(
+                request,
+                state,
+                diff_text,
+                file_contents,
+                prompt_token_budget=budget,
+                context_builder=cb,
+            )
         else:
-            messages = build_debug_messages(request, state, error_log, file_contents)
+            messages = build_debug_messages(
+                request,
+                state,
+                error_log,
+                file_contents,
+                prompt_token_budget=budget,
+                context_builder=cb,
+            )
 
         if tool_feedback:
             messages.extend(self._build_tool_feedback_messages(tool_feedback))
