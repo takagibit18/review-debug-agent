@@ -152,6 +152,7 @@ CLI、未来 API 与 CI 校验应只依赖上述稳定字段；**增删字段** 
 | `DEBUG_MAX_ITERATIONS` | Debug 模式最大循环轮次 | 默认 `3`，对应 `Settings.debug_max_iterations` |
 | `TOKEN_BUDGET` | 单次运行累计 token 用量上限（用于终止判定） | 默认 `12000`，对应 `Settings.token_budget` |
 | `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.cr-debug-agent/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
+| `PERMISSION_MODE` | 权限模式（`default` \| `plan`） | 默认 `default`；`plan` 模式禁止执行工具，仅生成计划与结构化输出 |
 | `CI` | 常见 CI 环境变量 | 设为 `true`/`1`/`yes` 时，编排层对 `write`/`execute` 工具默认拒绝（与 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md) §11 一致） |
 
 新增全局配置项时，应更新 `Settings`、`.env.example`（如有）及本文档或 README。

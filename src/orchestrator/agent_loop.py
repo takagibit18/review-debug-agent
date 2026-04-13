@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
@@ -20,8 +21,9 @@ from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError
 from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
 from src.tools import create_default_registry
-from src.tools.base import ToolRegistry, ToolResult, ToolSafety, ToolSpec
+from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
+from src.tools.path_utils import tool_workspace_root
 
 
 class AgentOrchestrator:
@@ -31,6 +33,7 @@ class AgentOrchestrator:
         self,
         registry: ToolRegistry | None = None,
         confirm_high_risk: Any | None = None,
+        permission_mode: Literal["default", "plan"] | None = None,
     ) -> None:
         self._settings = get_settings()
         self._registry = registry or create_default_registry()
@@ -38,6 +41,9 @@ class AgentOrchestrator:
         self._result_processor = ResultProcessor(token_budget=self._settings.token_budget)
         self._model_client: ModelClient | None = None
         self._confirm_high_risk = confirm_high_risk
+        self._permission_mode: Literal["default", "plan"] = (
+            permission_mode or self._settings.permission_mode
+        )
         self._run_id = ""
         self._event_log: EventLog | None = None
         self._last_plan: AnalysisPlan | None = None
@@ -49,6 +55,7 @@ class AgentOrchestrator:
         self._blocking_error = False
         self._budget_exhausted = False
         self._model_completed = False
+        self._workspace_root: Path | None = None
 
     async def run_review(self, request: ReviewRequest) -> ReviewResponse:
         """Run review mode through the orchestrator loop."""
@@ -59,7 +66,8 @@ class AgentOrchestrator:
         state = self.prepare_context(request)
         response: ReviewResponse | DebugResponse | None = None
         while True:
-            plan = await self.analyze(state, request, self._registry.list_specs())
+            tool_specs = [] if self._permission_mode == "plan" else self._registry.list_specs()
+            plan = await self.analyze(state, request, tool_specs)
             self._last_plan = plan
             tool_results = await self.execute_tools(plan, self._registry, state)
             response = self.format_result(state, tool_results)
@@ -79,7 +87,8 @@ class AgentOrchestrator:
         state = self.prepare_context(request)
         response: ReviewResponse | DebugResponse | None = None
         while True:
-            plan = await self.analyze(state, request, self._registry.list_specs())
+            tool_specs = [] if self._permission_mode == "plan" else self._registry.list_specs()
+            plan = await self.analyze(state, request, tool_specs)
             self._last_plan = plan
             tool_results = await self.execute_tools(plan, self._registry, state)
             response = self.format_result(state, tool_results)
@@ -98,6 +107,8 @@ class AgentOrchestrator:
             state.constraints.append("diff_mode")
         if isinstance(request, DebugRequest) and (request.error_log_path or request.error_log_text):
             state.constraints.append("error_log_provided")
+        if self._permission_mode == "plan":
+            state.constraints.append("plan_mode")
         self._record_event(EventType.PHASE_END, "prepare", {"elapsed_ms": int((perf_counter() - start) * 1000)})
         return state
 
@@ -186,15 +197,25 @@ class AgentOrchestrator:
             DecisionStep(
                 phase="execute_tools",
                 action="Execute tool plan",
-                result="No tools requested" if not plan.needs_tools else "Executing requested tools",
+                result=(
+                    "Plan mode: tool execution disabled"
+                    if self._permission_mode == "plan" and plan.needs_tools
+                    else "No tools requested"
+                    if not plan.needs_tools
+                    else "Executing requested tools"
+                ),
             )
         )
+        if self._permission_mode == "plan":
+            return []
         if not plan.needs_tools:
             return []
 
         results: list[ToolResult] = []
         executed_feedback: list[dict[str, Any]] = []
-        for raw_call in plan.tool_calls:
+        index = 0
+        while index < len(plan.tool_calls):
+            raw_call = plan.tool_calls[index]
             call = self._parse_tool_call(raw_call)
             tool_name = call["name"]
             args = call["arguments"]
@@ -205,7 +226,10 @@ class AgentOrchestrator:
                     ErrorDetail(file="", message=err, category="runtime")
                 )
                 results.append(ToolResult(ok=False, error=err))
+                executed_feedback.append({"tool_call": raw_call, "result": results[-1]})
+                index += 1
                 continue
+
             tool_spec = tool.spec()
             if tool_spec.safety in {ToolSafety.WRITE, ToolSafety.EXECUTE}:
                 is_allowed = await self._is_high_risk_allowed(tool_spec, args)
@@ -223,28 +247,88 @@ class AgentOrchestrator:
                     executed_feedback.append(
                         {"tool_call": raw_call, "result": results[-1]}
                     )
+                    index += 1
                     continue
-            try:
-                data = await tool.execute(**args)
-                results.append(ToolResult(ok=True, data=data))
-            except ToolError as exc:
-                err = f"Tool execution failed for {tool_name}: {exc}"
-                state.errors.append(
-                    ErrorDetail(file=exc.path, message=err, category="runtime")
+
+                result, error_detail = await self._execute_one_tool(
+                    tool_name=tool_name,
+                    tool=tool,
+                    args=args,
                 )
-                results.append(ToolResult(ok=False, error=err))
-            except Exception as exc:  # noqa: BLE001
-                err = f"Tool execution failed for {tool_name}: {exc}"
-                state.errors.append(
-                    ErrorDetail(file="", message=err, category="runtime")
+                if error_detail is not None:
+                    state.errors.append(error_detail)
+                results.append(result)
+                self._record_event(
+                    EventType.TOOL_CALL,
+                    "execute_tools",
+                    {"name": tool_name, "ok": result.ok},
                 )
-                results.append(ToolResult(ok=False, error=err))
-            self._record_event(
-                EventType.TOOL_CALL,
-                "execute_tools",
-                {"name": tool_name, "ok": results[-1].ok},
+                executed_feedback.append({"tool_call": raw_call, "result": result})
+                index += 1
+                continue
+
+            if not tool.is_concurrency_safe():
+                result, error_detail = await self._execute_one_tool(
+                    tool_name=tool_name,
+                    tool=tool,
+                    args=args,
+                )
+                if error_detail is not None:
+                    state.errors.append(error_detail)
+                results.append(result)
+                self._record_event(
+                    EventType.TOOL_CALL,
+                    "execute_tools",
+                    {"name": tool_name, "ok": result.ok},
+                )
+                executed_feedback.append({"tool_call": raw_call, "result": result})
+                index += 1
+                continue
+
+            batch_calls: list[tuple[dict[str, Any], str, BaseTool, dict[str, Any]]] = [
+                (raw_call, tool_name, tool, args)
+            ]
+            scan = index + 1
+            while scan < len(plan.tool_calls):
+                next_raw = plan.tool_calls[scan]
+                next_call = self._parse_tool_call(next_raw)
+                next_name = next_call["name"]
+                next_args = next_call["arguments"]
+                next_tool = registry.get(next_name)
+                if next_tool is None:
+                    break
+                next_spec = next_tool.spec()
+                if next_spec.safety in {ToolSafety.WRITE, ToolSafety.EXECUTE}:
+                    break
+                if not next_tool.is_concurrency_safe():
+                    break
+                batch_calls.append((next_raw, next_name, next_tool, next_args))
+                scan += 1
+
+            batch_results = await asyncio.gather(
+                *[
+                    self._execute_one_tool(
+                        tool_name=batch_name,
+                        tool=batch_tool,
+                        args=batch_args,
+                    )
+                    for (_, batch_name, batch_tool, batch_args) in batch_calls
+                ]
             )
-            executed_feedback.append({"tool_call": raw_call, "result": results[-1]})
+            for (batch_raw, batch_name, _, _), (batch_result, batch_error) in zip(
+                batch_calls, batch_results
+            ):
+                if batch_error is not None:
+                    state.errors.append(batch_error)
+                results.append(batch_result)
+                self._record_event(
+                    EventType.TOOL_CALL,
+                    "execute_tools",
+                    {"name": batch_name, "ok": batch_result.ok},
+                )
+                executed_feedback.append({"tool_call": batch_raw, "result": batch_result})
+            index += len(batch_calls)
+
         self._tool_feedback = executed_feedback
         return results
 
@@ -284,7 +368,11 @@ class AgentOrchestrator:
 
     def should_continue(self, state: ContextState, response: ReviewResponse | DebugResponse) -> bool:
         """Decide whether another loop iteration should run."""
-        has_pending_tools = bool(self._last_plan and self._last_plan.needs_tools)
+        has_pending_tools = (
+            False
+            if self._permission_mode == "plan"
+            else bool(self._last_plan and self._last_plan.needs_tools)
+        )
         self._model_completed = not has_pending_tools and not self._blocking_error
         reached_limit = (self._iteration + 1) >= self._max_iterations
 
@@ -327,6 +415,7 @@ class AgentOrchestrator:
 
     def _reset_run(self, max_iterations: int, repo_path: str) -> None:
         self._run_id = str(uuid4())
+        self._workspace_root = Path(repo_path).resolve()
         configured_log_dir = Path(self._settings.event_log_dir)
         if not configured_log_dir.is_absolute():
             configured_log_dir = Path(repo_path) / configured_log_dir
@@ -344,6 +433,30 @@ class AgentOrchestrator:
         self._budget_exhausted = False
         self._model_completed = False
         self._record_event(EventType.PHASE_START, "prepare", {"run_id": self._run_id})
+
+    async def _execute_one_tool(
+        self,
+        *,
+        tool_name: str,
+        tool: BaseTool,
+        args: dict[str, Any],
+    ) -> tuple[ToolResult, ErrorDetail | None]:
+        with tool_workspace_root(self._workspace_root):
+            try:
+                data = await tool.execute(**args)
+                return ToolResult(ok=True, data=data), None
+            except ToolError as exc:
+                err = f"Tool execution failed for {tool_name}: {exc}"
+                return (
+                    ToolResult(ok=False, error=err),
+                    ErrorDetail(file=exc.path, message=err, category="runtime"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                err = f"Tool execution failed for {tool_name}: {exc}"
+                return (
+                    ToolResult(ok=False, error=err),
+                    ErrorDetail(file="", message=err, category="runtime"),
+                )
 
     async def _is_high_risk_allowed(
         self,

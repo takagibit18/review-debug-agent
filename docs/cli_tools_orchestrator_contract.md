@@ -42,6 +42,21 @@
 
 **禁止**：决定全局调用顺序；决定编排终止条件。
 
+### 2.4 当前 readonly 默认工具集（MVP）
+
+当前默认 `ToolRegistry` 仅包含以下只读工具：
+
+- `read_file`
+- `glob_files`
+- `grep_files`
+- `list_dir`
+
+说明：
+
+- 上述 4 个工具构成当前 readonly MVP 默认能力包。
+- `write` / `execute` 工具暂未进入默认实现集。
+- 高风险工具仍按第 11 节策略处理：交互模式需确认，CI 默认拒绝。
+
 ---
 
 ## 3. 编排层公开入口（稳定 API）
@@ -188,6 +203,9 @@ result = await tool.execute(**tool_args)
 - 工具发现唯一来源：`registry.list_specs()`。
 - 并发判定唯一依据：`tool.is_concurrency_safe()`。
 - `write` / `execute` 工具必须走第 11 节安全策略。
+- 路径权限根目录由编排层按本次请求 `repo_path` 注入；工具层不得回退到用户可控路径根。
+- readonly 工具采用“保守并发”：仅连续的并发安全只读调用批量并发，遇到非并发安全或高风险工具即切回串行。
+- 返回结果顺序必须与 `tool_calls` 原始顺序一致。
 
 ### 8.1 工具结果统一信封（固定）
 
@@ -201,6 +219,10 @@ class ToolResult(BaseModel):
 ```
 
 `ok=False` 时 `error` 必须非空；`ok=True` 时 `data` 应承载主结果。
+
+补充语义约束：
+
+- 若工具返回 `truncated` 字段，其值仅在“存在未返回结果”时为 `true`。
 
 ---
 
@@ -254,6 +276,11 @@ class AnalysisPlan(BaseModel):
 ---
 
 ## 11. Security 与高危工具（固定策略）
+
+权限模式补充：
+
+- `default`：按本节策略执行高危工具门控。
+- `plan`：禁止执行任何工具（含 readonly/write/execute），仅允许规划与结构化输出阶段。
 
 `write` / `execute` 工具执行策略矩阵：
 
@@ -334,3 +361,4 @@ class AnalysisPlan(BaseModel):
 | 2026-04-09 | 初稿入库：CLI/编排/工具边界、请求响应、Analyzer/Model/Security/观测补充、协作前清单 |
 | 2026-04-09 | 收敛为确定性约束：定稿 Debug 对齐字段、`suggested_commands`、高危工具执行矩阵与固定验收清单 |
 | 2026-04-12 | §9.2 补充 `tool_schemas.py` 实现锚点；§11 补充 `confirm_high_risk` 与默认拒绝行为 |
+| 2026-04-13 | 补充 readonly 默认工具集说明；收口 readonly MVP 的测试、异常与默认注册契约 |

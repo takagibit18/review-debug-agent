@@ -24,12 +24,24 @@ T = TypeVar("T")
     help="Override the model name (defaults to MODEL_NAME env var).",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output.")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(["default", "plan"], case_sensitive=False),
+    default=None,
+    help="Permission mode override (default|plan).",
+)
 @click.pass_context
-def main(ctx: click.Context, model: str | None, verbose: bool) -> None:
+def main(
+    ctx: click.Context,
+    model: str | None,
+    verbose: bool,
+    permission_mode: str | None,
+) -> None:
     """Code Review & Debug Agent — structured code review and debug assistance."""
     ctx.ensure_object(dict)
     ctx.obj["model"] = model
     ctx.obj["verbose"] = verbose
+    ctx.obj["permission_mode"] = permission_mode.lower() if permission_mode else None
 
 
 def _render_review_response(response: ReviewResponse, verbose: bool) -> None:
@@ -80,7 +92,7 @@ def review(ctx: click.Context, path: str, diff: bool) -> None:
         model_name=ctx.obj["model"],
         verbose=ctx.obj["verbose"],
     )
-    orchestrator = AgentOrchestrator()
+    orchestrator = AgentOrchestrator(permission_mode=ctx.obj["permission_mode"])
     response = _run_async_command(orchestrator.run_review(request), "review")
     _render_review_response(response, ctx.obj["verbose"])
 
@@ -99,7 +111,7 @@ def debug(ctx: click.Context, path: str, error_log: str | None) -> None:
         model_name=ctx.obj["model"],
         verbose=ctx.obj["verbose"],
     )
-    orchestrator = AgentOrchestrator()
+    orchestrator = AgentOrchestrator(permission_mode=ctx.obj["permission_mode"])
     response = _run_async_command(orchestrator.run_debug(request), "debug")
     _render_debug_response(response, ctx.obj["verbose"])
 

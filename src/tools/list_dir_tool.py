@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
 from src.tools.exceptions import FileNotFoundToolError, FileReadError
+from src.tools.path_utils import ensure_path_allowed
 
 
 class ListDirToolInput(BaseModel):
@@ -47,7 +48,7 @@ class ListDirTool(BaseTool):
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Return directory entries with lightweight metadata."""
         data = ListDirToolInput(**kwargs)
-        root = Path(data.path).resolve()
+        root = ensure_path_allowed(Path(data.path), tool_name=self.spec().name)
         if not root.exists():
             raise FileNotFoundToolError(
                 f"Directory not found: {root}",
@@ -77,10 +78,14 @@ class ListDirTool(BaseTool):
             ) from exc
 
         entries: list[dict[str, Any]] = []
+        truncated = False
         try:
             for entry in sorted(iterator, key=lambda item: str(item.resolve())):
                 if not data.include_hidden and entry.name.startswith("."):
                     continue
+                if len(entries) >= data.limit:
+                    truncated = True
+                    break
                 entry_type = "directory" if entry.is_dir() else "file" if entry.is_file() else "other"
                 entries.append(
                     {
@@ -89,8 +94,6 @@ class ListDirTool(BaseTool):
                         "type": entry_type,
                     }
                 )
-                if len(entries) >= data.limit:
-                    break
         except PermissionError as exc:
             raise FileReadError(
                 f"Permission denied while listing directory: {root}",
@@ -110,5 +113,5 @@ class ListDirTool(BaseTool):
             "include_hidden": data.include_hidden,
             "entries": entries,
             "entry_count": len(entries),
-            "truncated": len(entries) >= data.limit,
+            "truncated": truncated,
         }

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
 from src.tools.exceptions import FileNotFoundToolError, FileReadError
+from src.tools.path_utils import ensure_path_allowed
 
 
 class FileReadInput(BaseModel):
@@ -39,7 +40,7 @@ class FileReadTool(BaseTool):
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Read and return file content with metadata."""
         data = FileReadInput(**kwargs)
-        path = Path(data.file_path).resolve()
+        path = ensure_path_allowed(Path(data.file_path), tool_name=self.spec().name)
         try:
             content = path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:

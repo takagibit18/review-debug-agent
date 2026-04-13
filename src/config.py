@@ -5,6 +5,7 @@ them as a validated Pydantic model for use across all modules.
 """
 
 import os
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import (
@@ -56,6 +57,9 @@ class Settings(BaseModel):
     event_log_dir: str = Field(
         default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
         min_length=1,
+    )
+    permission_mode: Literal["default", "plan"] = Field(
+        default_factory=lambda: os.getenv("PERMISSION_MODE", "default").strip().lower(),
     )
 
     @field_validator("openai_api_key", "model_name", mode="before")
