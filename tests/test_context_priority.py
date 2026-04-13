@@ -16,7 +16,12 @@ from src.analyzer.context_priority import (
     split_diff_hunks,
 )
 from src.analyzer.context_state import ContextState
+from src.analyzer.prompts import build_debug_messages, build_review_messages
 from src.analyzer.schemas import DebugRequest, ReviewRequest
+
+
+def _user_payload(content: str) -> dict[str, object]:
+    return json.loads(content.split("\n", 1)[1])
 
 
 def test_split_diff_hunks_single_file_two_hunks() -> None:
@@ -36,6 +41,26 @@ def test_split_diff_hunks_single_file_two_hunks() -> None:
     assert len(parts) == 2
     assert "@@ -1,2 +1,3 @@" in parts[0]
     assert "@@ -10,2 +11,3 @@" in parts[1]
+
+
+def test_split_diff_hunks_single_file_preserves_header_for_later_hunks() -> None:
+    diff = """diff --git a/x.py b/x.py
+--- a/x.py
++++ b/x.py
+@@ -1,2 +1,3 @@
+ a
++b
+ c
+@@ -10,2 +11,3 @@
+ d
++e
+ f
+"""
+    parts = split_diff_hunks(diff)
+    assert len(parts) == 2
+    assert "diff --git a/x.py b/x.py" in parts[1]
+    assert "--- a/x.py" in parts[1]
+    assert "+++ b/x.py" in parts[1]
 
 
 def test_split_diff_hunks_multi_file() -> None:
@@ -143,6 +168,40 @@ def test_assemble_debug_payload_error_dropped() -> None:
     payload = assemble_debug_payload(req, ctx, all_parts, selected)
     assert payload["error_log_loaded"] == ""
     assert payload["truncated"]["error_log"] is True
+
+
+def test_review_messages_do_not_embed_full_direct_diff_text_when_truncated() -> None:
+    direct_diff = "diff --git a/x.py b/x.py\n" + ("x" * 20_000)
+    req = ReviewRequest(repo_path=".", diff_text=direct_diff)
+    ctx = ContextState()
+    messages = build_review_messages(
+        req,
+        ctx,
+        direct_diff,
+        {},
+        prompt_token_budget=50,
+    )
+    payload = _user_payload(messages[1].content)
+    assert direct_diff not in messages[1].content
+    assert payload["diff_text"] is None
+    assert payload["truncated"]["any"] is True
+
+
+def test_debug_messages_do_not_embed_full_direct_error_log_text_when_truncated() -> None:
+    direct_error_log = "E" * 20_000
+    req = DebugRequest(repo_path=".", error_log_text=direct_error_log)
+    ctx = ContextState()
+    messages = build_debug_messages(
+        req,
+        ctx,
+        direct_error_log,
+        {},
+        prompt_token_budget=50,
+    )
+    payload = _user_payload(messages[1].content)
+    assert direct_error_log not in messages[1].content
+    assert payload["error_log_text"] is None
+    assert payload["truncated"]["any"] is True
 
 
 def test_review_payload_json_roundtrip() -> None:
