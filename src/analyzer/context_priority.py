@@ -205,7 +205,9 @@ def assemble_review_payload(
 
     truncated: dict[str, Any] = {
         "any": sel != all_l,
-        "diff_hunks": any(l in all_l and l not in sel for l in diff_hunk_labels),
+        "diff_hunks": any(
+            h in all_l and h not in sel for h in diff_hunk_labels
+        ),
         "files": [
             p.label[5:]
             for p in all_parts
