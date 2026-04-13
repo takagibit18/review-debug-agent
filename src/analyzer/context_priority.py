@@ -29,14 +29,16 @@ def _split_section_at_hunks(section: str) -> list[str]:
         return [section] if section.strip() else []
     chunks: list[str] = []
     current: list[str] = []
+    header: list[str] = []
     seen_hunk = False
     for line in lines:
         if line.startswith("@@") and seen_hunk:
             chunks.append("".join(current))
-            current = [line]
+            current = [*header, line]
         else:
             if line.startswith("@@"):
                 seen_hunk = True
+                header = current.copy()
             current.append(line)
     if current:
         chunks.append("".join(current))
@@ -67,7 +69,7 @@ def _meta_dict_review(
     return {
         "repo_path": request.repo_path,
         "diff_mode": request.diff_mode,
-        "diff_text": request.diff_text,
+        "has_diff_text": bool(request.diff_text),
         "constraints": list(context.constraints),
     }
 
@@ -78,7 +80,7 @@ def _meta_dict_debug(
     return {
         "repo_path": request.repo_path,
         "error_log_path": request.error_log_path,
-        "error_log_text": request.error_log_text,
+        "has_error_log_text": bool(request.error_log_text),
         "constraints": list(context.constraints),
     }
 
@@ -216,11 +218,14 @@ def assemble_review_payload(
         "structure": any(p.label == "structure" for p in all_parts)
         and "structure" not in sel,
     }
+    raw_diff_text = request.diff_text
+    if raw_diff_text and (truncated["diff_hunks"] or diff_loaded_out != raw_diff_text):
+        raw_diff_text = None
 
     return {
         "repo_path": request.repo_path,
         "diff_mode": request.diff_mode,
-        "diff_text": request.diff_text,
+        "diff_text": raw_diff_text,
         "diff_loaded": diff_loaded_out,
         "files": files_out,
         "constraints": context.constraints,
@@ -263,11 +268,14 @@ def assemble_debug_payload(
         "structure": any(p.label == "structure" for p in all_parts)
         and "structure" not in sel,
     }
+    raw_error_log_text = request.error_log_text
+    if raw_error_log_text and (truncated["error_log"] or error_out != raw_error_log_text):
+        raw_error_log_text = None
 
     return {
         "repo_path": request.repo_path,
         "error_log_path": request.error_log_path,
-        "error_log_text": request.error_log_text,
+        "error_log_text": raw_error_log_text,
         "error_log_loaded": error_out,
         "files": files_out,
         "constraints": context.constraints,
