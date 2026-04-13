@@ -247,7 +247,11 @@ def test_execute_tools_blocks_execute_without_confirmation() -> None:
     assert any(error.category == "security" for error in state.errors)
 
 
-def test_execute_tools_allows_execute_with_confirmation() -> None:
+def test_execute_tools_allows_execute_with_confirmation(monkeypatch) -> None:
+    # GitHub Actions sets CI=true by default; this case validates interactive mode.
+    # We explicitly clear CI so confirmation callback can allow execution.
+    monkeypatch.delenv("CI", raising=False)
+
     registry = ToolRegistry()
     registry.register(DummyExecuteTool())
     orchestrator = AgentOrchestrator(
@@ -514,7 +518,7 @@ def test_execute_tools_uses_repo_root_for_path_checks_when_cwd_differs(monkeypat
     orchestrator._reset_run(max_iterations=1, repo_path=str(repo_root))  # noqa: SLF001
     state = orchestrator.prepare_context(ReviewRequest(repo_path=str(repo_root)))
     allowed_path = (repo_root / "src" / "tools" / "base.py").resolve()
-    denied_path = Path("C:/Windows/win.ini")
+    denied_path = repo_root.parent
     plan = AnalysisPlan(
         needs_tools=True,
         tool_calls=[
