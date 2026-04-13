@@ -5,10 +5,22 @@ from __future__ import annotations
 import json
 from collections import deque
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class EventType(str, Enum):
+    """Canonical run event types used by orchestrator and analyzers."""
+
+    MODEL_CALL = "model_call"
+    TOOL_CALL = "tool_call"
+    DECISION = "decision"
+    ERROR = "error"
+    PHASE_START = "phase_start"
+    PHASE_END = "phase_end"
 
 
 class EventEntry(BaseModel):
@@ -16,7 +28,7 @@ class EventEntry(BaseModel):
 
     timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     run_id: str
-    event_type: str
+    event_type: EventType
     phase: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
 

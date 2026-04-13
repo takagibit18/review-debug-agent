@@ -68,6 +68,12 @@ class ResultProcessor:
 
     @staticmethod
     def merge_review_reports(reports: list[ReviewReport]) -> ReviewReport:
+        severity_rank = {
+            "critical": 0,
+            "warning": 1,
+            "info": 2,
+            "style": 3,
+        }
         merged_summary = " ".join([item.summary for item in reports if item.summary]).strip()
         seen: set[tuple[str, str, str]] = set()
         merged_issues: list[ReviewIssue] = []
@@ -78,7 +84,13 @@ class ResultProcessor:
                     continue
                 seen.add(key)
                 merged_issues.append(issue)
-        merged_issues.sort(key=lambda issue: issue.severity.value)
+        merged_issues.sort(
+            key=lambda issue: (
+                severity_rank.get(issue.severity.value, 99),
+                issue.location,
+                issue.suggestion,
+            )
+        )
         return ReviewReport(summary=merged_summary, issues=merged_issues)
 
     def is_budget_exhausted(self, total_tokens: int) -> bool:
