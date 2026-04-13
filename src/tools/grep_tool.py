@@ -9,7 +9,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
-from src.tools.exceptions import FileNotFoundToolError, PatternError
+from src.tools.exceptions import FileNotFoundToolError, FileReadError, PatternError
+from src.tools.path_utils import ensure_path_allowed
 
 
 class GrepToolInput(BaseModel):
@@ -49,7 +50,7 @@ class GrepTool(BaseTool):
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         """Return regex matches with file and line metadata."""
         data = GrepToolInput(**kwargs)
-        root = Path(data.path).resolve()
+        root = ensure_path_allowed(Path(data.path), tool_name=self.spec().name)
         flags = 0 if data.case_sensitive else re.IGNORECASE
         try:
             regex = re.compile(data.pattern, flags)
@@ -86,7 +87,7 @@ class GrepTool(BaseTool):
                 path=str(root),
             ) from exc
         except OSError as exc:
-            raise FileNotFoundToolError(
+            raise FileReadError(
                 f"Failed to list directory: {root}",
                 tool_name=self.spec().name,
                 path=str(root),
@@ -105,6 +106,9 @@ class GrepTool(BaseTool):
             for line_number, line in enumerate(content.splitlines(), start=1):
                 if not regex.search(line):
                     continue
+                if len(matches) >= data.limit:
+                    truncated = True
+                    break
                 matched_files.add(str(file_path))
                 matches.append(
                     {
@@ -113,9 +117,6 @@ class GrepTool(BaseTool):
                         "line_text": line,
                     }
                 )
-                if len(matches) >= data.limit:
-                    truncated = True
-                    break
             if truncated:
                 break
 

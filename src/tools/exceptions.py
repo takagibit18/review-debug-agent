@@ -32,3 +32,11 @@ class PatternError(ToolError):
 
 class FileReadError(ToolError):
     """I/O failure while reading file content."""
+
+
+class CommandExecutionToolError(ToolError):
+    """Command failed during sandboxed execution."""
+
+
+class CommandTimeoutToolError(ToolError):
+    """Command exceeded execution timeout."""

@@ -133,3 +133,18 @@ def test_debug_command_passes_verbose_flag(cli_runner: CliRunner, monkeypatch) -
     result = cli_runner.invoke(main, ["--verbose", "debug", "."])
     assert result.exit_code == 0
     assert "Run ID: run-debug-verbose" in result.output
+
+
+def test_review_command_passes_permission_mode(cli_runner: CliRunner, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    original_init = cli.AgentOrchestrator.__init__
+
+    def _capturing_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["permission_mode"] = kwargs.get("permission_mode")
+        return original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "__init__", _capturing_init)
+
+    result = cli_runner.invoke(main, ["--permission-mode", "plan", "review", "."])
+    assert result.exit_code == 0
+    assert captured["permission_mode"] == "plan"
