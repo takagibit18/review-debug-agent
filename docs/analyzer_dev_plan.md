@@ -20,7 +20,7 @@
 - **Prompt 与消息** — `SYSTEM_PROMPT_*`、`build_review_messages` / `build_debug_messages`（[src/analyzer/prompts.py](../src/analyzer/prompts.py)）
 - **编排层工具 schema** — `build_tool_schemas`、`build_submit_tool_schemas`（[src/orchestrator/tool_schemas.py](../src/orchestrator/tool_schemas.py)，契约 §9.2）
 - **事件日志** — `EventType`、`EventEntry`、`EventLog`（[src/analyzer/event_log.py](../src/analyzer/event_log.py)）
-- **上下文构建** — `ContextBuilder`（[src/analyzer/context_builder.py](../src/analyzer/context_builder.py)）
+- **上下文构建** — `ContextBuilder`、`context_priority`（[src/analyzer/context_builder.py](../src/analyzer/context_builder.py)、[src/analyzer/context_priority.py](../src/analyzer/context_priority.py)）
 - **推理引擎** — `InferenceEngine`（[src/analyzer/inference_engine.py](../src/analyzer/inference_engine.py)）
 - **结果处理** — `ResultProcessor`（[src/analyzer/result_processor.py](../src/analyzer/result_processor.py)）
 - **编排主循环** — `AgentOrchestrator`（[src/orchestrator/agent_loop.py](../src/orchestrator/agent_loop.py)）
@@ -31,7 +31,7 @@
 
 | 项 | 说明 |
 |------|------|
-| `ContextBuilder` 与截断 | `truncate_context` / `load_files` 等尚未接入 `prepare_context` 主路径；`load_diff` 当前为 `git diff --cached`（暂存区），与「工作区全量 diff」语义可能不同。 |
+| `ContextBuilder` 与截断 | `truncate_context` 已通过 `prompts.build_*_messages` 与 [context_priority.py](../src/analyzer/context_priority.py) 接入推理消息拼装；`load_diff` 当前为 `git diff --cached`（暂存区），与「工作区全量 diff」语义可能不同。 |
 | 事件日志粒度 | 计划中的「每 phase 成对 phase_start/end」与部分观测点仍可按需补全。 |
 | 异常兜底 | 计划中的「连续 2 次工具失败降级」等策略可按需细化。 |
 
@@ -43,7 +43,7 @@
 | Prompt 模板 + 消息构建 | 已实现 | `src/analyzer/prompts.py` |
 | OpenAI function schema（工具 + submit 伪工具） | 已实现 | `src/orchestrator/tool_schemas.py`（由编排层组装后传入推理引擎） |
 | 事件日志（会话级 JSONL） | 已实现 | `src/analyzer/event_log.py` |
-| 上下文构建器 | 部分实现（见 §1.2） | `src/analyzer/context_builder.py` |
+| 上下文构建器 + 优先级分块 | 已实现（见 §2.3） | `src/analyzer/context_builder.py`、`src/analyzer/context_priority.py` |
 | 推理引擎 | 已实现（含 `tool_feedback` 回灌） | `src/analyzer/inference_engine.py` |
 | 结果处理器 | 已实现 | `src/analyzer/result_processor.py` |
 | Agent 编排主循环 | 已实现（含高危门控、可配置轮次与 token） | `src/orchestrator/agent_loop.py` |
@@ -97,12 +97,20 @@
 
 **选定方案：MVP 优先级截断；后续迭代升级为混合策略**
 
-MVP 阶段（本期）：
+**实现位置（与代码对齐）**
 
-- 上下文加载优先级（高到低）：系统提示词 > 错误日志 > diff/变更文件 > 相关文件片段 > 项目结构概览
-- token 预算：预留 `max_tokens`（回复）+ 安全边际后，剩余按优先级依次填充
-- 截断粒度：以文件/diff hunk 为单位，不打断单个 hunk
-- token 估算：使用 `tiktoken`
+- **层级常量与分块工厂**：[src/analyzer/context_priority.py](../src/analyzer/context_priority.py) — `TIER_META`（10_000）、`TIER_ERROR_LOG`（20_000）、`TIER_DIFF`（30_000）、`TIER_FILES`（40_000）、`TIER_STRUCTURE`（50_000）；子索引递增（如第 *i* 个 hunk 为 `TIER_DIFF + i`），保证全序不与其它层碰撞。`ContextBuilder.truncate_context` 按 `priority` **升序**贪心装入。
+- **Review**：meta（短 JSON：`repo_path`、`diff_mode`、`diff_text`、`constraints`）→ diff（`split_diff_hunks`：含 `diff --git` 时先按文件分段，再按 `@@` 拆 hunk）→ 相关文件（路径 **字典序**）→ 可选 `project_structure`。
+- **Debug**：meta → `error_log_loaded` → 文件（字典序）→ 可选 `project_structure`（错误日志层仅在 Debug 出现，与 Review 分支一致于总排序文档）。
+- **消息组装**：[src/analyzer/prompts.py](../src/analyzer/prompts.py) 对可截断块执行 `truncate_context` 后，经 `assemble_review_payload` / `assemble_debug_payload` 拼回单条 user JSON，并写入 `truncated`（`any` / `diff_hunks` / `files` / `error_log` / `structure`）。
+- **输入侧预算**：环境变量 **`PROMPT_INPUT_TOKEN_BUDGET`**（默认 `32000`，`Settings.prompt_input_token_budget`）约束 **可截断块** 的 token 估算总和；与 Phase 4 运行累计终止的 **`TOKEN_BUDGET`**（`Settings.token_budget`）语义分离。
+- **多轮 tool 反馈**：`InferenceEngine` 仍完整追加 `assistant`/`tool` 消息；首轮 user 正文经上述截断。
+
+MVP 阶段（设计目标，与实现对齐）：
+
+- 上下文加载优先级（高到低）：系统提示词（系统消息，不计入可截断块列表）> 错误日志（仅 Debug）> diff/变更文件 > 相关文件片段 > 项目结构概览
+- 截断粒度：以文件 / diff hunk 为单位，不打断单个 hunk
+- token 估算：`tiktoken`（`cl100k_base`）；不可用时回退 `len(text)//4`
 
 后续演进方向（非本期）：
 
@@ -238,7 +246,7 @@ class ToolResult(BaseModel):
   - `truncate_context(parts: list[ContextPart], budget: int) -> list[ContextPart]`：优先级截断
   - `ContextPart(BaseModel)`：`priority: int, label: str, content: str, token_count: int`
 - **依赖**：`ContextState`（context_state）、请求模型（schemas）、`tiktoken`（新依赖）
-- **交付标准**：截断逻辑单测、token 估算偏差 < 10%
+- **交付标准**：截断逻辑单测（`tests/test_context_priority.py`）；token 估算偏差 < 10% 为可选基准验收（依赖固定语料与 tiktoken 对照）
 
 ### M3: 推理引擎（2 天）
 

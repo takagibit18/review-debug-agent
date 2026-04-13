@@ -53,6 +53,11 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("TOKEN_BUDGET", "12000")),
         ge=1,
     )
+    prompt_input_token_budget: int = Field(
+        default_factory=lambda: int(os.getenv("PROMPT_INPUT_TOKEN_BUDGET", "32000")),
+        ge=1,
+        description="Max estimated tokens for truncatable context parts (meta, diff, files, structure)",
+    )
     event_log_dir: str = Field(
         default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
         min_length=1,

@@ -150,6 +150,7 @@ class AgentOrchestrator:
                     diff_text=diff_text,
                     error_log=error_log_text,
                     tool_feedback=self._tool_feedback,
+                    prompt_input_token_budget=self._settings.prompt_input_token_budget,
                 )
                 self._latest_tokens = total_tokens
             except ModelClientError as exc:
