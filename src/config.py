@@ -59,7 +59,7 @@ class Settings(BaseModel):
         min_length=1,
     )
     permission_mode: Literal["default", "plan"] = Field(
-        default_factory=lambda: os.getenv("PERMISSION_MODE", "default").strip().lower(),
+        default="default",
     )
 
     @field_validator("openai_api_key", "model_name", mode="before")
@@ -94,4 +94,6 @@ class Settings(BaseModel):
 
 def get_settings() -> Settings:
     """Return a Settings instance populated from environment."""
-    return Settings()
+    return Settings(
+        permission_mode=os.getenv("PERMISSION_MODE", "default").strip().lower()
+    )
