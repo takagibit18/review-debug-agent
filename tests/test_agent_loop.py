@@ -52,6 +52,49 @@ class DummyWriteTool(BaseTool):
         return {"wrote": kwargs.get("value", "")}
 
 
+class TimedReadonlyTool(BaseTool):
+    """Readonly tool with delay, used for concurrency tests."""
+
+    def __init__(self, name: str, trace: list[str], delay: float = 0.02) -> None:
+        self._name = name
+        self._trace = trace
+        self._delay = delay
+
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name=self._name,
+            description="Timed readonly tool",
+            parameters={"type": "object"},
+            safety=ToolSafety.READONLY,
+        )
+
+    async def execute(self, **kwargs):  # type: ignore[no-untyped-def]
+        self._trace.append(f"start:{self._name}")
+        await asyncio.sleep(self._delay)
+        self._trace.append(f"end:{self._name}")
+        return {"name": self._name}
+
+
+class TraceWriteTool(BaseTool):
+    """Write tool that records serial execution boundaries."""
+
+    def __init__(self, trace: list[str]) -> None:
+        self._trace = trace
+
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="write_trace_tool",
+            description="Trace write execution",
+            parameters={"type": "object"},
+            safety=ToolSafety.WRITE,
+        )
+
+    async def execute(self, **kwargs):  # type: ignore[no-untyped-def]
+        self._trace.append("start:write_trace_tool")
+        self._trace.append("end:write_trace_tool")
+        return {"name": "write_trace_tool"}
+
+
 def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     orchestrator = AgentOrchestrator()
@@ -180,6 +223,54 @@ def test_execute_tools_blocks_write_without_confirmation() -> None:
     assert results[0].ok is False
     assert "confirmation" in (results[0].error or "").lower()
     assert any(error.category == "security" for error in state.errors)
+
+
+def test_execute_tools_parallelizes_contiguous_safe_calls_and_serializes_write() -> None:
+    trace: list[str] = []
+    registry = ToolRegistry()
+    registry.register(TimedReadonlyTool("read_a", trace))
+    registry.register(TimedReadonlyTool("read_b", trace))
+    registry.register(TraceWriteTool(trace))
+    registry.register(TimedReadonlyTool("read_c", trace))
+    registry.register(TimedReadonlyTool("read_d", trace))
+
+    orchestrator = AgentOrchestrator(
+        registry=registry,
+        confirm_high_risk=lambda _spec, _args: True,
+    )
+    state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
+    plan = AnalysisPlan(
+        needs_tools=True,
+        tool_calls=[
+            {"function": {"name": "read_a", "arguments": "{}"}},
+            {"function": {"name": "read_b", "arguments": "{}"}},
+            {"function": {"name": "write_trace_tool", "arguments": "{}"}},
+            {"function": {"name": "read_c", "arguments": "{}"}},
+            {"function": {"name": "read_d", "arguments": "{}"}},
+        ],
+    )
+
+    results = asyncio.run(orchestrator.execute_tools(plan, registry, state))
+
+    assert [result.data["name"] for result in results] == [
+        "read_a",
+        "read_b",
+        "write_trace_tool",
+        "read_c",
+        "read_d",
+    ]
+
+    idx_end_read_batch_1 = max(trace.index("end:read_a"), trace.index("end:read_b"))
+    idx_start_write = trace.index("start:write_trace_tool")
+    idx_end_write = trace.index("end:write_trace_tool")
+    idx_start_read_c = trace.index("start:read_c")
+    idx_start_read_d = trace.index("start:read_d")
+    assert idx_start_write > idx_end_read_batch_1
+    assert idx_start_read_c > idx_end_write
+    assert idx_start_read_d > idx_end_write
+
+    first_batch_start = {trace[0], trace[1]}
+    assert first_batch_start == {"start:read_a", "start:read_b"}
 
 
 def test_execute_tools_supports_file_read_tool(monkeypatch) -> None:

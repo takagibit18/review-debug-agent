@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
 from pathlib import Path
@@ -20,7 +21,7 @@ from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError
 from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
 from src.tools import create_default_registry
-from src.tools.base import ToolRegistry, ToolResult, ToolSafety, ToolSpec
+from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
 
 
@@ -194,59 +195,130 @@ class AgentOrchestrator:
 
         results: list[ToolResult] = []
         executed_feedback: list[dict[str, Any]] = []
+        readonly_batch: list[tuple[dict[str, Any], str, BaseTool, dict[str, Any]]] = []
+
+        async def _flush_readonly_batch() -> None:
+            nonlocal readonly_batch
+            if not readonly_batch:
+                return
+            settled = await asyncio.gather(
+                *[
+                    self._execute_one_tool(
+                        tool_name=name,
+                        tool=tool,
+                        args=arguments,
+                        state=state,
+                    )
+                    for _, name, tool, arguments in readonly_batch
+                ]
+            )
+            for (raw_call_item, raw_tool_name, _, _), outcome in zip(readonly_batch, settled, strict=False):
+                results.append(outcome)
+                self._record_event(
+                    EventType.TOOL_CALL,
+                    "execute_tools",
+                    {"name": raw_tool_name, "ok": outcome.ok},
+                )
+                executed_feedback.append({"tool_call": raw_call_item, "result": outcome})
+            readonly_batch = []
+
         for raw_call in plan.tool_calls:
             call = self._parse_tool_call(raw_call)
             tool_name = call["name"]
             args = call["arguments"]
             tool = registry.get(tool_name)
             if tool is None:
+                await _flush_readonly_batch()
                 err = f"Tool not found: {tool_name}"
                 state.errors.append(
                     ErrorDetail(file="", message=err, category="runtime")
                 )
-                results.append(ToolResult(ok=False, error=err))
+                result = ToolResult(ok=False, error=err)
+                results.append(result)
+                executed_feedback.append({"tool_call": raw_call, "result": result})
                 continue
-            tool_spec = tool.spec()
-            if tool_spec.safety in {ToolSafety.WRITE, ToolSafety.EXECUTE}:
-                is_allowed = await self._is_high_risk_allowed(tool_spec, args)
-                if not is_allowed:
-                    err = f"Tool execution requires confirmation: {tool_name}"
-                    state.errors.append(
-                        ErrorDetail(file="", message=err, category="security")
-                    )
-                    results.append(ToolResult(ok=False, error=err))
-                    self._record_event(
-                        EventType.ERROR,
-                        "execute_tools",
-                        {"name": tool_name, "category": "security"},
-                    )
-                    executed_feedback.append(
-                        {"tool_call": raw_call, "result": results[-1]}
-                    )
-                    continue
-            try:
-                data = await tool.execute(**args)
-                results.append(ToolResult(ok=True, data=data))
-            except ToolError as exc:
-                err = f"Tool execution failed for {tool_name}: {exc}"
-                state.errors.append(
-                    ErrorDetail(file=exc.path, message=err, category="runtime")
-                )
-                results.append(ToolResult(ok=False, error=err))
-            except Exception as exc:  # noqa: BLE001
-                err = f"Tool execution failed for {tool_name}: {exc}"
-                state.errors.append(
-                    ErrorDetail(file="", message=err, category="runtime")
-                )
-                results.append(ToolResult(ok=False, error=err))
-            self._record_event(
-                EventType.TOOL_CALL,
-                "execute_tools",
-                {"name": tool_name, "ok": results[-1].ok},
+
+            if tool.is_concurrency_safe():
+                readonly_batch.append((raw_call, tool_name, tool, args))
+                continue
+
+            await _flush_readonly_batch()
+            result = await self._run_tool_call(
+                tool_name=tool_name,
+                tool=tool,
+                args=args,
+                state=state,
             )
-            executed_feedback.append({"tool_call": raw_call, "result": results[-1]})
+            results.append(result)
+            executed_feedback.append({"tool_call": raw_call, "result": result})
+
+        await _flush_readonly_batch()
         self._tool_feedback = executed_feedback
         return results
+
+    async def _run_tool_call(
+        self,
+        tool_name: str,
+        tool: BaseTool,
+        args: dict[str, Any],
+        state: ContextState,
+    ) -> ToolResult:
+        tool_spec = tool.spec()
+        if tool_spec.safety in {ToolSafety.WRITE, ToolSafety.EXECUTE}:
+            is_allowed = await self._is_high_risk_allowed(tool_spec, args)
+            if not is_allowed:
+                err = f"Tool execution requires confirmation: {tool_name}"
+                state.errors.append(
+                    ErrorDetail(file="", message=err, category="security")
+                )
+                result = ToolResult(ok=False, error=err)
+                self._record_event(
+                    EventType.ERROR,
+                    "execute_tools",
+                    {"name": tool_name, "category": "security"},
+                )
+                self._record_event(
+                    EventType.TOOL_CALL,
+                    "execute_tools",
+                    {"name": tool_name, "ok": result.ok},
+                )
+                return result
+
+        result = await self._execute_one_tool(
+            tool_name=tool_name,
+            tool=tool,
+            args=args,
+            state=state,
+        )
+        self._record_event(
+            EventType.TOOL_CALL,
+            "execute_tools",
+            {"name": tool_name, "ok": result.ok},
+        )
+        return result
+
+    async def _execute_one_tool(
+        self,
+        tool_name: str,
+        tool: BaseTool,
+        args: dict[str, Any],
+        state: ContextState,
+    ) -> ToolResult:
+        try:
+            data = await tool.execute(**args)
+            return ToolResult(ok=True, data=data)
+        except ToolError as exc:
+            err = f"Tool execution failed for {tool_name}: {exc}"
+            state.errors.append(
+                ErrorDetail(file=exc.path, message=err, category="runtime")
+            )
+            return ToolResult(ok=False, error=err)
+        except Exception as exc:  # noqa: BLE001
+            err = f"Tool execution failed for {tool_name}: {exc}"
+            state.errors.append(
+                ErrorDetail(file="", message=err, category="runtime")
+            )
+            return ToolResult(ok=False, error=err)
 
     def format_result(
         self,
