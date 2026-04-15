@@ -14,6 +14,12 @@ import httpx
 from dotenv import dotenv_values, load_dotenv
 
 BUG_HINT_PATTERN = re.compile(r"(fix|bug|vulnerability|security|regression)", re.IGNORECASE)
+# Extra hints when mining from a curated repo list (slightly broader than global search).
+CURATED_HINT_PATTERN = re.compile(
+    r"(patch|hotfix|crash|hang|leak|exception|deadlock|race|overflow|segfault|timeout|"
+    r"correctness|mishandl|compatibilit|compat\b|broken|fail(ure|ing)?\b|error\b)",
+    re.IGNORECASE,
+)
 FEATURE_TITLE_PATTERN = re.compile(
     r"(\[feat\]|^feat[:(]|^feature\b|^refactor[:(]|^chore[:(]|^docs[:(]|^ci[:(]|^style[:(]|^perf[:(])",
     re.IGNORECASE,
@@ -79,6 +85,7 @@ class GithubCrawlerClient:
         *,
         timeout: float = 30.0,
         base_url: str = "https://api.github.com",
+        max_concurrent_requests: int = 5,
     ) -> None:
         resolved = _resolve_github_token(token)
         common_headers: dict[str, str] = {
@@ -103,6 +110,7 @@ class GithubCrawlerClient:
             timeout=timeout,
             follow_redirects=True,
         )
+        self._request_semaphore = asyncio.Semaphore(max(1, max_concurrent_requests))
 
     async def close(self) -> None:
         """Close underlying HTTP resources."""
@@ -155,15 +163,16 @@ class GithubCrawlerClient:
         max_rate_retries = 8
         rate_attempt = 0
         while True:
-            resp = await self._client.get(path, params=params, headers=send_headers)
-            if resp.status_code == 401 and self._auth_token:
-                resp = await self._client.get(
-                    path,
-                    params=params,
-                    headers={**merged, "Authorization": f"token {self._auth_token}"},
-                )
-            if resp.status_code == 401:
-                resp = await self._anon_client.get(path, params=params, headers=send_headers)
+            async with self._request_semaphore:
+                resp = await self._client.get(path, params=params, headers=send_headers)
+                if resp.status_code == 401 and self._auth_token:
+                    resp = await self._client.get(
+                        path,
+                        params=params,
+                        headers={**merged, "Authorization": f"token {self._auth_token}"},
+                    )
+                if resp.status_code == 401:
+                    resp = await self._anon_client.get(path, params=params, headers=send_headers)
             if self._is_rate_limit_response(resp):
                 if rate_attempt >= max_rate_retries:
                     return resp
@@ -300,27 +309,40 @@ class GithubCrawlerClient:
         max_prs_per_repo: int = 5,
         min_changed_lines: int = 10,
         max_changed_lines: int = 500,
+        curated_repos: list[str] | None = None,
     ) -> list[PullRequestCandidate]:
         """Automatically discover merged bug-fix PR candidates."""
-        repos = await self.search_repositories(per_page=max_repos)
+        curated_mode = bool(curated_repos)
+        if curated_repos:
+            repos = [{"full_name": name} for name in curated_repos if name.strip()]
+        else:
+            repos = await self.search_repositories(per_page=max_repos)
         candidates: list[PullRequestCandidate] = []
+        # Curated: scan deeper into closed PR history (GitHub caps per_page at 100).
+        pr_scan_depth = max_prs_per_repo * 3
+        if curated_mode:
+            pr_scan_depth = max(max_prs_per_repo * 8, 40)
+        pr_scan_depth = min(100, pr_scan_depth)
+        effective_min_lines = min_changed_lines
+        if curated_mode:
+            effective_min_lines = min(min_changed_lines, 5)
         for repo in repos[:max_repos]:
             full_name = str(repo.get("full_name", "")).strip()
             if not full_name:
                 continue
-            prs = await self.list_closed_pull_requests(full_name, per_page=max_prs_per_repo * 3)
+            prs = await self.list_closed_pull_requests(full_name, per_page=pr_scan_depth)
             picked = 0
             for pr in prs:
                 if picked >= max_prs_per_repo:
                     break
-                if not self._is_candidate(pr):
+                if not self._is_candidate(pr, curated=curated_mode):
                     continue
                 # List pulls response often omits additions/deletions; only enforce size when present.
                 if "additions" in pr or "deletions" in pr:
                     changed = int(pr.get("additions", 0) or 0) + int(
                         pr.get("deletions", 0) or 0
                     )
-                    if changed < min_changed_lines or changed > max_changed_lines:
+                    if changed < effective_min_lines or changed > max_changed_lines:
                         continue
                 pr_number = int(pr.get("number", 0) or 0)
                 if pr_number <= 0:
@@ -345,7 +367,7 @@ class GithubCrawlerClient:
         return candidates
 
     @staticmethod
-    def _is_candidate(pr_payload: dict[str, Any]) -> bool:
+    def _is_candidate(pr_payload: dict[str, Any], *, curated: bool = False) -> bool:
         merged_at = str(pr_payload.get("merged_at", "") or "").strip()
         if not merged_at:
             return False
@@ -357,6 +379,8 @@ class GithubCrawlerClient:
             return False
         if BUG_HINT_PATTERN.search(title):
             return True
+        if curated and CURATED_HINT_PATTERN.search(title):
+            return True
 
         labels = pr_payload.get("labels", [])
         if not isinstance(labels, list):
@@ -366,6 +390,8 @@ class GithubCrawlerClient:
             if isinstance(label, dict):
                 name = str(label.get("name", "") or "")
             if BUG_HINT_PATTERN.search(name):
+                return True
+            if curated and CURATED_HINT_PATTERN.search(name):
                 return True
         return False
 

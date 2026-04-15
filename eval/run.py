@@ -12,6 +12,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_REPO_ROOT / ".env", override=True)
 
 import asyncio
+import json
 
 import click
 
@@ -32,18 +33,46 @@ def main() -> None:
 @click.option("--max-repos", default=10, type=int, help="Max discovered repositories.")
 @click.option("--max-prs-per-repo", default=5, type=int, help="Max PRs per repository.")
 @click.option(
+    "--curated/--no-curated",
+    default=True,
+    help="Use curated repository list instead of GitHub search.",
+)
+@click.option(
+    "--curated-file",
+    default=(Path("eval") / "crawler" / "curated_repos.json").as_posix(),
+    type=click.Path(exists=False),
+    help="Path to curated repository JSON file.",
+)
+@click.option(
+    "--concurrency",
+    default=3,
+    type=int,
+    help="Max concurrent PR processing tasks.",
+)
+@click.option(
     "--min-expected-issues",
     default=0,
     type=int,
     help="Minimum expected issue count required to keep a fixture.",
 )
-def crawl_cmd(suite: str, max_repos: int, max_prs_per_repo: int, min_expected_issues: int) -> None:
+def crawl_cmd(
+    suite: str,
+    max_repos: int,
+    max_prs_per_repo: int,
+    curated: bool,
+    curated_file: str,
+    concurrency: int,
+    min_expected_issues: int,
+) -> None:
     """Discover PRs and generate fixtures."""
+    curated_repos = _load_curated_repos(Path(curated_file), enabled=curated)
     asyncio.run(
         _crawl(
             suite=suite,
             max_repos=max_repos,
             max_prs_per_repo=max_prs_per_repo,
+            curated_repos=curated_repos,
+            concurrency=concurrency,
             min_expected_issues=min_expected_issues,
         )
     )
@@ -74,6 +103,8 @@ async def _crawl(
     suite: str,
     max_repos: int,
     max_prs_per_repo: int,
+    curated_repos: list[str] | None,
+    concurrency: int,
     min_expected_issues: int,
 ) -> None:
     generator = FixtureGenerator(min_expected_issues=min_expected_issues)
@@ -82,12 +113,43 @@ async def _crawl(
             suite=suite,
             max_repos=max_repos,
             max_prs_per_repo=max_prs_per_repo,
+            curated_repos=curated_repos,
+            concurrency=concurrency,
         )
     finally:
         await generator.close()
     click.echo(f"Generated {len(written)} fixtures.")
     for path in written:
         click.echo(f"- {path.as_posix()}")
+
+
+def _load_curated_repos(path: Path, *, enabled: bool) -> list[str] | None:
+    if not enabled:
+        return None
+    if not path.exists():
+        raise click.ClickException(f"Curated repository file not found: {path.as_posix()}")
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise click.ClickException("Curated repository file must contain a JSON object.")
+
+    repos = raw.get("repos")
+    if not isinstance(repos, list):
+        raise click.ClickException("Curated repository file must include a 'repos' list.")
+
+    names: list[str] = []
+    for item in repos:
+        if isinstance(item, dict):
+            full_name = str(item.get("full_name", "")).strip()
+            if full_name:
+                names.append(full_name)
+            continue
+        if isinstance(item, str) and item.strip():
+            names.append(item.strip())
+
+    if not names:
+        raise click.ClickException("Curated repository list is empty.")
+    return names
 
 
 async def _evaluate(suite: str, include_unreviewed: bool = False) -> None:
