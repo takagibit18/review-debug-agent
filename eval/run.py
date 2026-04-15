@@ -2,17 +2,9 @@
 
 from __future__ import annotations
 
-# Load repo-root .env before any imports that read os.environ (e.g. GitHub token).
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-# Prefer values from repo .env over pre-set OS env (e.g. empty GITHUB_TOKEN in user profile).
-load_dotenv(_REPO_ROOT / ".env", override=True)
-
 import asyncio
 import json
+from pathlib import Path
 
 import click
 
