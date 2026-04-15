@@ -16,14 +16,18 @@ from src.analyzer.schemas import DebugRequest, ReviewRequest
 from src.models.schemas import Message
 
 SYSTEM_PROMPT_REVIEW = (
-    "You are a senior code reviewer. Produce structured, actionable findings."
+    "You are a senior code reviewer. Analyze the provided diff/files and return structured, "
+    "actionable findings. The final answer must be submitted via the submit_review tool. "
+    "Use only these severity values: critical, warning, info, style. "
+    "Each issue must include severity, location, evidence, and suggestion."
 )
 SYSTEM_PROMPT_DEBUG = (
     "You are a senior debugging assistant. Produce structured hypotheses and steps."
 )
 
 USER_PREFIX_REVIEW = (
-    "Return tool calls if needed, then submit_review with final JSON.\n"
+    "Review the payload and call submit_review exactly once with final JSON. "
+    "Do not return plain-text-only final answers.\n"
 )
 USER_PREFIX_DEBUG = (
     "Return tool calls if needed, then submit_debug with final JSON.\n"

@@ -1,0 +1,38 @@
+{
+  "id": "golden_synthetic_divzero_pr1",
+  "type": "review",
+  "source": {
+    "repo_full_name": "synthetic/golden-test",
+    "pr_number": 1,
+    "url": "",
+    "merge_commit_sha": "",
+    "title": "synthetic: add div helper"
+  },
+  "input": {
+    "diff_text": "diff --git a/src/calc.py b/src/calc.py\nnew file mode 100644\n--- /dev/null\n+++ b/src/calc.py\n@@ -0,0 +1,4 @@\n+def div(a, b):\n+    return a / b\n+\n",
+    "files": {
+      "src/calc.py": "def div(a, b):\n    return a / b\n"
+    },
+    "error_log": null
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "calc\\.py",
+        "category": "logic",
+        "description": "Division by zero when b is 0; guard or validate input."
+      }
+    ],
+    "min_issues": 0,
+    "max_issues": 3,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": ["synthetic", "manual"],
+    "difficulty": "easy",
+    "annotated_by": "manual",
+    "reviewed": true
+  }
+}

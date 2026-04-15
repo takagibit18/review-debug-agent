@@ -5,6 +5,7 @@ them as a validated Pydantic model for use across all modules.
 """
 
 import os
+from pathlib import Path
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -17,7 +18,8 @@ from pydantic import (
     field_validator,
 )
 
-load_dotenv()
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_REPO_ROOT / ".env", override=True)
 
 _base_url_adapter = TypeAdapter(AnyHttpUrl)
 PermissionMode = Literal["default", "plan"]

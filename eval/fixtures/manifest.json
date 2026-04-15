@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-04-15T08:19:07.239884+00:00",
+  "entries": [
+    {
+      "fixture_id": "golden_synthetic_divzero_pr1",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "synthetic/golden-test",
+      "pr_number": 1,
+      "path": "eval/fixtures/golden_synthetic_divzero_pr1.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_synthetic_secret_pr1",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "synthetic/golden-test",
+      "pr_number": 2,
+      "path": "eval/fixtures/golden_synthetic_secret_pr1.json",
+      "reviewed": true
+    }
+  ]
+}

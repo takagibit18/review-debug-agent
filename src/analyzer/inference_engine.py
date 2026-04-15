@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -17,6 +18,8 @@ from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.schemas import Message, ModelConfig
 from src.tools.base import ToolResult, ToolSpec
+
+logger = logging.getLogger(__name__)
 
 
 class InferenceEngine:
@@ -97,9 +100,11 @@ class InferenceEngine:
                 payload = {}
 
             if name == "submit_review":
+                normalized_payload = self._normalize_review_payload(payload)
                 try:
-                    draft_review = ReviewReport.model_validate(payload)
-                except ValidationError:
+                    draft_review = ReviewReport.model_validate(normalized_payload)
+                except ValidationError as exc:
+                    logger.warning("Invalid submit_review payload ignored: %s", exc)
                     continue
                 continue
             if name == "submit_debug":
@@ -132,12 +137,14 @@ class InferenceEngine:
         self, payload: dict[str, Any], request: ReviewRequest | DebugRequest
     ) -> AnalysisPlan | None:
         if isinstance(request, ReviewRequest):
+            normalized_payload = self._normalize_review_payload(payload)
             try:
-                report = ReviewReport.model_validate(payload)
+                report = ReviewReport.model_validate(normalized_payload)
                 return AnalysisPlan(
                     needs_tools=False, tool_calls=[], draft_review=report
                 )
-            except ValidationError:
+            except ValidationError as exc:
+                logger.warning("Invalid fallback review JSON ignored: %s", exc)
                 return None
         try:
             draft_debug = DebugResponse.model_validate(
@@ -163,6 +170,47 @@ class InferenceEngine:
             return None
         except Exception:  # noqa: BLE001
             return None
+
+    @staticmethod
+    def _normalize_review_payload(payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        normalized = dict(payload)
+        issues = normalized.get("issues")
+        if not isinstance(issues, list):
+            return normalized
+        normalized_issues: list[Any] = []
+        for issue in issues:
+            if not isinstance(issue, dict):
+                normalized_issues.append(issue)
+                continue
+            issue_dict = dict(issue)
+            raw_severity = str(issue_dict.get("severity", "")).strip().lower()
+            mapped = InferenceEngine._normalize_severity(raw_severity)
+            if mapped:
+                issue_dict["severity"] = mapped
+            normalized_issues.append(issue_dict)
+        normalized["issues"] = normalized_issues
+        return normalized
+
+    @staticmethod
+    def _normalize_severity(value: str) -> str:
+        mapping = {
+            "critical": "critical",
+            "high": "critical",
+            "major": "critical",
+            "warning": "warning",
+            "warn": "warning",
+            "medium": "warning",
+            "info": "info",
+            "informational": "info",
+            "low": "info",
+            "minor": "info",
+            "style": "style",
+            "nit": "style",
+            "nits": "style",
+        }
+        return mapping.get(value, value)
 
     @staticmethod
     def _build_tool_feedback_messages(tool_feedback: list[dict[str, Any]]) -> list[Message]:

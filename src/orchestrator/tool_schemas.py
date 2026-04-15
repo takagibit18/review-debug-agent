@@ -41,7 +41,10 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "severity": {"type": "string"},
+                                    "severity": {
+                                        "type": "string",
+                                        "enum": ["critical", "warning", "info", "style"],
+                                    },
                                     "location": {"type": "string"},
                                     "evidence": {"type": "string"},
                                     "suggestion": {"type": "string"},

@@ -2,14 +2,28 @@
 
 ## 概述
 
-本目录存放评测集（Golden Set）和评测脚本，用于量化 Agent 的分析能力并支持回归测试。
+本目录包含两类能力：
+
+- 黄金集自建 pipeline（GitHub 自动发现仓库 + PR 解析 + LLM 辅助标注）
+- 评测执行模块（对 Agent 输出计算格式合法率、命中率、误报率、人工可接受度模板、耗时/Token）
 
 ## 目录结构
 
 ```
 eval/
+├── crawler/
+│   ├── github_client.py
+│   ├── pr_parser.py
+│   ├── annotator.py
+│   └── fixture_generator.py
+├── schemas.py
+├── runner.py
+├── metrics.py
+├── report.py
+├── run.py
 ├── fixtures/          # 评测用例（固定输入 + 期望输出元数据）
-│   └── .gitkeep
+│   ├── manifest.json
+│   └── review_checklist.md
 ├── outputs/           # 评测产出物（.gitignore 已忽略）
 └── README.md
 ```
@@ -18,9 +32,9 @@ eval/
 
 ### 主路径：自建黄金集（Golden Set）
 
-- **素材来源**：小型开源仓库的真实 commit 快照
-- **缺陷来源**：人为注入 bug 或保留已知 issue / 失败用例
-- **固定输入**：每条任务包含 diff / 相关文件片段 / 错误日志，存入 `fixtures/`
+- **素材来源**：自动发现小型活跃开源仓库，并筛选已合并 bugfix PR
+- **缺陷来源**：PR 语义（fix/bug/security 等）+ LLM 辅助标注 expected issues
+- **固定输入**：每条任务包含 diff / 相关文件片段 / 错误日志（可选），存入 `fixtures/`
 - **期望行为**：
   - 检出类：输出命中目标问题类别
   - 结构类：结构化输出通过 JSON Schema 校验
@@ -43,6 +57,19 @@ eval/
 ## 运行
 
 ```bash
-# TODO: 评测脚本待实现
-# python -m eval.run --suite golden
+# 1) 自动抓取并生成 fixture（需要 GITHUB_TOKEN）
+python -m eval.run crawl --max-repos 5 --max-prs-per-repo 3
+
+# 2) 跑评测（调用 AgentOrchestrator）
+python -m eval.run eval --suite golden
+
+# 3) 基于已有报告重新渲染终端输出
+python -m eval.run report --input eval/outputs/<timestamp>_report.json
 ```
+
+## 产物说明
+
+- `eval/fixtures/manifest.json`：fixture 索引
+- `eval/fixtures/review_checklist.md`：人工审核清单（用于修正 LLM 草稿）
+- `eval/outputs/*_report.json`：机器可读评测报告
+- `eval/outputs/*_human_review.md`：人工可接受度打分模板（0-5）
