@@ -95,7 +95,7 @@
 
 ### 2.3 上下文窗口管理
 
-**选定方案：MVP 优先级截断；后续迭代升级为混合策略**
+**选定方案：已升级为混合策略（优先级截断 + 溢出块 LLM 摘要）**
 
 **实现位置（与代码对齐）**
 
@@ -112,10 +112,11 @@ MVP 阶段（设计目标，与实现对齐）：
 - 截断粒度：以文件 / diff hunk 为单位，不打断单个 hunk
 - token 估算：`tiktoken`（`cl100k_base`）；不可用时回退 `len(text)//4`
 
-后续演进方向（非本期）：
+已落地要点：
 
-- 在截断层之上叠加 LLM 摘要压缩（对超长文件/日志先做 summarize 再喂入分析）
-- 即“先截断、超出阈值再启用摘要”的混合策略
+- 第一层：保持 `ContextBuilder.truncate_context` 的优先级贪心截断（零额外 API 成本）
+- 第二层：当预算溢出导致块被丢弃时，调用 `ContextCompressor` 对溢出块做摘要，再次装入预算
+- 摘要层默认开启（`CONTEXT_SUMMARY_ENABLED=true`），每块输出上限由 `SUMMARY_MAX_TOKENS_PER_PART` 控制
 
 ### 2.4 Agent 循环终止策略
 

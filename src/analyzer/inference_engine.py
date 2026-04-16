@@ -12,7 +12,12 @@ from pydantic import ValidationError
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_state import ContextState
 from src.analyzer.output_formatter import ReviewReport
-from src.analyzer.prompts import build_debug_messages, build_review_messages
+from src.analyzer.prompts import (
+    build_debug_messages,
+    build_debug_messages_async,
+    build_review_messages,
+    build_review_messages_async,
+)
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest
 from src.config import get_settings
 from src.models.client import ModelClient
@@ -48,23 +53,51 @@ class InferenceEngine:
         )
         cb = ContextBuilder()
         if isinstance(request, ReviewRequest):
-            messages = build_review_messages(
-                request,
-                state,
-                diff_text,
-                file_contents,
-                prompt_token_budget=budget,
-                context_builder=cb,
-            )
+            if get_settings().context_summary_enabled:
+                messages = await build_review_messages_async(
+                    request,
+                    state,
+                    diff_text,
+                    file_contents,
+                    prompt_token_budget=budget,
+                    context_builder=cb,
+                    compressor_model_client=self._model_client,
+                    summary_enabled=True,
+                    summary_max_tokens_per_part=get_settings().summary_max_tokens_per_part,
+                    summary_model_name=request.model_name or get_settings().model_name,
+                )
+            else:
+                messages = build_review_messages(
+                    request,
+                    state,
+                    diff_text,
+                    file_contents,
+                    prompt_token_budget=budget,
+                    context_builder=cb,
+                )
         else:
-            messages = build_debug_messages(
-                request,
-                state,
-                error_log,
-                file_contents,
-                prompt_token_budget=budget,
-                context_builder=cb,
-            )
+            if get_settings().context_summary_enabled:
+                messages = await build_debug_messages_async(
+                    request,
+                    state,
+                    error_log,
+                    file_contents,
+                    prompt_token_budget=budget,
+                    context_builder=cb,
+                    compressor_model_client=self._model_client,
+                    summary_enabled=True,
+                    summary_max_tokens_per_part=get_settings().summary_max_tokens_per_part,
+                    summary_model_name=request.model_name or get_settings().model_name,
+                )
+            else:
+                messages = build_debug_messages(
+                    request,
+                    state,
+                    error_log,
+                    file_contents,
+                    prompt_token_budget=budget,
+                    context_builder=cb,
+                )
 
         if tool_feedback:
             messages.extend(self._build_tool_feedback_messages(tool_feedback))

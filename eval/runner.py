@@ -44,22 +44,25 @@ async def run_single(fixture: Fixture) -> EvalResult:
             repo_root = Path(tmp_dir)
             _write_fixture_files(repo_root, fixture.input.files)
             orchestrator = AgentOrchestrator(permission_mode="default")
+            sandbox_context = _build_sandbox_context(fixture.input.files, repo_root)
 
             start = perf_counter()
             if fixture.type == "review":
+                original_diff = fixture.input.diff_text or ""
                 request = ReviewRequest(
                     repo_path=str(repo_root),
-                    diff_mode=bool(fixture.input.diff_text),
-                    diff_text=fixture.input.diff_text or None,
+                    diff_mode=bool(original_diff),
+                    diff_text=_prepend_context(original_diff, sandbox_context),
                     verbose=False,
                 )
                 response = await orchestrator.run_review(request)
                 parsed = ReviewResponse.model_validate(response.model_dump())
                 actual_issues = parsed.report.issues
             else:
+                original_error_log = fixture.input.error_log or ""
                 request = DebugRequest(
                     repo_path=str(repo_root),
-                    error_log_text=fixture.input.error_log,
+                    error_log_text=_prepend_context(original_error_log, sandbox_context),
                     verbose=False,
                 )
                 response = await orchestrator.run_debug(request)
@@ -109,6 +112,32 @@ def _write_fixture_files(repo_root: Path, files: dict[str, str]) -> None:
         target = repo_root / safe_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+
+
+def _build_sandbox_context(files: dict[str, str], repo_root: Path) -> str:
+    lines = [
+        "[SANDBOX CONTEXT]",
+        "This run uses a sparse fixture sandbox, not a full repository clone.",
+        f"Workspace root (use as base for all file paths): {repo_root}",
+        "Only these files are available:",
+    ]
+    for rel_path in sorted(files):
+        safe_rel = rel_path.replace("\\", "/").lstrip("/")
+        lines.append(f"- {safe_rel}")
+    lines.extend(
+        [
+            "Before deep search, prefer list_dir to verify a directory exists.",
+            "[END SANDBOX CONTEXT]",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _prepend_context(original_text: str, sandbox_context: str) -> str:
+    body = original_text.strip()
+    if body:
+        return f"{sandbox_context}\n\n{body}"
+    return sandbox_context
 
 
 def _read_total_tokens(repo_root: Path, run_id: str) -> int:

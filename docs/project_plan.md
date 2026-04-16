@@ -2,6 +2,8 @@
 
 > 本文档由根目录 `code_review_debug_agent_plan.md` 迁移至 `docs/`，用于统一开发指导文档入口。
 > 面向：大三 CS，求职 Agent 开发 / LLM 应用工程师；2 人远程协作并强化工程化能力。
+>
+> **MVP+ 增量**（相对当前 MVP 的优化清单与评测辅助指标）：见 [mvp_plus_roadmap.md](mvp_plus_roadmap.md)。
 
 ---
 
@@ -141,4 +143,5 @@
 
 ## 7. 下一步
 
-先对齐 `docs/shared_contracts.md` 中的接口协议，再拆解 Issue 与 Milestone，按周迭代落地。
+- 对齐 `docs/shared_contracts.md` 中的接口协议，再拆解 Issue 与 Milestone，按周迭代落地。
+- MVP+ 阶段增量（评测辅助指标、Analyzer/编排补强等）集中记录在 [mvp_plus_roadmap.md](mvp_plus_roadmap.md)，与本文 §2 路线表对照使用。

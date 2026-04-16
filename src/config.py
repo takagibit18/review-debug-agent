@@ -62,6 +62,18 @@ class Settings(BaseModel):
         ge=1,
         description="Max estimated tokens for truncatable context parts (meta, diff, files, structure)",
     )
+    context_summary_enabled: bool = Field(
+        default_factory=lambda: os.getenv(
+            "CONTEXT_SUMMARY_ENABLED", "true"
+        ).strip().lower()
+        in {"1", "true", "yes"},
+        description="Enable second-layer LLM summarization for overflowed context parts",
+    )
+    summary_max_tokens_per_part: int = Field(
+        default_factory=lambda: int(os.getenv("SUMMARY_MAX_TOKENS_PER_PART", "1000")),
+        ge=100,
+        description="Maximum completion tokens for one summarized context part",
+    )
     event_log_dir: str = Field(
         default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
         min_length=1,
