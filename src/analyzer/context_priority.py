@@ -21,6 +21,8 @@ TIER_DIFF = 30_000
 TIER_FILES = 40_000
 TIER_STRUCTURE = 50_000
 
+SUMMARY_LABEL_PREFIX = "[summarized]"
+
 
 def _split_section_at_hunks(section: str) -> list[str]:
     """Split one file's diff section at ``@@`` boundaries (after the first hunk)."""
@@ -175,6 +177,33 @@ def _selected_labels(selected: list[ContextPart]) -> set[str]:
     return {p.label for p in selected}
 
 
+def _base_label(label: str) -> str:
+    if label.startswith(SUMMARY_LABEL_PREFIX):
+        return label[len(SUMMARY_LABEL_PREFIX) :]
+    return label
+
+
+def _is_summarized_label(label: str) -> bool:
+    return label.startswith(SUMMARY_LABEL_PREFIX)
+
+
+def _contains_label_or_summary(labels: set[str], label: str) -> bool:
+    return label in labels or f"{SUMMARY_LABEL_PREFIX}{label}" in labels
+
+
+def _selected_part_for_label(
+    selected: list[ContextPart], target_label: str
+) -> ContextPart | None:
+    for part in selected:
+        if part.label == target_label:
+            return part
+    summarized_label = f"{SUMMARY_LABEL_PREFIX}{target_label}"
+    for part in selected:
+        if part.label == summarized_label:
+            return part
+    return None
+
+
 def assemble_review_payload(
     request: ReviewRequest,
     context: ContextState,
@@ -184,39 +213,44 @@ def assemble_review_payload(
     """Merge selected parts into the user JSON payload and set ``truncated`` flags."""
     sel = _selected_labels(selected)
     all_l = _selected_labels(all_parts)
+    summarized_bases = sorted(
+        _base_label(p.label) for p in selected if _is_summarized_label(p.label)
+    )
 
     diff_hunk_labels = sorted(
         (p.label for p in all_parts if p.label.startswith("diff_hunk_")),
         key=lambda s: int(s.split("_")[-1]),
     )
-    diff_selected = [
-        p.content
-        for p in sorted(
-            (x for x in selected if x.label.startswith("diff_hunk_")),
-            key=lambda x: int(x.label.split("_")[-1]),
-        )
-    ]
+    diff_selected: list[str] = []
+    for label in diff_hunk_labels:
+        part = _selected_part_for_label(selected, label)
+        if part is not None:
+            diff_selected.append(part.content)
     diff_loaded_out = "".join(diff_selected)
 
     files_out: dict[str, str] = {}
     for p in all_parts:
         if p.label.startswith("file:"):
             path = p.label[5:]
-            if p.label in sel:
-                files_out[path] = p.content
+            selected_part = _selected_part_for_label(selected, p.label)
+            if selected_part is not None:
+                files_out[path] = selected_part.content
 
     truncated: dict[str, Any] = {
-        "any": sel != all_l,
+        "any": any(not _contains_label_or_summary(sel, label) for label in all_l),
         "diff_hunks": any(
-            h in all_l and h not in sel for h in diff_hunk_labels
+            h in all_l and not _contains_label_or_summary(sel, h)
+            for h in diff_hunk_labels
         ),
         "files": [
             p.label[5:]
             for p in all_parts
-            if p.label.startswith("file:") and p.label not in sel
+            if p.label.startswith("file:")
+            and not _contains_label_or_summary(sel, p.label)
         ],
         "structure": any(p.label == "structure" for p in all_parts)
-        and "structure" not in sel,
+        and not _contains_label_or_summary(sel, "structure"),
+        "summarized": summarized_bases,
     }
     raw_diff_text = request.diff_text
     if raw_diff_text and (truncated["diff_hunks"] or diff_loaded_out != raw_diff_text):
@@ -242,31 +276,40 @@ def assemble_debug_payload(
     """Merge selected parts into the debug user JSON payload."""
     sel = _selected_labels(selected)
     all_l = _selected_labels(all_parts)
+    summarized_bases = sorted(
+        _base_label(p.label) for p in selected if _is_summarized_label(p.label)
+    )
 
     error_out = ""
     for p in all_parts:
         if p.label == "error_log":
-            if "error_log" in sel:
-                error_out = p.content
+            selected_part = _selected_part_for_label(selected, "error_log")
+            if selected_part is not None:
+                error_out = selected_part.content
             break
 
     files_out: dict[str, str] = {}
     for p in all_parts:
         if p.label.startswith("file:"):
             path = p.label[5:]
-            if p.label in sel:
-                files_out[path] = p.content
+            selected_part = _selected_part_for_label(selected, p.label)
+            if selected_part is not None:
+                files_out[path] = selected_part.content
 
     truncated = {
-        "any": sel != all_l,
-        "error_log": ("error_log" in all_l and "error_log" not in sel),
+        "any": any(not _contains_label_or_summary(sel, label) for label in all_l),
+        "error_log": (
+            "error_log" in all_l and not _contains_label_or_summary(sel, "error_log")
+        ),
         "files": [
             p.label[5:]
             for p in all_parts
-            if p.label.startswith("file:") and p.label not in sel
+            if p.label.startswith("file:")
+            and not _contains_label_or_summary(sel, p.label)
         ],
         "structure": any(p.label == "structure" for p in all_parts)
-        and "structure" not in sel,
+        and not _contains_label_or_summary(sel, "structure"),
+        "summarized": summarized_bases,
     }
     raw_error_log_text = request.error_log_text
     if raw_error_log_text and (truncated["error_log"] or error_out != raw_error_log_text):

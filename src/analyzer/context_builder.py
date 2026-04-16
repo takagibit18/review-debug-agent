@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from src.analyzer.context_state import ContextState, DecisionStep
 from src.analyzer.schemas import DebugRequest, ReviewRequest
+
+if TYPE_CHECKING:
+    from src.analyzer.context_compressor import ContextCompressor
 
 _tiktoken: Any
 try:
@@ -112,3 +115,29 @@ class ContextBuilder:
             )
             total += count
         return selected
+
+    async def truncate_with_summary(
+        self,
+        parts: list[ContextPart],
+        budget: int,
+        *,
+        compressor: ContextCompressor | None = None,
+        model_name: str = "",
+        max_summary_tokens: int = 1000,
+    ) -> tuple[list[ContextPart], bool]:
+        """Two-layer truncation: greedy fit first, then summarize overflowed parts."""
+        selected = self.truncate_context(parts, budget)
+        selected_labels = {item.label for item in selected}
+        discarded = [item for item in parts if item.label not in selected_labels]
+        if not discarded or compressor is None:
+            return selected, False
+
+        summarized = await compressor.summarize_parts(
+            discarded,
+            model_name=model_name,
+            max_summary_tokens=max_summary_tokens,
+        )
+        if not summarized:
+            return selected, False
+        refit = self.truncate_context([*selected, *summarized], budget)
+        return refit, True

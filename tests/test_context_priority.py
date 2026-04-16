@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 
 from src.analyzer.context_builder import ContextBuilder, ContextPart
 from src.analyzer.context_priority import (
@@ -210,3 +211,99 @@ def test_review_payload_json_roundtrip() -> None:
     all_parts = build_review_context_parts(req, ctx, diff_loaded="", file_contents={})
     payload = assemble_review_payload(req, ctx, all_parts, all_parts)
     json.dumps(payload)
+
+
+class _FakeCompressor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def summarize_parts(
+        self,
+        parts: list[ContextPart],
+        *,
+        model_name: str,
+        max_summary_tokens: int = 1000,  # noqa: ARG002
+    ) -> list[ContextPart]:
+        self.calls += 1
+        out: list[ContextPart] = []
+        for part in parts:
+            out.append(
+                ContextPart(
+                    priority=part.priority,
+                    label=f"[summarized]{part.label}",
+                    content=f"[SUMMARIZED]\n{part.label}",
+                )
+            )
+        return out
+
+
+def test_truncate_with_summary_on_overflow() -> None:
+    cb = ContextBuilder()
+    compressor = _FakeCompressor()
+    parts = [
+        ContextPart(priority=TIER_META, label="meta", content="{}"),
+        ContextPart(priority=TIER_FILES, label="file:huge.py", content="x" * 20_000),
+    ]
+
+    selected, used_summary = asyncio.run(
+        cb.truncate_with_summary(
+            parts,
+            budget=100,
+            compressor=compressor,  # type: ignore[arg-type]
+            model_name="gpt-4o",
+        )
+    )
+
+    labels = [p.label for p in selected]
+    assert used_summary is True
+    assert compressor.calls == 1
+    assert "meta" in labels
+    assert "[summarized]file:huge.py" in labels
+
+
+def test_truncate_with_summary_no_overflow_no_summary_call() -> None:
+    cb = ContextBuilder()
+    compressor = _FakeCompressor()
+    parts = [
+        ContextPart(priority=TIER_META, label="meta", content="{}"),
+        ContextPart(priority=TIER_FILES, label="file:small.py", content="ok"),
+    ]
+
+    selected, used_summary = asyncio.run(
+        cb.truncate_with_summary(
+            parts,
+            budget=10_000,
+            compressor=compressor,  # type: ignore[arg-type]
+            model_name="gpt-4o",
+        )
+    )
+
+    labels = [p.label for p in selected]
+    assert used_summary is False
+    assert compressor.calls == 0
+    assert labels == ["meta", "file:small.py"]
+
+
+def test_assemble_review_payload_marks_summarized_parts() -> None:
+    req = ReviewRequest(repo_path="/r")
+    ctx = ContextState()
+    all_parts = build_review_context_parts(
+        req,
+        ctx,
+        diff_loaded="diff --git a/x b/x\n@@\n+a\n",
+        file_contents={"/a": "A"},
+    )
+    selected = [
+        p for p in all_parts if p.label == "meta"
+    ] + [
+        ContextPart(
+            priority=TIER_DIFF,
+            label="[summarized]diff_hunk_0",
+            content="[SUMMARIZED]\ndiff info",
+        )
+    ]
+    payload = assemble_review_payload(req, ctx, all_parts, selected)
+    assert payload["truncated"]["any"] is True
+    assert payload["truncated"]["diff_hunks"] is False
+    assert payload["truncated"]["summarized"] == ["diff_hunk_0"]
+    assert payload["diff_loaded"].startswith("[SUMMARIZED]")
