@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from statistics import mean
+from statistics import mean, pstdev
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -97,12 +97,33 @@ class EvalResult(BaseModel):
     raw_output: dict[str, Any] = Field(default_factory=dict)
 
 
+class SampledFixtureResult(BaseModel):
+    """K-sample evaluation result for one fixture."""
+
+    fixture_id: str
+    fixture_type: FixtureType
+    samples: int = Field(default=1, ge=1)
+    runs: list[EvalResult] = Field(default_factory=list)
+    pass_at_k_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    mean_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    hit_rate_stddev: float = Field(default=0.0, ge=0.0)
+    mean_false_positive_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    worst_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    best_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    schema_valid_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class MetricSummary(BaseModel):
     """Aggregated metrics for a suite."""
 
     schema_validity_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    pass_at_k_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    mean_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    hit_rate_stddev: float = Field(default=0.0, ge=0.0)
     false_positive_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    mean_false_positive_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    sampling_k: int = Field(default=1, ge=1)
     avg_latency_seconds: float = Field(default=0.0, ge=0.0)
     p50_latency_seconds: float = Field(default=0.0, ge=0.0)
     p95_latency_seconds: float = Field(default=0.0, ge=0.0)
@@ -140,13 +161,51 @@ class MetricSummary(BaseModel):
         return cls(
             schema_validity_rate=valid_count / len(results),
             hit_rate=(matched_total / expected_total) if expected_total else 0.0,
+            pass_at_k_hit_rate=(matched_total / expected_total) if expected_total else 0.0,
+            mean_hit_rate=(matched_total / expected_total) if expected_total else 0.0,
+            hit_rate_stddev=0.0,
             false_positive_rate=(
                 false_positive_total / actual_total if actual_total else 0.0
             ),
+            mean_false_positive_rate=(
+                false_positive_total / actual_total if actual_total else 0.0
+            ),
+            sampling_k=1,
             avg_latency_seconds=float(mean(latencies)),
             p50_latency_seconds=cls._percentile(latencies, 0.5),
             p95_latency_seconds=cls._percentile(latencies, 0.95),
             avg_total_tokens=float(mean(token_values)),
+            p50_total_tokens=cls._percentile(token_values, 0.5),
+            p95_total_tokens=cls._percentile(token_values, 0.95),
+        )
+
+    @classmethod
+    def from_sampled_results(cls, sampled_results: list[SampledFixtureResult]) -> "MetricSummary":
+        if not sampled_results:
+            return cls()
+
+        pass_at_k_values = [item.pass_at_k_hit_rate for item in sampled_results]
+        mean_hit_values = [item.mean_hit_rate for item in sampled_results]
+        mean_fp_values = [item.mean_false_positive_rate for item in sampled_results]
+        schema_valid_values = [item.schema_valid_rate for item in sampled_results]
+        all_runs = [run for item in sampled_results for run in item.runs]
+
+        latencies = [run.latency_seconds for run in all_runs]
+        token_values = [float(run.total_tokens) for run in all_runs]
+
+        return cls(
+            schema_validity_rate=float(mean(schema_valid_values)),
+            hit_rate=float(mean(mean_hit_values)),
+            pass_at_k_hit_rate=float(mean(pass_at_k_values)),
+            mean_hit_rate=float(mean(mean_hit_values)),
+            hit_rate_stddev=float(pstdev(mean_hit_values)) if len(mean_hit_values) > 1 else 0.0,
+            false_positive_rate=float(mean(mean_fp_values)),
+            mean_false_positive_rate=float(mean(mean_fp_values)),
+            sampling_k=max(item.samples for item in sampled_results),
+            avg_latency_seconds=float(mean(latencies)) if latencies else 0.0,
+            p50_latency_seconds=cls._percentile(latencies, 0.5),
+            p95_latency_seconds=cls._percentile(latencies, 0.95),
+            avg_total_tokens=float(mean(token_values)) if token_values else 0.0,
             p50_total_tokens=cls._percentile(token_values, 0.5),
             p95_total_tokens=cls._percentile(token_values, 0.95),
         )
@@ -160,6 +219,7 @@ class EvalReport(BaseModel):
     fixture_count: int = Field(default=0, ge=0)
     metrics: MetricSummary = Field(default_factory=MetricSummary)
     results: list[EvalResult] = Field(default_factory=list)
+    sampled_results: list[SampledFixtureResult] = Field(default_factory=list)
 
 
 class FixtureManifestEntry(BaseModel):

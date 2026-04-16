@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import tempfile
 from pathlib import Path
+from statistics import mean, pstdev
 from time import perf_counter
 
-from eval.schemas import EvalIssueMatch, EvalResult, Fixture
+from eval.schemas import EvalIssueMatch, EvalResult, Fixture, SampledFixtureResult
 from src.analyzer.output_formatter import Severity
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.config import get_settings
@@ -36,14 +38,14 @@ def load_fixtures(
     return fixtures
 
 
-async def run_single(fixture: Fixture) -> EvalResult:
+async def run_single(fixture: Fixture, *, temperature: float = 0.0) -> EvalResult:
     """Run one fixture and return evaluation metadata."""
     expected_count = len(fixture.expected.issues)
     try:
         with tempfile.TemporaryDirectory(prefix="eval-fixture-") as tmp_dir:
             repo_root = Path(tmp_dir)
             _write_fixture_files(repo_root, fixture.input.files)
-            orchestrator = AgentOrchestrator(permission_mode="default")
+            orchestrator = AgentOrchestrator(permission_mode="default", temperature=temperature)
             sandbox_context = _build_sandbox_context(fixture.input.files, repo_root)
 
             start = perf_counter()
@@ -98,12 +100,85 @@ async def run_single(fixture: Fixture) -> EvalResult:
         )
 
 
-async def run_suite(fixtures: list[Fixture]) -> list[EvalResult]:
-    """Run all fixtures sequentially."""
-    results: list[EvalResult] = []
+async def run_suite(
+    fixtures: list[Fixture],
+    *,
+    samples: int = 1,
+    concurrency: int = 1,
+    temperature: float = 0.0,
+) -> list[SampledFixtureResult]:
+    """Run all fixtures with optional K-sample aggregation."""
+    sampled_results: list[SampledFixtureResult] = []
     for fixture in fixtures:
-        results.append(await run_single(fixture))
-    return results
+        sampled_results.append(
+            await run_single_sampled(
+                fixture,
+                samples=samples,
+                concurrency=concurrency,
+                temperature=temperature,
+            )
+        )
+    return sampled_results
+
+
+async def run_single_sampled(
+    fixture: Fixture,
+    *,
+    samples: int,
+    concurrency: int,
+    temperature: float,
+) -> SampledFixtureResult:
+    """Run one fixture K times and aggregate stability metrics."""
+    sample_count = max(1, samples)
+    max_concurrency = max(1, min(concurrency, sample_count))
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def _run() -> EvalResult:
+        async with semaphore:
+            return await run_single(fixture, temperature=temperature)
+
+    runs = await asyncio.gather(*(_run() for _ in range(sample_count)))
+    return _aggregate_sampled_result(fixture, runs)
+
+
+def _aggregate_sampled_result(
+    fixture: Fixture,
+    runs: list[EvalResult],
+) -> SampledFixtureResult:
+    expected_count = len(fixture.expected.issues)
+    hit_rates = [
+        _compute_hit_rate(run.matched_count, run.expected_count or expected_count) for run in runs
+    ]
+    fp_rates = [_compute_false_positive_rate(run.false_positive_count, run.actual_count) for run in runs]
+    pass_at_k = 1.0 if expected_count == 0 else max(hit_rates, default=0.0)
+    schema_valid_rate = (
+        sum(1 for run in runs if run.schema_valid) / len(runs) if runs else 0.0
+    )
+    return SampledFixtureResult(
+        fixture_id=fixture.id,
+        fixture_type=fixture.type,
+        samples=len(runs) or 1,
+        runs=runs,
+        pass_at_k_hit_rate=pass_at_k,
+        mean_hit_rate=float(mean(hit_rates)) if hit_rates else 0.0,
+        hit_rate_stddev=float(pstdev(hit_rates)) if len(hit_rates) > 1 else 0.0,
+        mean_false_positive_rate=float(mean(fp_rates)) if fp_rates else 0.0,
+        worst_hit_rate=min(hit_rates) if hit_rates else 0.0,
+        best_hit_rate=max(hit_rates) if hit_rates else 0.0,
+        schema_valid_rate=schema_valid_rate,
+    )
+
+
+def _compute_hit_rate(matched_count: int, expected_count: int) -> float:
+    if expected_count <= 0:
+        return 1.0
+    return max(0.0, min(1.0, matched_count / expected_count))
+
+
+def _compute_false_positive_rate(false_positive_count: int, actual_count: int) -> float:
+    if actual_count <= 0:
+        return 0.0
+    return max(0.0, min(1.0, false_positive_count / actual_count))
 
 
 def _write_fixture_files(repo_root: Path, files: dict[str, str]) -> None:

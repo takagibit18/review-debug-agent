@@ -78,6 +78,19 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
         min_length=1,
     )
+    eval_temperature: float = Field(
+        default_factory=lambda: float(os.getenv("EVAL_TEMPERATURE", "0.0")),
+        ge=0.0,
+        le=2.0,
+    )
+    eval_samples: int = Field(
+        default_factory=lambda: int(os.getenv("EVAL_SAMPLES", "1")),
+        ge=1,
+    )
+    eval_concurrency: int = Field(
+        default_factory=lambda: int(os.getenv("EVAL_CONCURRENCY", "1")),
+        ge=1,
+    )
     permission_mode: PermissionMode = Field(
         default="default",
     )
