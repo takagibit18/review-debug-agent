@@ -30,7 +30,10 @@ def tool_workspace_root(root: Path | str | None):
 def ensure_path_allowed(path: Path, *, tool_name: str) -> Path:
     """Ensure a tool path stays within the active workspace root."""
     workspace_root = _WORKSPACE_ROOT.get() or Path.cwd().resolve()
-    resolved = path.resolve()
+    if path.is_absolute():
+        resolved = path.resolve()
+    else:
+        resolved = (workspace_root / path).resolve()
     if not resolved.is_relative_to(workspace_root):
         raise PathNotAllowedError(
             f"Path is outside the allowed workspace: {resolved}",

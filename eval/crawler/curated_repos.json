@@ -1,18 +1,6 @@
 {
   "repos": [
     {
-      "full_name": "pallets/flask",
-      "language": "python"
-    },
-    {
-      "full_name": "psf/requests",
-      "language": "python"
-    },
-    {
-      "full_name": "encode/httpx",
-      "language": "python"
-    },
-    {
       "full_name": "tiangolo/fastapi",
       "language": "python"
     },

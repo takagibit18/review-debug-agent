@@ -4,6 +4,7 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-04-16 | `eval` / sparse sandbox | Eval fixture 仅包含稀疏文件，模型按完整仓库路径调用 `grep_files`，出现 `Directory not found`，导致审查迭代消耗在无效路径探索 | 评测管线未向模型显式提供沙箱可用文件集合；system prompt 缺少“先探明目录再搜索”的引导。发现的生产侧漏洞：`AgentOrchestrator.analyze` 未接入 `project_structure`、`file_contents` 默认空、工具目录不存在报错缺少可用目录回退提示、`SYSTEM_PROMPT_REVIEW` 未约束先 `list_dir` | 已在 `eval/runner.py` 为 review/debug 请求注入 `[SANDBOX CONTEXT]` 文件列表前缀，明确仅可访问的路径并提示先验证目录；生产侧问题暂记账，后续单独修复 |
 | 2026-04-15 | `eval` / golden 标注 | LLM 草稿把不适合作「缺陷检出」的 diff（如纯加功能、常规扩展）标成 `critical`/`warning` 等 expected issue，造成假阳性黄金标签 | 生成侧 `min_expected_issues≥1` 与标注器「无可靠缺陷可返回空」并存，易逼出凑数 issue；bugfix PR 筛选与「可证伪缺陷」未强绑定；人工复核未完成即以 `expected` 为准 | 计划不保留本批 PR 样本；后续策略见团队方案（本条目仅记录现象，实施另跟踪） |
 | 2026-04-15 | `eval` / review pipeline | Golden `hit_rate`≈0；有时为占位 summary 且 `issues=[]` | `submit_review` 与 `ReviewReport` 校验失败被静默丢弃；prompt 弱；`location_pattern` 按子串匹配与正则 fixture 不符；未复核样本 severity 门槛过严 | `submit_review` 增加 severity 枚举；加强 review prompt；`InferenceEngine` severity 映射 + 校验失败打日志；`_match_issues` 改为正则匹配，未复核 fixture 在严格匹配失败时宽松配对 |
 | 2026-04-09 | `scripts/smoke_test_models.py` | Ruff `E402` (import not at top) | 为了解决路径问题把 `src` 导入放在路径注入后的模块级位置，违反 lint 规则 | 改为在 `run_smoke_test()` 内局部导入 |
