@@ -24,15 +24,15 @@
 
 ## 3. 相对当前 MVP 的优化项（待办/方向）
 
-下列为增量清单，**不承诺一次性做完**，实施时拆 Issue。条目按 **能力域** 归纳，力求各模块篇幅与深度大致相当；**与其他文档的对照**见 §3.2。
+下列为增量清单，**不承诺一次性做完**，实施时拆 Issue。条目按 **能力域** 归纳，力求各模块篇幅与深度大致相当；**与其他文档的对照**见 §3.2，**上下文实现摘要**见 §3.3。
 
 ### 3.1 各能力域总览
 
 
 | 能力域                | MVP+ 增量方向（摘要）                                                                                                                                                               |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **编排与资源**          | Token 预算与迭代轮次；`stop:*` 与 `errors` 的展示优先级（例如与 `budget_exhausted` 同时成立时）可优化，避免误导；长上下文下的截断与摘要策略与文档设计对齐。                                                                        |
-| **Analyzer / 上下文** | `ContextBuilder.load_diff` 与「工作区全量 diff」语义对齐（与 `git diff --cached` 等可能不一致处收敛）；超长文件/日志的 **截断 + LLM 摘要** 混合策略（已落地为“溢出触发摘要”）；连续工具失败 / 空结果的 **降级路径** 与 `analyzer_dev_plan` 一致落地。              |
+| **编排与资源**          | Token 预算与迭代轮次；`stop:*` 与 `errors` 的展示优先级（例如与 `budget_exhausted` 同时成立时）可优化，避免误导；**输入侧**长上下文已由 Analyzer 侧预算 + 混合摘要承接（见 §3.3），编排层仍可关注展示与终止语义一致性。                                                                        |
+| **Analyzer / 上下文** | **已落地**：优先级截断 + **溢出块** LLM 摘要（`ContextCompressor`、`truncate_with_summary`）；环境变量 `CONTEXT_SUMMARY_ENABLED`、`SUMMARY_MAX_TOKENS_PER_PART`；用户 JSON 中 `truncated.summarized` 与摘要内容 `[SUMMARIZED]` 前缀。**仍待办**：`ContextBuilder.load_diff` 与「工作区全量 diff」语义对齐；连续工具失败 / 空结果的降级路径与 `analyzer_dev_plan` 一致细化。              |
 | **生产路径与提示**        | 非稀疏场景下：`AgentOrchestrator.analyze` 接入 `**project_structure`、按需 `file_contents`**；工具目标不存在时的回退提示；`SYSTEM_PROMPT_REVIEW` 与沙箱 `repo_path`、工具路径语义一致；生产侧「先探明目录」等约束与评测侧已部分缓解的策略对齐。 |
 | **路径与沙箱**          | 相对路径相对 workspace 解析、上下文写明工作区根（已部分实现）；稀疏沙箱与完整仓库行为对齐，避免「评测能过、生产行为漂移」。                                                                                                         |
 | **工具与安全**          | 执行型工具的沙箱、超时、`cwd`/工作区与确认策略持续与架构契约一致；高危操作门控与可观测性。                                                                                                                            |
@@ -57,6 +57,17 @@
 | `[eval/README.md](../eval/README.md)`          | 指标定义、黄金集策略、人工可接受度                        |
 | `[shared_contracts.md](shared_contracts.md)`   | Review/Debug 字段与配置；协议变更时联动实现与文档          |
 
+### 3.3 上下文窗口管理（当前实现摘要）
+
+相对纯优先级截断，上下文已升级为 **两层混合策略**（详见 `[analyzer_dev_plan.md](analyzer_dev_plan.md)` §2.3）：
+
+| 层级 | 行为 | 说明 |
+|------|------|------|
+| 第一层 | `ContextBuilder.truncate_context` | 按 `context_priority` 全序贪心装入，预算由 `PROMPT_INPUT_TOKEN_BUDGET`（`Settings.prompt_input_token_budget`）约束可截断块。 |
+| 第二层 | `truncate_with_summary` + `ContextCompressor` | 仅当第一层溢出、存在被丢弃块时，对丢弃块调用与主分析 **同一模型** 生成摘要，再二次装入预算；可通过 `CONTEXT_SUMMARY_ENABLED=false` 关闭，仅保留截断。 |
+| 可观测性 | 用户 JSON `truncated` | 除 `any` / `diff_hunks` / `files` / `error_log` / `structure` 外，增加 **`summarized`**（被摘要的原始块标识）；摘要正文带 **`[SUMMARIZED]`** 前缀。 |
+
+**未纳入本阶段**（仍属 MVP+ 可选增量）：多轮 `tool` 反馈链路的「微压缩」式占位替换、413 应急压缩等；与对话型产品不同，当前以单次 prepare 侧预算为主。
 
 ---
 
@@ -68,5 +79,5 @@
 
 ## 5. 维护
 
-- 本文档随 MVP+ 讨论更新；重大口径变更时同步更新 `eval/README.md` 与 `shared_contracts.md`（若涉及）。**文档交叉索引**见 §3.2。
+- 本文档随 MVP+ 讨论更新；重大口径变更时同步更新 `eval/README.md` 与 `shared_contracts.md`（若涉及）。**文档交叉索引**见 §3.2；**上下文实现细节**见 §3.3 与 `analyzer_dev_plan.md` §2.3。
 
