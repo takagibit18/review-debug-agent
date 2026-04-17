@@ -34,6 +34,7 @@ class AgentOrchestrator:
         registry: ToolRegistry | None = None,
         confirm_high_risk: Any | None = None,
         permission_mode: Literal["default", "plan"] | None = None,
+        temperature: float | None = None,
     ) -> None:
         self._settings = get_settings()
         self._registry = registry or create_default_registry()
@@ -56,6 +57,7 @@ class AgentOrchestrator:
         self._budget_exhausted = False
         self._model_completed = False
         self._workspace_root: Path | None = None
+        self._temperature = temperature
 
     async def run_review(self, request: ReviewRequest) -> ReviewResponse:
         """Run review mode through the orchestrator loop."""
@@ -477,7 +479,7 @@ class AgentOrchestrator:
         if self._model_client is not None:
             return InferenceEngine(self._model_client)
         try:
-            self._model_client = ModelClient()
+            self._model_client = ModelClient(temperature=self._temperature)
             return InferenceEngine(self._model_client)
         except Exception:  # noqa: BLE001
             return None

@@ -12,7 +12,8 @@ from eval.crawler.fixture_generator import FixtureGenerator
 from eval.metrics import build_eval_report, write_human_review_template
 from eval.report import render_report, save_report_json
 from eval.runner import load_fixtures, run_suite
-from eval.schemas import EvalReport
+from eval.schemas import EvalReport, EvalResult
+from src.config import get_settings
 
 
 @click.group()
@@ -78,9 +79,46 @@ def crawl_cmd(
     default=False,
     help="Include fixtures with metadata.reviewed=false.",
 )
-def eval_cmd(suite: str, include_unreviewed: bool) -> None:
+@click.option(
+    "--samples",
+    default=None,
+    type=int,
+    help="How many sampled runs per fixture. Defaults to EVAL_SAMPLES or 1.",
+)
+@click.option(
+    "--concurrency",
+    default=None,
+    type=int,
+    help="Max concurrent sampled runs per fixture. Defaults to EVAL_CONCURRENCY or 1.",
+)
+@click.option(
+    "--temperature",
+    default=None,
+    type=float,
+    help="Model sampling temperature for eval runs. Defaults to EVAL_TEMPERATURE or 0.0.",
+)
+def eval_cmd(
+    suite: str,
+    include_unreviewed: bool,
+    samples: int | None,
+    concurrency: int | None,
+    temperature: float | None,
+) -> None:
     """Run evaluation for one suite."""
-    asyncio.run(_evaluate(suite=suite, include_unreviewed=include_unreviewed))
+    settings = get_settings()
+    asyncio.run(
+        _evaluate(
+            suite=suite,
+            include_unreviewed=include_unreviewed,
+            samples=samples if samples is not None else settings.eval_samples,
+            concurrency=(
+                concurrency if concurrency is not None else settings.eval_concurrency
+            ),
+            temperature=(
+                temperature if temperature is not None else settings.eval_temperature
+            ),
+        )
+    )
 
 
 @main.command("report")
@@ -144,13 +182,30 @@ def _load_curated_repos(path: Path, *, enabled: bool) -> list[str] | None:
     return names
 
 
-async def _evaluate(suite: str, include_unreviewed: bool = False) -> None:
+async def _evaluate(
+    suite: str,
+    include_unreviewed: bool = False,
+    *,
+    samples: int = 1,
+    concurrency: int = 1,
+    temperature: float = 0.0,
+) -> None:
     fixtures = load_fixtures(suite=suite, reviewed_only=not include_unreviewed)
     if not fixtures:
         raise click.ClickException(f"No fixtures found for suite '{suite}'.")
 
-    results = await run_suite(fixtures)
-    report = build_eval_report(suite=suite, results=results)
+    sampled_results = await run_suite(
+        fixtures,
+        samples=max(1, samples),
+        concurrency=max(1, concurrency),
+        temperature=temperature,
+    )
+    results: list[EvalResult] = [item.runs[0] for item in sampled_results if item.runs]
+    report = build_eval_report(
+        suite=suite,
+        results=results,
+        sampled_results=sampled_results,
+    )
     report_path = save_report_json(report)
     review_sheet = write_human_review_template(
         report,

@@ -21,7 +21,7 @@ from src.analyzer.prompts import (
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest
 from src.config import get_settings
 from src.models.client import ModelClient
-from src.models.schemas import Message, ModelConfig
+from src.models.schemas import Message
 from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -103,7 +103,11 @@ class InferenceEngine:
             messages.extend(self._build_tool_feedback_messages(tool_feedback))
 
         tools = tool_schemas or []
-        config = ModelConfig(model=request.model_name) if request.model_name else None
+        config = None
+        if request.model_name:
+            config = self._model_client.default_config.model_copy(
+                update={"model": request.model_name}
+            )
         response = await self._model_client.chat(messages=messages, config=config, tools=tools)
         plan = self._parse_tool_calls(response.tool_calls, request)
         if not plan.draft_review and not plan.draft_debug:

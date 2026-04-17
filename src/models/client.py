@@ -33,7 +33,11 @@ class ModelClient:
     """Async OpenAI-compatible client with retries and usage tracking."""
 
     def __init__(
-        self, settings: Settings | None = None, *, max_retries: int = 3
+        self,
+        settings: Settings | None = None,
+        *,
+        max_retries: int = 3,
+        temperature: float | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         if not self._settings.openai_api_key:
@@ -43,8 +47,16 @@ class ModelClient:
             api_key=self._settings.openai_api_key,
             base_url=str(self._settings.openai_base_url),
         )
-        self._default_config = ModelConfig(model=self._settings.model_name)
+        default_config_kwargs: dict[str, Any] = {"model": self._settings.model_name}
+        if temperature is not None:
+            default_config_kwargs["temperature"] = temperature
+        self._default_config = ModelConfig(**default_config_kwargs)
         self._max_retries = max(1, max_retries)
+
+    @property
+    def default_config(self) -> ModelConfig:
+        """Return an immutable copy of default runtime config."""
+        return self._default_config.model_copy(deep=True)
 
     async def chat(
         self,
