@@ -6,7 +6,7 @@ them as a validated Pydantic model for use across all modules.
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from dotenv import load_dotenv
 from pydantic import (
@@ -24,6 +24,13 @@ load_dotenv(_REPO_ROOT / ".env", override=True)
 _base_url_adapter = TypeAdapter(AnyHttpUrl)
 PermissionMode = Literal["default", "plan"]
 TraceDetailMode = Literal["off", "compact", "full"]
+
+
+def _default_agent_trace_detail() -> TraceDetailMode:
+    raw = str(os.getenv("AGENT_TRACE_DETAIL", "off")).strip().lower() or "off"
+    if raw in {"off", "compact", "full"}:
+        return cast(TraceDetailMode, raw)
+    return "off"
 
 
 class Settings(BaseModel):
@@ -84,10 +91,7 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
         min_length=1,
     )
-    agent_trace_detail: TraceDetailMode = Field(
-        default_factory=lambda: str(os.getenv("AGENT_TRACE_DETAIL", "off")).strip().lower()
-        or "off"
-    )
+    agent_trace_detail: TraceDetailMode = Field(default_factory=_default_agent_trace_detail)
     agent_trace_max_chars: int = Field(
         default_factory=lambda: int(os.getenv("AGENT_TRACE_MAX_CHARS", "1200")),
         ge=64,

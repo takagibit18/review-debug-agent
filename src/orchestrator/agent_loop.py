@@ -532,6 +532,7 @@ class AgentOrchestrator:
                 "used_placeholder_summary": (
                     self._is_review_mode(state)
                     and plan.draft_review is None
+                    and isinstance(response, ReviewResponse)
                     and response.report.summary
                     == "Review pipeline completed with placeholder summary."
                 ),
