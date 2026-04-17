@@ -40,7 +40,8 @@ class AgentOrchestrator:
         temperature: float | None = None,
     ) -> None:
         self._settings = get_settings()
-        self._registry = registry or create_default_registry()
+        self._external_registry: ToolRegistry | None = registry
+        self._registry = registry or create_default_registry(include_execute=False)
         self._context_builder = ContextBuilder()
         self._result_processor = ResultProcessor(token_budget=self._settings.token_budget)
         self._model_client: ModelClient | None = None
@@ -79,6 +80,8 @@ class AgentOrchestrator:
             max_iterations=self._settings.review_max_iterations,
             repo_path=request.repo_path,
         )
+        if self._external_registry is None:
+            self._registry = create_default_registry(include_execute=False)
         state = self.prepare_context(request)
         response: ReviewResponse | DebugResponse | None = None
         while True:
@@ -101,6 +104,8 @@ class AgentOrchestrator:
             max_iterations=self._settings.debug_max_iterations,
             repo_path=request.repo_path,
         )
+        if self._external_registry is None:
+            self._registry = create_default_registry(include_execute=True)
         state = self.prepare_context(request)
         response: ReviewResponse | DebugResponse | None = None
         while True:

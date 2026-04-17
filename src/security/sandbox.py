@@ -1,14 +1,16 @@
-"""Sandbox execution environment.
+"""Sandbox execution entry point.
 
-Wraps subprocess / container calls with timeout, working-directory
-constraints, and structured result capture.
+Dispatches execute-class commands to the configured backend
+(subprocess / docker) and returns a structured :class:`SandboxResult`.
+
+The command is expected to be a string; it is parsed/validated by
+``src.security.exec_policy.resolve_command`` before dispatch. Shell
+interpretation is never used in the backend.
 """
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
-from time import perf_counter
 
 from pydantic import BaseModel, Field
 
@@ -23,53 +25,42 @@ class SandboxResult(BaseModel):
     stderr: str = Field(default="")
     timed_out: bool = Field(default=False)
     duration_ms: int = Field(default=0, ge=0)
+    stdout_truncated: bool = Field(default=False)
+    stderr_truncated: bool = Field(default=False)
 
 
 def run_sandboxed_command(
     *,
-    command: str,
+    argv: list[str],
     cwd: Path | str,
     timeout_ms: int,
+    backend: str | None = None,
+    max_output_bytes: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> SandboxResult:
-    """Run a shell command in a constrained working directory with timeout."""
+    """Run a validated argv through the configured backend.
+
+    Callers are expected to have already validated ``argv`` via
+    :func:`src.security.exec_policy.resolve_command`.
+    """
+    from src.config import get_settings
+    from src.security.backends import build_scrubbed_env, get_backend
+
+    settings = get_settings()
+    backend_name = backend if backend is not None else settings.execute_backend
+    effective_limit = (
+        max_output_bytes
+        if max_output_bytes is not None
+        else settings.execute_max_output_bytes
+    )
+    effective_env = env if env is not None else build_scrubbed_env()
+
     resolved_cwd = Path(cwd).resolve()
-    start = perf_counter()
-    try:
-        completed = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(resolved_cwd),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=max(timeout_ms, 1) / 1000.0,
-        )
-        return SandboxResult(
-            command=command,
-            cwd=str(resolved_cwd),
-            exit_code=int(completed.returncode),
-            stdout=completed.stdout or "",
-            stderr=completed.stderr or "",
-            timed_out=False,
-            duration_ms=int((perf_counter() - start) * 1000),
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = ""
-        stderr = ""
-        if isinstance(exc.stdout, str):
-            stdout = exc.stdout
-        elif isinstance(exc.stdout, bytes):
-            stdout = exc.stdout.decode(errors="ignore")
-        if isinstance(exc.stderr, str):
-            stderr = exc.stderr
-        elif isinstance(exc.stderr, bytes):
-            stderr = exc.stderr.decode(errors="ignore")
-        return SandboxResult(
-            command=command,
-            cwd=str(resolved_cwd),
-            exit_code=-1,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=True,
-            duration_ms=int((perf_counter() - start) * 1000),
-        )
+    impl = get_backend(backend_name)
+    return impl.run(
+        argv=list(argv),
+        cwd=resolved_cwd,
+        timeout_ms=timeout_ms,
+        env=effective_env,
+        max_output_bytes=effective_limit,
+    )

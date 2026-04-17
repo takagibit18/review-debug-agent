@@ -296,6 +296,15 @@ class AnalysisPlan(BaseModel):
 
 **实现说明**：`AgentOrchestrator` 支持可选参数 `confirm_high_risk`（回调），在交互模式下对 `write` / `execute` 工具在回调返回允许时方可执行；**未提供回调时默认拒绝**高危工具（避免误将「交互模式」理解为自动放行）。环境变量 `CI` 为真时强制拒绝，与上表「非交互模式默认拒绝」一致。
 
+**Execute 工具的确定性边界（补充）**：
+
+- 命令字符串经 `shlex.split` 解析为 argv；backend 调用 `subprocess.run(argv, shell=False, ...)`，**禁止** `shell=True`。
+- 首词必须命中 `EXECUTE_ALLOWED_COMMANDS`；`git` 仅允许只读子命令（`status/diff/log/show/rev-parse`）。`&&`、`|`、`;`、`>`、`` ` ``、`$(` 等 shell 操作符若出现在 argv 中，必定被拒。
+- 后端可切换：`EXECUTE_BACKEND=subprocess|docker`；`docker` 当前仅 stub，会抛 `NotImplementedError`。
+- `stdout` / `stderr` 按字节上限（`EXECUTE_MAX_OUTPUT_BYTES`）截断，并在 `SandboxResult` 中以 `stdout_truncated` / `stderr_truncated` 标注。
+- 违反 policy 抛 `CommandNotAllowedError(ToolError)`，经编排层纳入 `ContextState.errors.category=security`，与高危门控拒绝同语义。
+- 可见性：Review 模式不暴露 execute 工具；Debug 模式通过 `create_default_registry(include_execute=True)` 暴露。全局开关 `EXECUTE_ENABLED=false` 时，Debug 模式也不注册 execute 工具。
+
 ---
 
 ## 12. 单次运行与可观测性（固定）
@@ -361,4 +370,5 @@ class AnalysisPlan(BaseModel):
 | 2026-04-09 | 初稿入库：CLI/编排/工具边界、请求响应、Analyzer/Model/Security/观测补充、协作前清单 |
 | 2026-04-09 | 收敛为确定性约束：定稿 Debug 对齐字段、`suggested_commands`、高危工具执行矩阵与固定验收清单 |
 | 2026-04-12 | §9.2 补充 `tool_schemas.py` 实现锚点；§11 补充 `confirm_high_risk` 与默认拒绝行为 |
+| 2026-04-17 | §11 追加 execute 工具确定性边界（argv + 白名单 + pluggable backend + 输出截断 + 模式可见性）；新增 `EXECUTE_*` 环境变量 |
 | 2026-04-13 | 补充 readonly 默认工具集说明；收口 readonly MVP 的测试、异常与默认注册契约 |

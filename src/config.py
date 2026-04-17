@@ -24,6 +24,41 @@ load_dotenv(_REPO_ROOT / ".env", override=True)
 _base_url_adapter = TypeAdapter(AnyHttpUrl)
 PermissionMode = Literal["default", "plan"]
 TraceDetailMode = Literal["off", "compact", "full"]
+ExecuteBackend = Literal["subprocess", "docker"]
+
+_DEFAULT_EXECUTE_ALLOWED_COMMANDS: tuple[str, ...] = (
+    "python",
+    "pytest",
+    "pip",
+    "node",
+    "npm",
+    "ruff",
+    "mypy",
+    "git",
+)
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes"}
+
+
+def _parse_allowed_commands(raw: str | None) -> tuple[str, ...]:
+    if raw is None or not raw.strip():
+        return _DEFAULT_EXECUTE_ALLOWED_COMMANDS
+    parts = tuple(
+        item.strip() for item in raw.split(",") if item.strip()
+    )
+    return parts or _DEFAULT_EXECUTE_ALLOWED_COMMANDS
+
+
+def _default_execute_backend() -> ExecuteBackend:
+    raw = (os.getenv("EXECUTE_BACKEND", "subprocess") or "subprocess").strip().lower()
+    if raw in {"subprocess", "docker"}:
+        return cast(ExecuteBackend, raw)
+    return "subprocess"
 
 
 def _default_agent_trace_detail() -> TraceDetailMode:
@@ -118,6 +153,30 @@ class Settings(BaseModel):
     permission_mode: PermissionMode = Field(
         default="default",
     )
+    execute_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env("EXECUTE_ENABLED", True),
+        description="Global switch for execute-class tools; disables registration even in debug mode when False.",
+    )
+    execute_backend: ExecuteBackend = Field(
+        default_factory=_default_execute_backend,
+        description="Backend used for running execute-class commands (subprocess | docker).",
+    )
+    execute_allowed_commands: tuple[str, ...] = Field(
+        default_factory=lambda: _parse_allowed_commands(
+            os.getenv("EXECUTE_ALLOWED_COMMANDS")
+        ),
+        description="Allowed first-token commands for run_command; enforced by exec_policy.",
+    )
+    execute_default_timeout_ms: int = Field(
+        default_factory=lambda: int(os.getenv("EXECUTE_DEFAULT_TIMEOUT_MS", "30000")),
+        ge=1,
+        le=600_000,
+    )
+    execute_max_output_bytes: int = Field(
+        default_factory=lambda: int(os.getenv("EXECUTE_MAX_OUTPUT_BYTES", "65536")),
+        ge=1024,
+        description="Per-stream (stdout/stderr) byte cap; exceeded output is truncated with a marker.",
+    )
 
     @field_validator("openai_api_key", "model_name", mode="before")
     @classmethod
@@ -147,6 +206,28 @@ class Settings(BaseModel):
             return ".cr-debug-agent/logs"
         raw = str(value).strip()
         return raw or ".cr-debug-agent/logs"
+
+    @field_validator("execute_backend", mode="before")
+    @classmethod
+    def _validate_execute_backend(cls, value: object) -> str:
+        if value is None:
+            return "subprocess"
+        raw = str(value).strip().lower()
+        if raw in {"subprocess", "docker"}:
+            return raw
+        return "subprocess"
+
+    @field_validator("execute_allowed_commands", mode="before")
+    @classmethod
+    def _validate_execute_allowed_commands(cls, value: object) -> tuple[str, ...]:
+        if value is None:
+            return _DEFAULT_EXECUTE_ALLOWED_COMMANDS
+        if isinstance(value, str):
+            return _parse_allowed_commands(value)
+        if isinstance(value, (list, tuple)):
+            parts = tuple(str(v).strip() for v in value if str(v).strip())
+            return parts or _DEFAULT_EXECUTE_ALLOWED_COMMANDS
+        return _DEFAULT_EXECUTE_ALLOWED_COMMANDS
 
     @field_validator("agent_trace_detail", mode="before")
     @classmethod
