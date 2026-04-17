@@ -7,7 +7,9 @@ import json
 from typing import Any
 
 from src.analyzer.context_state import ContextState
+from src.analyzer.event_log import EventType
 from src.analyzer.inference_engine import InferenceEngine
+from src.analyzer.trace import TraceRecorder
 from src.analyzer.schemas import DebugRequest, ReviewRequest
 from src.models.schemas import ModelResponse, TokenUsage
 from src.tools.base import ToolResult
@@ -163,3 +165,40 @@ def test_analyze_debug_overflow_uses_summary(monkeypatch) -> None:
     final_user_payload = _extract_payload_from_user_message(client.calls[-1][1].content)
     assert final_user_payload["truncated"]["summarized"]
     assert final_user_payload["error_log_loaded"].startswith("[SUMMARIZED]")
+
+
+def test_analyze_emits_model_detail_and_plan_parsed_events(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    events: list[tuple[EventType, str, dict[str, Any]]] = []
+    trace = TraceRecorder(detail_mode="compact", max_chars=500, log_tool_body=False)
+    engine = InferenceEngine(
+        model_client=client,  # type: ignore[arg-type]
+        trace_recorder=trace,
+        trace_event_writer=lambda event_type, phase, payload: events.append(
+            (event_type, phase, payload)
+        ),
+    )
+    state = ContextState(goal="Run structured code review")
+    request = ReviewRequest(repo_path=".")
+
+    asyncio.run(
+        engine.analyze(
+            state=state,
+            request=request,
+            tool_specs=[],
+            iteration=1,
+        )
+    )
+
+    event_types = [event_type for event_type, _, _ in events]
+    assert EventType.MODEL_RESPONSE_DETAIL in event_types
+    assert EventType.PLAN_PARSED in event_types
+    model_event = next(
+        payload for event_type, _, payload in events if event_type == EventType.MODEL_RESPONSE_DETAIL
+    )
+    assert model_event["iteration"] == 1
+    plan_event = next(
+        payload for event_type, _, payload in events if event_type == EventType.PLAN_PARSED
+    )
+    assert plan_event["iteration"] == 1

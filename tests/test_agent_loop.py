@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path, PurePath
 
+from src.analyzer.event_log import EventType
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
@@ -94,13 +96,14 @@ class SlowReadonlyTool(BaseTool):
 
 
 def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "1")
     monkeypatch.chdir(tmp_path)
     orchestrator = AgentOrchestrator()
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
 
     continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
     assert len(continue_steps) == 1
-    assert response.context.decisions[-1].result in {
+    assert continue_steps[-1].result in {
         "stop:model_completed",
         "stop:max_iterations",
     }
@@ -114,7 +117,7 @@ def test_review_iterations_respect_settings(monkeypatch, tmp_path) -> None:
     registry.register(DummyEchoTool())
     orchestrator = AgentOrchestrator(registry=registry)
 
-    async def _always_needs_tool(state, request, tool_specs):  # type: ignore[no-untyped-def]
+    async def _always_needs_tool(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
         return AnalysisPlan(
             needs_tools=True,
             tool_calls=[
@@ -132,7 +135,7 @@ def test_review_iterations_respect_settings(monkeypatch, tmp_path) -> None:
 
     continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
     assert len(continue_steps) == 2
-    assert continue_steps[-1].result == "stop:max_iterations"
+    assert continue_steps[-1].result in {"stop:max_iterations", "stop:budget_hard_capped"}
 
 
 def test_debug_run_stops_at_iteration_limit(tmp_path, monkeypatch) -> None:
@@ -141,7 +144,7 @@ def test_debug_run_stops_at_iteration_limit(tmp_path, monkeypatch) -> None:
     registry.register(DummyEchoTool())
     orchestrator = AgentOrchestrator(registry=registry)
 
-    async def _always_needs_tool(state, request, tool_specs):  # type: ignore[no-untyped-def]
+    async def _always_needs_tool(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
         return AnalysisPlan(
             needs_tools=True,
             tool_calls=[
@@ -159,7 +162,7 @@ def test_debug_run_stops_at_iteration_limit(tmp_path, monkeypatch) -> None:
 
     continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
     assert len(continue_steps) == 3
-    assert continue_steps[-1].result == "stop:max_iterations"
+    assert continue_steps[-1].result in {"stop:max_iterations", "stop:budget_hard_capped"}
 
 
 def test_event_log_directory_is_relative_to_repo_path(tmp_path, monkeypatch) -> None:
@@ -570,7 +573,7 @@ def test_plan_mode_skips_tool_execution_even_when_plan_requests_tools(monkeypatc
     registry.register(_CountingTool())
     orchestrator = AgentOrchestrator(registry=registry, permission_mode="plan")
 
-    async def _always_needs_tool(state, request, tool_specs):  # type: ignore[no-untyped-def]
+    async def _always_needs_tool(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
         return AnalysisPlan(
             needs_tools=True,
             tool_calls=[{"function": {"name": "count_tool", "arguments": "{}"}}],
@@ -583,3 +586,51 @@ def test_plan_mode_skips_tool_execution_even_when_plan_requests_tools(monkeypatc
     assert execute_steps[-1].result == "Plan mode: tool execution disabled"
     assert "plan_mode" in response.context.constraints
     assert calls == []
+
+
+def test_execute_tools_emits_tool_io_event_with_iteration(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_TRACE_DETAIL", "compact")
+    registry = ToolRegistry()
+    registry.register(DummyEchoTool())
+    orchestrator = AgentOrchestrator(registry=registry)
+    orchestrator._reset_run(max_iterations=1, repo_path=".")  # noqa: SLF001
+    state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
+    plan = AnalysisPlan(
+        needs_tools=True,
+        tool_calls=[
+            {"function": {"name": "echo_tool", "arguments": '{"value":"trace-check"}'}},
+        ],
+    )
+
+    asyncio.run(orchestrator.execute_tools(plan, registry, state))
+    log_path = tmp_path / ".cr-debug-agent" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    tool_io = next(item for item in events if item["event_type"] == EventType.TOOL_IO.value)
+    assert tool_io["payload"]["iteration"] == 0
+    assert tool_io["payload"]["name"] == "echo_tool"
+
+
+def test_format_result_emits_format_result_event(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_TRACE_DETAIL", "compact")
+    orchestrator = AgentOrchestrator()
+    orchestrator._reset_run(max_iterations=1, repo_path=".")  # noqa: SLF001
+    state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
+
+    orchestrator.format_result(state, tool_results=[])
+    log_path = tmp_path / ".cr-debug-agent" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    format_event = next(
+        item for item in events if item["event_type"] == EventType.FORMAT_RESULT.value
+    )
+    assert format_event["payload"]["iteration"] == 0
+    assert "used_placeholder_summary" in format_event["payload"]

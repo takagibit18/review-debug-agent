@@ -94,4 +94,13 @@ class ResultProcessor:
         return ReviewReport(summary=merged_summary, issues=merged_issues)
 
     def is_budget_exhausted(self, total_tokens: int) -> bool:
+        """Backward-compatible: True when soft cap is reached."""
         return total_tokens >= self._token_budget
+
+    def budget_state(self, total_tokens: int) -> str:
+        """Return 'none' | 'soft_capped' | 'hard_capped'."""
+        if total_tokens >= 2 * self._token_budget:
+            return "hard_capped"
+        if total_tokens >= self._token_budget:
+            return "soft_capped"
+        return "none"

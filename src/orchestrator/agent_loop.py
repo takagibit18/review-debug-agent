@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json as _json
 import os
 from pathlib import Path
 from time import perf_counter
@@ -15,6 +17,7 @@ from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
+from src.analyzer.trace import TraceRecorder
 from src.analyzer.result_processor import ResultProcessor
 from src.config import get_settings
 from src.models.client import ModelClient
@@ -49,15 +52,26 @@ class AgentOrchestrator:
         self._event_log: EventLog | None = None
         self._last_plan: AnalysisPlan | None = None
         self._tool_feedback: list[dict[str, Any]] = []
+        self._feedback_digest_index: dict[str, dict[str, Any]] = {}
+        self._tool_dedup_cache: dict[str, ToolResult] = {}
+        self._submit_review_seen_any = False
+        self._submit_debug_seen_any = False
         self._latest_tokens = 0
         self._total_tokens = 0
         self._iteration = 0
         self._max_iterations = 1
         self._blocking_error = False
         self._budget_exhausted = False
+        self._budget_state: str = "none"
         self._model_completed = False
+        self._last_decision_reason: str = ""
         self._workspace_root: Path | None = None
         self._temperature = temperature
+        self._trace_recorder = TraceRecorder(
+            detail_mode=self._settings.agent_trace_detail,
+            max_chars=self._settings.agent_trace_max_chars,
+            log_tool_body=self._settings.agent_trace_log_tool_body,
+        )
 
     async def run_review(self, request: ReviewRequest) -> ReviewResponse:
         """Run review mode through the orchestrator loop."""
@@ -76,6 +90,7 @@ class AgentOrchestrator:
             if not self.should_continue(state, response):
                 break
             self._iteration += 1
+        response = await self._maybe_force_submit_review(state, request, response)
         assert isinstance(response, ReviewResponse)
         self._close_event_log()
         return response
@@ -97,8 +112,73 @@ class AgentOrchestrator:
             if not self.should_continue(state, response):
                 break
             self._iteration += 1
+        response = await self._maybe_force_submit_debug(state, request, response)
         assert isinstance(response, DebugResponse)
         self._close_event_log()
+        return response
+
+    async def _maybe_force_submit_review(
+        self,
+        state: ContextState,
+        request: ReviewRequest,
+        response: ReviewResponse | DebugResponse | None,
+    ) -> ReviewResponse | DebugResponse:
+        """If loop exited without a draft_review and budget is not hard-capped, issue one
+        finalize-only analyze call and re-format."""
+        assert response is not None
+        if self._permission_mode == "plan":
+            return response
+        if self._budget_state == "hard_capped":
+            return response
+        if not isinstance(response, ReviewResponse):
+            return response
+        plan = self._last_plan
+        if plan is None or plan.draft_review is not None:
+            return response
+        finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
+        self._last_plan = finalize_plan
+        response = self.format_result(state, tool_results=[])
+        self._record_event(
+            EventType.DECISION,
+            "finalize",
+            {
+                "iteration": self._iteration,
+                "finalize_attempt": True,
+                "finalize_submit_seen": finalize_plan.draft_review is not None,
+                "budget_state": self._budget_state,
+            },
+        )
+        return response
+
+    async def _maybe_force_submit_debug(
+        self,
+        state: ContextState,
+        request: DebugRequest,
+        response: ReviewResponse | DebugResponse | None,
+    ) -> ReviewResponse | DebugResponse:
+        assert response is not None
+        if self._permission_mode == "plan":
+            return response
+        if self._budget_state == "hard_capped":
+            return response
+        if not isinstance(response, DebugResponse):
+            return response
+        plan = self._last_plan
+        if plan is None or plan.draft_debug is not None:
+            return response
+        finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
+        self._last_plan = finalize_plan
+        response = self.format_result(state, tool_results=[])
+        self._record_event(
+            EventType.DECISION,
+            "finalize",
+            {
+                "iteration": self._iteration,
+                "finalize_attempt": True,
+                "finalize_submit_seen": finalize_plan.draft_debug is not None,
+                "budget_state": self._budget_state,
+            },
+        )
         return response
 
     def prepare_context(self, request: ReviewRequest | DebugRequest) -> ContextState:
@@ -119,6 +199,8 @@ class AgentOrchestrator:
         state: ContextState,
         request: ReviewRequest | DebugRequest,
         tool_specs: list[ToolSpec],
+        *,
+        force_submit: bool = False,
     ) -> AnalysisPlan:
         """Run model analysis and return structured plan."""
         start = perf_counter()
@@ -154,7 +236,10 @@ class AgentOrchestrator:
             self._latest_tokens = 0
         else:
             try:
-                serialized_tools = build_tool_schemas(tool_specs) + build_submit_tool_schemas()
+                if force_submit:
+                    serialized_tools = build_submit_tool_schemas()
+                else:
+                    serialized_tools = build_tool_schemas(tool_specs) + build_submit_tool_schemas()
                 result, total_tokens = await engine.analyze(
                     state=state,
                     request=request,
@@ -163,9 +248,17 @@ class AgentOrchestrator:
                     diff_text=diff_text,
                     error_log=error_log_text,
                     tool_feedback=self._tool_feedback,
+                    feedback_digest_index=self._feedback_digest_index,
                     prompt_input_token_budget=self._settings.prompt_input_token_budget,
+                    iteration=self._iteration,
+                    force_submit=force_submit,
+                    near_last_iteration=(self._iteration + 1) >= self._max_iterations,
                 )
                 self._latest_tokens = total_tokens
+                if result.draft_review is not None:
+                    self._submit_review_seen_any = True
+                if result.draft_debug is not None:
+                    self._submit_debug_seen_any = True
             except ModelClientError as exc:
                 state.errors.append(
                     ErrorDetail(
@@ -181,6 +274,7 @@ class AgentOrchestrator:
             EventType.MODEL_CALL,
             "analyze",
             {
+                "iteration": self._iteration,
                 "needs_tools": result.needs_tools,
                 "tool_calls": len(result.tool_calls),
                 "elapsed_ms": int((perf_counter() - start) * 1000),
@@ -245,7 +339,11 @@ class AgentOrchestrator:
                     self._record_event(
                         EventType.ERROR,
                         "execute_tools",
-                        {"name": tool_name, "category": "security"},
+                        {
+                            "iteration": self._iteration,
+                            "name": tool_name,
+                            "category": "security",
+                        },
                     )
                     executed_feedback.append(
                         {"tool_call": raw_call, "result": results[-1]}
@@ -264,7 +362,22 @@ class AgentOrchestrator:
                 self._record_event(
                     EventType.TOOL_CALL,
                     "execute_tools",
-                    {"name": tool_name, "ok": result.ok},
+                    {"iteration": self._iteration, "name": tool_name, "ok": result.ok},
+                )
+                self._trace_recorder.record(
+                    self._record_event,
+                    EventType.TOOL_IO,
+                    "execute_tools",
+                    {
+                        "iteration": self._iteration,
+                        "name": tool_name,
+                        "ok": result.ok,
+                        "error": result.error or "",
+                        "args_digest": self._trace_recorder.build_tool_result_preview(args).get(
+                            "digest", {}
+                        ),
+                        "result_preview": self._trace_recorder.build_tool_result_preview(result),
+                    },
                 )
                 executed_feedback.append({"tool_call": raw_call, "result": result})
                 index += 1
@@ -282,7 +395,22 @@ class AgentOrchestrator:
                 self._record_event(
                     EventType.TOOL_CALL,
                     "execute_tools",
-                    {"name": tool_name, "ok": result.ok},
+                    {"iteration": self._iteration, "name": tool_name, "ok": result.ok},
+                )
+                self._trace_recorder.record(
+                    self._record_event,
+                    EventType.TOOL_IO,
+                    "execute_tools",
+                    {
+                        "iteration": self._iteration,
+                        "name": tool_name,
+                        "ok": result.ok,
+                        "error": result.error or "",
+                        "args_digest": self._trace_recorder.build_tool_result_preview(args).get(
+                            "digest", {}
+                        ),
+                        "result_preview": self._trace_recorder.build_tool_result_preview(result),
+                    },
                 )
                 executed_feedback.append({"tool_call": raw_call, "result": result})
                 index += 1
@@ -327,12 +455,34 @@ class AgentOrchestrator:
                 self._record_event(
                     EventType.TOOL_CALL,
                     "execute_tools",
-                    {"name": batch_name, "ok": batch_result.ok},
+                    {
+                        "iteration": self._iteration,
+                        "name": batch_name,
+                        "ok": batch_result.ok,
+                    },
+                )
+                batch_call = self._parse_tool_call(batch_raw)
+                self._trace_recorder.record(
+                    self._record_event,
+                    EventType.TOOL_IO,
+                    "execute_tools",
+                    {
+                        "iteration": self._iteration,
+                        "name": batch_name,
+                        "ok": batch_result.ok,
+                        "error": batch_result.error or "",
+                        "args_digest": self._trace_recorder.build_tool_result_preview(
+                            batch_call.get("arguments", {})
+                        ).get("digest", {}),
+                        "result_preview": self._trace_recorder.build_tool_result_preview(
+                            batch_result
+                        ),
+                    },
                 )
                 executed_feedback.append({"tool_call": batch_raw, "result": batch_result})
             index += len(batch_calls)
 
-        self._tool_feedback = executed_feedback
+        self._append_tool_feedback(executed_feedback)
         return results
 
     def format_result(
@@ -343,7 +493,8 @@ class AgentOrchestrator:
         """Build final response according to run mode."""
         plan = self._last_plan or AnalysisPlan(needs_tools=False, tool_calls=[])
         self._total_tokens += self._latest_tokens
-        self._budget_exhausted = self._result_processor.is_budget_exhausted(self._total_tokens)
+        self._budget_state = self._result_processor.budget_state(self._total_tokens)
+        self._budget_exhausted = self._budget_state != "none"
 
         response: ReviewResponse | DebugResponse
         blocking_error: bool
@@ -362,9 +513,33 @@ class AgentOrchestrator:
             EventType.PHASE_END,
             "format",
             {
+                "iteration": self._iteration,
                 "blocking_error": blocking_error,
                 "total_tokens": self._total_tokens,
                 "budget_exhausted": self._budget_exhausted,
+                "budget_state": self._budget_state,
+            },
+        )
+        self._trace_recorder.record(
+            self._record_event,
+            EventType.FORMAT_RESULT,
+            "format",
+            {
+                "iteration": self._iteration,
+                "blocking_tool_error": blocking_error,
+                "draft_review_present": plan.draft_review is not None,
+                "draft_debug_present": plan.draft_debug is not None,
+                "used_placeholder_summary": (
+                    self._is_review_mode(state)
+                    and plan.draft_review is None
+                    and response.report.summary
+                    == "Review pipeline completed with placeholder summary."
+                ),
+                "issues_count": (
+                    len(response.report.issues)
+                    if isinstance(response, ReviewResponse)
+                    else len(response.steps)
+                ),
             },
         )
         return response
@@ -389,28 +564,38 @@ class AgentOrchestrator:
                 )
             )
 
+        if self._model_completed:
+            reason = "model_completed"
+        elif reached_limit:
+            reason = "max_iterations"
+        elif self._budget_state == "hard_capped":
+            reason = "budget_hard_capped"
+        elif self._budget_state == "soft_capped":
+            reason = "budget_soft_capped"
+        else:
+            reason = "continue"
+        self._last_decision_reason = reason
         state.decisions.append(
             DecisionStep(
                 phase="continue",
                 action="Evaluate continue conditions",
-                result=(
-                    "stop:model_completed"
-                    if self._model_completed
-                    else "stop:max_iterations"
-                    if reached_limit
-                    else "stop:budget_exhausted"
-                    if self._budget_exhausted
-                    else "continue"
-                ),
+                result=("continue" if reason == "continue" else f"stop:{reason}"),
             )
         )
         self._record_event(
             EventType.DECISION,
             "continue",
             {
+                "iteration": self._iteration,
+                "max_iterations": self._max_iterations,
+                "has_pending_tools": has_pending_tools,
                 "model_completed": self._model_completed,
                 "reached_limit": reached_limit,
                 "budget_exhausted": self._budget_exhausted,
+                "budget_state": self._budget_state,
+                "reason": reason,
+                "submit_review_seen_any": self._submit_review_seen_any,
+                "submit_debug_seen_any": self._submit_debug_seen_any,
                 "run_id": response.run_id,
             },
         )
@@ -428,13 +613,19 @@ class AgentOrchestrator:
         )
         self._last_plan = None
         self._tool_feedback = []
+        self._feedback_digest_index = {}
+        self._tool_dedup_cache = {}
+        self._submit_review_seen_any = False
+        self._submit_debug_seen_any = False
         self._latest_tokens = 0
         self._total_tokens = 0
         self._iteration = 0
         self._max_iterations = max_iterations
         self._blocking_error = False
         self._budget_exhausted = False
+        self._budget_state = "none"
         self._model_completed = False
+        self._last_decision_reason = ""
         self._record_event(EventType.PHASE_START, "prepare", {"run_id": self._run_id})
 
     async def _execute_one_tool(
@@ -444,10 +635,38 @@ class AgentOrchestrator:
         tool: BaseTool,
         args: dict[str, Any],
     ) -> tuple[ToolResult, ErrorDetail | None]:
+        dedup_key = None
+        if tool.spec().safety == ToolSafety.READONLY:
+            dedup_key = self._tool_dedup_key(tool_name, args)
+            cached = self._tool_dedup_cache.get(dedup_key)
+            if cached is not None:
+                hint = {
+                    "ok": True,
+                    "dedup_hit": True,
+                    "message": (
+                        f"Tool '{tool_name}' already executed earlier in this run with identical "
+                        f"arguments; reuse the prior result from tool_feedback. "
+                        f"Do not re-request the same read; synthesize now."
+                    ),
+                }
+                self._record_event(
+                    EventType.TOOL_CALL,
+                    "execute_tools",
+                    {
+                        "iteration": self._iteration,
+                        "name": tool_name,
+                        "ok": True,
+                        "dedup_hit": True,
+                    },
+                )
+                return ToolResult(ok=True, data=hint), None
         with tool_workspace_root(self._workspace_root):
             try:
                 data = await tool.execute(**args)
-                return ToolResult(ok=True, data=data), None
+                result = ToolResult(ok=True, data=data)
+                if dedup_key is not None:
+                    self._tool_dedup_cache[dedup_key] = result
+                return result, None
             except ToolError as exc:
                 err = f"Tool execution failed for {tool_name}: {exc}"
                 return (
@@ -460,6 +679,106 @@ class AgentOrchestrator:
                     ToolResult(ok=False, error=err),
                     ErrorDetail(file="", message=err, category="runtime"),
                 )
+
+    @staticmethod
+    def _tool_dedup_key(tool_name: str, args: dict[str, Any]) -> str:
+        try:
+            serialized = _json.dumps(args, ensure_ascii=True, sort_keys=True, default=str)
+        except Exception:  # noqa: BLE001
+            serialized = str(args)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return f"{tool_name}:{digest}"
+
+    def _append_tool_feedback(self, entries: list[dict[str, Any]]) -> None:
+        """Append feedback entries with iteration metadata, maintain ring-buffer window
+        and digest index for folded-summary injection."""
+        window = max(1, self._settings.feedback_window_iterations)
+        for entry in entries:
+            tool_call = entry.get("tool_call", {})
+            result = entry.get("result")
+            enriched = {
+                "iteration": self._iteration,
+                "tool_call": tool_call,
+                "result": result,
+            }
+            self._tool_feedback.append(enriched)
+            digest = self._compute_feedback_digest(tool_call)
+            if digest:
+                self._feedback_digest_index[digest] = self._build_digest_record(
+                    iteration=self._iteration,
+                    tool_call=tool_call,
+                    result=result,
+                )
+        if not self._tool_feedback:
+            return
+        max_iter = self._tool_feedback[-1].get("iteration", self._iteration)
+        min_keep = max_iter - window + 1
+        self._tool_feedback = [
+            item for item in self._tool_feedback if item.get("iteration", 0) >= min_keep
+        ]
+
+    @staticmethod
+    def _compute_feedback_digest(tool_call: dict[str, Any]) -> str:
+        function_block = tool_call.get("function") if isinstance(tool_call, dict) else None
+        if not isinstance(function_block, dict):
+            return ""
+        name = str(function_block.get("name", "")).strip()
+        args = function_block.get("arguments", "{}")
+        if isinstance(args, str):
+            try:
+                parsed = _json.loads(args)
+            except Exception:  # noqa: BLE001
+                parsed = {"raw": args}
+        else:
+            parsed = args
+        try:
+            serialized = _json.dumps(parsed, ensure_ascii=True, sort_keys=True, default=str)
+        except Exception:  # noqa: BLE001
+            serialized = str(parsed)
+        return f"{name}:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _build_digest_record(
+        *,
+        iteration: int,
+        tool_call: dict[str, Any],
+        result: Any,
+    ) -> dict[str, Any]:
+        function_block = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        name = ""
+        args_preview: Any = ""
+        if isinstance(function_block, dict):
+            name = str(function_block.get("name", "")).strip()
+            args_raw = function_block.get("arguments", "{}")
+            if isinstance(args_raw, str):
+                args_preview = args_raw[:200]
+            else:
+                try:
+                    args_preview = _json.dumps(args_raw, ensure_ascii=True)[:200]
+                except Exception:  # noqa: BLE001
+                    args_preview = str(args_raw)[:200]
+        ok = True
+        result_preview = ""
+        if hasattr(result, "model_dump"):
+            payload = result.model_dump()
+            ok = bool(payload.get("ok", False))
+            try:
+                result_preview = _json.dumps(payload, ensure_ascii=True)[:400]
+            except Exception:  # noqa: BLE001
+                result_preview = str(payload)[:400]
+        elif isinstance(result, dict):
+            ok = bool(result.get("ok", False))
+            try:
+                result_preview = _json.dumps(result, ensure_ascii=True)[:400]
+            except Exception:  # noqa: BLE001
+                result_preview = str(result)[:400]
+        return {
+            "iteration": iteration,
+            "name": name,
+            "args_preview": args_preview,
+            "ok": ok,
+            "result_preview": result_preview,
+        }
 
     async def _is_high_risk_allowed(
         self,
@@ -477,10 +796,18 @@ class AgentOrchestrator:
 
     def _build_engine(self) -> InferenceEngine | None:
         if self._model_client is not None:
-            return InferenceEngine(self._model_client)
+            return InferenceEngine(
+                self._model_client,
+                trace_recorder=self._trace_recorder,
+                trace_event_writer=self._record_event,
+            )
         try:
             self._model_client = ModelClient(temperature=self._temperature)
-            return InferenceEngine(self._model_client)
+            return InferenceEngine(
+                self._model_client,
+                trace_recorder=self._trace_recorder,
+                trace_event_writer=self._record_event,
+            )
         except Exception:  # noqa: BLE001
             return None
 

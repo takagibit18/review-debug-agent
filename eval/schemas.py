@@ -92,9 +92,22 @@ class EvalResult(BaseModel):
     false_positive_count: int = Field(default=0, ge=0)
     latency_seconds: float = Field(default=0.0, ge=0.0)
     total_tokens: int = Field(default=0, ge=0)
+    event_log_path: str | None = Field(
+        default=None,
+        description="Absolute path to persisted event log under eval/outputs/event_logs (if available)",
+    )
     error: str | None = None
     issue_matches: list[EvalIssueMatch] = Field(default_factory=list)
     raw_output: dict[str, Any] = Field(default_factory=dict)
+    placeholder_summary: bool = Field(
+        default=False,
+        description="True when the pipeline returned a placeholder summary (no submit_review/debug).",
+    )
+    submit_review_seen_any: bool = Field(default=False)
+    submit_debug_seen_any: bool = Field(default=False)
+    budget_exhausted: bool = Field(default=False)
+    budget_state: str = Field(default="none")
+    finish_reasons: list[str] = Field(default_factory=list)
 
 
 class SampledFixtureResult(BaseModel):
@@ -149,7 +162,9 @@ class MetricSummary(BaseModel):
         if not results:
             return cls()
 
-        valid_count = sum(1 for item in results if item.schema_valid)
+        valid_count = sum(
+            1 for item in results if item.schema_valid and not item.placeholder_summary
+        )
         expected_total = sum(item.expected_count for item in results)
         matched_total = sum(item.matched_count for item in results)
         actual_total = sum(item.actual_count for item in results)

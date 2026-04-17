@@ -23,6 +23,7 @@ load_dotenv(_REPO_ROOT / ".env", override=True)
 
 _base_url_adapter = TypeAdapter(AnyHttpUrl)
 PermissionMode = Literal["default", "plan"]
+TraceDetailMode = Literal["off", "compact", "full"]
 
 
 class Settings(BaseModel):
@@ -54,8 +55,13 @@ class Settings(BaseModel):
         ge=1,
     )
     token_budget: int = Field(
-        default_factory=lambda: int(os.getenv("TOKEN_BUDGET", "12000")),
+        default_factory=lambda: int(os.getenv("TOKEN_BUDGET", "24000")),
         ge=1,
+    )
+    feedback_window_iterations: int = Field(
+        default_factory=lambda: int(os.getenv("FEEDBACK_WINDOW_ITERATIONS", "3")),
+        ge=1,
+        description="How many recent iterations of tool feedback are injected verbatim into the prompt.",
     )
     prompt_input_token_budget: int = Field(
         default_factory=lambda: int(os.getenv("PROMPT_INPUT_TOKEN_BUDGET", "32000")),
@@ -77,6 +83,20 @@ class Settings(BaseModel):
     event_log_dir: str = Field(
         default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
         min_length=1,
+    )
+    agent_trace_detail: TraceDetailMode = Field(
+        default_factory=lambda: str(os.getenv("AGENT_TRACE_DETAIL", "off")).strip().lower()
+        or "off"
+    )
+    agent_trace_max_chars: int = Field(
+        default_factory=lambda: int(os.getenv("AGENT_TRACE_MAX_CHARS", "1200")),
+        ge=64,
+    )
+    agent_trace_log_tool_body: bool = Field(
+        default_factory=lambda: os.getenv("AGENT_TRACE_LOG_TOOL_BODY", "false")
+        .strip()
+        .lower()
+        in {"1", "true", "yes"},
     )
     eval_temperature: float = Field(
         default_factory=lambda: float(os.getenv("EVAL_TEMPERATURE", "0.0")),
@@ -123,6 +143,16 @@ class Settings(BaseModel):
             return ".cr-debug-agent/logs"
         raw = str(value).strip()
         return raw or ".cr-debug-agent/logs"
+
+    @field_validator("agent_trace_detail", mode="before")
+    @classmethod
+    def _validate_agent_trace_detail(cls, value: object) -> str:
+        if value is None:
+            return "off"
+        raw = str(value).strip().lower()
+        if raw in {"off", "compact", "full"}:
+            return raw
+        return "off"
 
 
 def _resolve_permission_mode(raw: object) -> PermissionMode:
