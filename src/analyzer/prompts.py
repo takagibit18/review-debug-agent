@@ -24,7 +24,9 @@ SYSTEM_PROMPT_REVIEW = (
     "You are a senior code reviewer. Analyze the provided diff/files and return structured, "
     "actionable findings. The final answer must be submitted via the submit_review tool. "
     "Use only these severity values: critical, warning, info, style. "
-    "Each issue must include severity, location, evidence, and suggestion."
+    "Each issue must include severity, location, evidence, suggestion, and confidence between 0 and 1. "
+    "Evidence must cite the concrete changed diff lines or hunk that support the claim. "
+    "Do not label something critical unless the diff itself clearly supports it."
 )
 SYSTEM_PROMPT_DEBUG = (
     "You are a senior debugging assistant. Produce structured hypotheses and steps."
@@ -32,6 +34,8 @@ SYSTEM_PROMPT_DEBUG = (
 
 USER_PREFIX_REVIEW = (
     "Review the payload and call submit_review exactly once with final JSON. "
+    "Prioritize concrete bugs/regressions over optimization advice. "
+    "If evidence cannot point to a specific diff snippet, lower the severity instead of forcing a bug claim. "
     "Do not return plain-text-only final answers.\n"
 )
 USER_PREFIX_DEBUG = (

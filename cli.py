@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 
 import click
 
+from src.analyzer.output_formatter import ReviewIssue, triage_review_report
 from src import __version__
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.orchestrator.agent_loop import AgentOrchestrator
@@ -46,13 +47,42 @@ def main(
 
 def _render_review_response(response: ReviewResponse, verbose: bool) -> None:
     """Render a review response for terminal output."""
+    triage = triage_review_report(response.report)
     click.echo("Running review command...")
     click.echo(f"Run ID: {response.run_id}")
     click.echo(f"Summary: {response.report.summary}")
     click.echo(f"Issues: {len(response.report.issues)}")
+    click.echo("Immediate attention: " + ("yes" if triage.must_fix_critical else "no"))
+    click.echo(f"Must-fix critical bugs: {len(triage.must_fix_critical)}")
+    click.echo(f"Other bug findings: {len(triage.other_bug_findings)}")
+    click.echo(
+        f"Optimization suggestions: {len(triage.optimization_suggestions)}"
+    )
     click.echo(f"Tracked files: {len(response.context.current_files)}")
+    if triage.must_fix_critical:
+        click.secho("Must-Fix Critical Bugs:", fg="red", bold=True)
+        for index, issue in enumerate(triage.must_fix_critical, start=1):
+            _render_review_issue(issue, index)
+    if triage.other_bug_findings:
+        click.secho("Other Bug Findings:", fg="yellow", bold=True)
+        for index, issue in enumerate(triage.other_bug_findings, start=1):
+            _render_review_issue(issue, index)
+    if triage.optimization_suggestions:
+        click.secho("Optimization Suggestions:", fg="cyan", bold=True)
+        for index, issue in enumerate(triage.optimization_suggestions, start=1):
+            _render_review_issue(issue, index)
     if verbose:
         click.echo(response.model_dump_json(indent=2))
+
+
+def _render_review_issue(issue: ReviewIssue, index: int) -> None:
+    """Render one review issue in a compact human-readable form."""
+    click.echo(
+        f"{index}. [{issue.severity.value}] {issue.location} "
+        f"(confidence={issue.confidence:.2f})"
+    )
+    click.echo(f"   Evidence: {issue.evidence}")
+    click.echo(f"   Suggested fix: {issue.suggestion}")
 
 
 def _render_debug_response(response: DebugResponse, verbose: bool) -> None:
