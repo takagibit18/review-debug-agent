@@ -40,3 +40,7 @@ class CommandExecutionToolError(ToolError):
 
 class CommandTimeoutToolError(ToolError):
     """Command exceeded execution timeout."""
+
+
+class CommandNotAllowedError(ToolError):
+    """Command rejected by the exec policy (allowlist, argv validation, etc.)."""

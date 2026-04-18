@@ -38,6 +38,18 @@ USER_PREFIX_DEBUG = (
     "Return tool calls if needed, then submit_debug with final JSON.\n"
 )
 
+FINALIZE_REVIEW_NOTICE = (
+    "FINAL CALL — this is your last opportunity to respond. You MUST call submit_review "
+    "exactly once using the best conclusions you can derive from the accumulated tool feedback. "
+    "Do NOT request any additional tools. If uncertain, return whatever partial findings are "
+    "supported by what was already read; an empty issues list is acceptable with an honest summary."
+)
+FINALIZE_DEBUG_NOTICE = (
+    "FINAL CALL — this is your last opportunity to respond. You MUST call submit_debug exactly "
+    "once with the best hypotheses and steps you can derive from the accumulated tool feedback. "
+    "Do NOT request any additional tools."
+)
+
 
 def build_review_messages(
     request: ReviewRequest,

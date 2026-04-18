@@ -21,6 +21,10 @@ class EventType(str, Enum):
     ERROR = "error"
     PHASE_START = "phase_start"
     PHASE_END = "phase_end"
+    MODEL_RESPONSE_DETAIL = "model_response_detail"
+    PLAN_PARSED = "plan_parsed"
+    TOOL_IO = "tool_io"
+    FORMAT_RESULT = "format_result"
 
 
 class EventEntry(BaseModel):

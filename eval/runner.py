@@ -5,16 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from statistics import mean, pstdev
 from time import perf_counter
+from typing import Any
 
 from eval.schemas import EvalIssueMatch, EvalResult, Fixture, SampledFixtureResult
 from src.analyzer.output_formatter import Severity
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.config import get_settings
 from src.orchestrator.agent_loop import AgentOrchestrator
+
+EVAL_EVENT_LOGS_OUTPUT_DIR = Path("eval") / "outputs" / "event_logs"
 
 
 def load_fixtures(
@@ -73,9 +77,17 @@ async def run_single(fixture: Fixture, *, temperature: float = 0.0) -> EvalResul
             latency = perf_counter() - start
 
             total_tokens = _read_total_tokens(repo_root, parsed.run_id)
+            log_stats = _read_event_log_stats(repo_root, parsed.run_id)
+            resolved_log = _resolve_event_log_path(repo_root, parsed.run_id)
+            event_log_path = _persist_event_log_to_outputs(
+                Path(resolved_log) if resolved_log else None,
+                fixture.id,
+                parsed.run_id,
+            )
             matches, matched_count, false_positive_count = _match_issues(fixture, parsed)
             raw_output = parsed.model_dump(mode="json")
 
+            placeholder = _is_placeholder_response(parsed)
             return EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
@@ -87,8 +99,15 @@ async def run_single(fixture: Fixture, *, temperature: float = 0.0) -> EvalResul
                 false_positive_count=false_positive_count,
                 latency_seconds=latency,
                 total_tokens=total_tokens,
+                event_log_path=event_log_path,
                 issue_matches=matches,
                 raw_output=raw_output,
+                placeholder_summary=placeholder,
+                submit_review_seen_any=log_stats["submit_review_seen_any"],
+                submit_debug_seen_any=log_stats["submit_debug_seen_any"],
+                budget_exhausted=log_stats["budget_exhausted"],
+                budget_state=log_stats["budget_state"],
+                finish_reasons=log_stats["finish_reasons"],
             )
     except Exception as exc:  # noqa: BLE001
         return EvalResult(
@@ -152,7 +171,10 @@ def _aggregate_sampled_result(
     fp_rates = [_compute_false_positive_rate(run.false_positive_count, run.actual_count) for run in runs]
     pass_at_k = 1.0 if expected_count == 0 else max(hit_rates, default=0.0)
     schema_valid_rate = (
-        sum(1 for run in runs if run.schema_valid) / len(runs) if runs else 0.0
+        sum(1 for run in runs if run.schema_valid and not run.placeholder_summary)
+        / len(runs)
+        if runs
+        else 0.0
     )
     return SampledFixtureResult(
         fixture_id=fixture.id,
@@ -215,6 +237,66 @@ def _prepend_context(original_text: str, sandbox_context: str) -> str:
     return sandbox_context
 
 
+_PLACEHOLDER_REVIEW_SUMMARY = "Review pipeline completed with placeholder summary."
+_PLACEHOLDER_DEBUG_SUMMARY = "Debug pipeline completed with placeholder summary."
+
+
+def _is_placeholder_response(parsed: ReviewResponse | DebugResponse) -> bool:
+    if isinstance(parsed, ReviewResponse):
+        return (
+            parsed.report.summary.strip() == _PLACEHOLDER_REVIEW_SUMMARY
+            and not parsed.report.issues
+        )
+    return (
+        parsed.summary.strip() == _PLACEHOLDER_DEBUG_SUMMARY and not parsed.steps
+    )
+
+
+def _read_event_log_stats(repo_root: Path, run_id: str) -> dict[str, Any]:
+    stats: dict[str, Any] = {
+        "submit_review_seen_any": False,
+        "submit_debug_seen_any": False,
+        "budget_exhausted": False,
+        "budget_state": "none",
+        "finish_reasons": [],
+    }
+    settings = get_settings()
+    log_dir = Path(settings.event_log_dir)
+    if not log_dir.is_absolute():
+        log_dir = repo_root / log_dir
+    log_path = log_dir / f"{run_id}.jsonl"
+    if not log_path.exists():
+        return stats
+    for raw_line in log_path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        etype = event.get("event_type")
+        payload = event.get("payload", {}) or {}
+        if etype == "decision":
+            reason = str(payload.get("reason", "")).strip()
+            if reason:
+                stats["finish_reasons"].append(reason)
+            if payload.get("submit_review_seen_any"):
+                stats["submit_review_seen_any"] = True
+            if payload.get("submit_debug_seen_any"):
+                stats["submit_debug_seen_any"] = True
+            bs = str(payload.get("budget_state", "")).strip()
+            if bs and bs != "none":
+                stats["budget_state"] = bs
+            if payload.get("budget_exhausted"):
+                stats["budget_exhausted"] = True
+        elif etype == "plan_parsed":
+            if payload.get("submit_review_seen"):
+                stats["submit_review_seen_any"] = True
+            if payload.get("submit_debug_seen"):
+                stats["submit_debug_seen_any"] = True
+    return stats
+
+
 def _read_total_tokens(repo_root: Path, run_id: str) -> int:
     settings = get_settings()
     log_dir = Path(settings.event_log_dir)
@@ -237,6 +319,44 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
         payload = event.get("payload", {})
         total += int(payload.get("tokens", 0) or 0)
     return total
+
+
+def _resolve_event_log_path(repo_root: Path, run_id: str) -> str | None:
+    if not run_id.strip():
+        return None
+    settings = get_settings()
+    log_dir = Path(settings.event_log_dir)
+    if not log_dir.is_absolute():
+        log_dir = repo_root / log_dir
+    log_path = log_dir / f"{run_id}.jsonl"
+    if not log_path.exists():
+        return None
+    return str(log_path)
+
+
+def _sanitize_fixture_id_for_filename(fixture_id: str) -> str:
+    return fixture_id.replace("\\", "_").replace("/", "_")
+
+
+def _persist_event_log_to_outputs(
+    src: Path | None,
+    fixture_id: str,
+    run_id: str,
+) -> str | None:
+    """Copy event log into eval/outputs/event_logs; return absolute path or None."""
+    if not run_id.strip() or src is None:
+        return None
+    if not src.is_file():
+        return None
+    safe_fid = _sanitize_fixture_id_for_filename(fixture_id)
+    dest_dir = EVAL_EVENT_LOGS_OUTPUT_DIR
+    dest = dest_dir / f"{safe_fid}_{run_id}.jsonl"
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+    except OSError:
+        return None
+    return str(dest.resolve())
 
 
 def _severity_rank(value: str) -> int:

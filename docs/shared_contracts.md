@@ -35,6 +35,8 @@
 
 新增工具时必须选定一级，并在 PR 中说明理由。
 
+**Execute 工具清单与可见性**：当前实现了 `run_command`（通用，首词白名单 + `shlex` argv 化 + `shell=False`）与 `run_tests`（`pytest`/`unittest` 便捷封装）。两者均走同一 `src/security/exec_policy.py` + `src/security/backends.py` 管道。**仅 Debug 模式**通过 `create_default_registry(include_execute=True)` 暴露给模型；Review 模式不暴露 execute 工具。策略违规统一抛 `CommandNotAllowedError(ToolError)`，经高危门控拒绝/未通过 policy 时均在 `ContextState.errors` 中以 `category="security"` 记录。
+
 ### 2.2 工具规格 `ToolSpec`
 
 - `name`：全局唯一，与注册表键一致。
@@ -155,6 +157,11 @@ CLI、未来 API 与 CI 校验应只依赖上述稳定字段；**增删字段** 
 | `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.cr-debug-agent/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
 | `PERMISSION_MODE` | 权限模式（`default` \| `plan`） | 默认 `default`；`plan` 模式禁止执行工具，仅生成计划与结构化输出 |
 | `CI` | 常见 CI 环境变量 | 设为 `true`/`1`/`yes` 时，编排层对 `write`/`execute` 工具默认拒绝（与 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md) §11 一致） |
+| `EXECUTE_ENABLED` | execute 类工具全局开关 | 默认 `true`；置 `false` 时即便 Debug 模式也不注册 `run_command` / `run_tests` |
+| `EXECUTE_BACKEND` | execute 工具后端实现 | `subprocess`（默认）/ `docker`（当前仅接口 stub，调用抛 `NotImplementedError`） |
+| `EXECUTE_ALLOWED_COMMANDS` | `run_command` 首词白名单 | 逗号分隔；默认 `python,pytest,pip,node,npm,ruff,mypy,git`；`git` 子命令再限于 `status/diff/log/show/rev-parse` |
+| `EXECUTE_DEFAULT_TIMEOUT_MS` | execute 工具默认超时 | 默认 `30000`，可由工具入参覆盖 |
+| `EXECUTE_MAX_OUTPUT_BYTES` | stdout/stderr 各自字节上限 | 默认 `65536`；超限时截断并置 `SandboxResult.*_truncated=True` |
 
 新增全局配置项时，应更新 `Settings`、`.env.example`（如有）及本文档或 README。
 
@@ -208,3 +215,4 @@ CLI、未来 API 与 CI 校验应只依赖上述稳定字段；**增删字段** 
 |------|------|
 | 2026-04-09 | 初稿：工具、状态、Review 输出、配置、观测与协作流程 |
 | 2026-04-12 | Debug 输出协议定稿落地；补充编排相关环境变量（轮次、token、事件日志、CI 与高危工具） |
+| 2026-04-17 | execute 工具硬化：argv + 首词白名单、pluggable backend（subprocess/docker stub）、输出截断、Review 模式不暴露 execute 工具；新增 `EXECUTE_*` 环境变量 |
