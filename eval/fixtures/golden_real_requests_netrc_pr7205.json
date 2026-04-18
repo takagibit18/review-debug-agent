@@ -17,13 +17,20 @@
     "error_log": null
   },
   "expected": {
-    "issues": [],
+    "issues": [
+  {
+    "severity": "info",
+    "location_pattern": "src/requests/utils.py",
+    "category": "logic",
+    "description": "The `get_netrc_auth` function in `utils.py` now properly handles cases where `netrc` entries return all-empty or all-None credential tuples (e.g., from a bare `default` line). However, the updated implementation (`if _netrc and any(_netrc)`) still relies on the `any()` function, which may not explicitly differentiate between None, empty strings, and other falsy values. This could result in some edge cases being incorrectly classified as valid or invalid credentials. A more precise check using explicit None/empty-string validation for tuple elements could be implemented, depending on the desired behavior."
+  }
+],
     "min_issues": 0,
     "max_issues": 0,
     "is_empty_annotation": true
   },
   "metadata": {
-    "suite": "golden_real",
+    "suite": "golden",
     "tags": [
       "github",
       "review",

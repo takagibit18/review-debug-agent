@@ -1,6 +1,6 @@
 # Execute 类工具：设计思路与安全规范
 
-本文档记录项目中 **execute 类工具**（`run_command`、`run_tests`）的设计原则、分层安全策略与配置约定。实现细节以代码为准；整体方案对齐 Cursor 计划稿 `execute-tools-design_f982b95b.plan.md`（典型路径：`c:\Users\Lenovo\.cursor\plans\execute-tools-design_f982b95b.plan.md`，可能不在本仓库内）。
+本文档记录项目中 **execute 类工具**（`run_command`、`run_tests`）的设计原则、分层安全策略与配置约定。实现细节以代码为准。契约与环境变量见 [shared_contracts.md](./shared_contracts.md) §2 / §6；编排高危门控见 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md) §11；路线图中的「已落地 / 待办」见 [mvp_plus_roadmap.md](./mvp_plus_roadmap.md) §1与 §3.1。
 
 ---
 
