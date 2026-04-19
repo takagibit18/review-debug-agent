@@ -75,6 +75,9 @@ docker compose up --build
 ├── docs/                  # 项目文档（架构/契约/规划）
 │   ├── architecture.md
 │   ├── shared_contracts.md
+│   ├── execute_tools_design.md  # execute 类工具设计与安全规范
+│   ├── cli_tools_orchestrator_contract.md
+│   ├── mvp_plus_roadmap.md
 │   └── project_plan.md
 ├── cli.py                 # CLI 入口（Click）
 ├── agent.md               # Agent 开发约束与知识索引入口

@@ -30,6 +30,9 @@ docs/
 ├── architecture.md         # 分层架构、5 阶段编排、关键设计决策
 ├── error_log.md            # 开发过程中遇到的错误与解决记录
 ├── shared_contracts.md     # Analyzer/Integration 共享接口与协议契约
+├── execute_tools_design.md # execute 类工具（run_command/run_tests）设计与安全规范
+├── cli_tools_orchestrator_contract.md  # CLI/编排/工具层确定性契约
+├── mvp_plus_roadmap.md     # MVP+ 增量与「已落地/待办」对照
 └── project_plan.md         # 项目规划与里程碑（由根目录计划文档迁移）
 
 root/
@@ -43,6 +46,9 @@ root/
 
 - 架构与模块边界问题 → `docs/architecture.md`
 - 工具接口、状态模型、输出 schema → `docs/shared_contracts.md`
+- execute 工具策略、白名单、沙箱后端、EXECUTE_* → `docs/execute_tools_design.md`
+- CLI/编排高危门控、phase 约束 → `docs/cli_tools_orchestrator_contract.md`
+- MVP+ 增量清单与基线更新 → `docs/mvp_plus_roadmap.md`
 - 里程碑、分工、演进路线 → `docs/project_plan.md`
 - 提交流程、分支规范、代码风格 → `CONTRIBUTING.md`
 - 评测标准与基线策略 → `eval/README.md`
