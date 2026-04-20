@@ -34,3 +34,25 @@ jobs:
 
       - name: Run tests
         run: pytest -v
+
+      - name: Run golden eval
+        env:
+          EVAL_SAMPLES: "1"
+          EVAL_CONCURRENCY: "1"
+          EVAL_TEMPERATURE: "0.0"
+        run: |
+          python -m eval.run eval --suite golden --output-json eval/outputs/ci_report.json
+
+      - name: Enforce eval gate
+        run: |
+          python -m eval.gate --report eval/outputs/ci_report.json --schema-validity-min 1.0 --hit-rate-min 0.8 --false-positive-rate-max 0.5
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-artifacts
+          path: |
+            eval/outputs/ci_report.json
+            eval/outputs/*_human_review.md
+            eval/outputs/event_logs

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-15T12:00:00+00:00",
+  "generated_at": "2026-04-20T00:00:00+00:00",
   "entries": [
     {
       "fixture_id": "golden_astral-sh_ruff_pr24648",
@@ -8,6 +8,87 @@
       "repo_full_name": "astral-sh/ruff",
       "pr_number": 24648,
       "path": "eval/fixtures/golden_astral-sh_ruff_pr24648.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_real_requests_netrc_pr7205",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "psf/requests",
+      "pr_number": 7205,
+      "path": "eval/fixtures/golden_real_requests_netrc_pr7205.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_detect_unchecked_none",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/app",
+      "pr_number": 101,
+      "path": "eval/fixtures/golden_manual_detect_unchecked_none.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_detect_sql_injection",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/api",
+      "pr_number": 102,
+      "path": "eval/fixtures/golden_manual_detect_sql_injection.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_detect_swallow_exception",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/worker",
+      "pr_number": 103,
+      "path": "eval/fixtures/golden_manual_detect_swallow_exception.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_zero_refactor_rename",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/lib",
+      "pr_number": 201,
+      "path": "eval/fixtures/golden_manual_zero_refactor_rename.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_zero_add_test_only",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/lib",
+      "pr_number": 202,
+      "path": "eval/fixtures/golden_manual_zero_add_test_only.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_boundary_large_whitespace",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/ui",
+      "pr_number": 301,
+      "path": "eval/fixtures/golden_manual_boundary_large_whitespace.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_boundary_generated_file",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/web",
+      "pr_number": 302,
+      "path": "eval/fixtures/golden_manual_boundary_generated_file.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_manual_boundary_mixed_rename",
+      "suite": "golden_synth",
+      "fixture_type": "review",
+      "repo_full_name": "example/core",
+      "pr_number": 303,
+      "path": "eval/fixtures/golden_manual_boundary_mixed_rename.json",
       "reviewed": true
     }
   ]

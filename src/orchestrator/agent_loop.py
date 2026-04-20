@@ -219,10 +219,23 @@ class AgentOrchestrator:
 
         diff_text = ""
         error_log_text = ""
+        project_structure = self._context_builder.build_project_structure(
+            request.repo_path,
+            max_depth=self._settings.project_structure_max_depth,
+            max_entries=self._settings.project_structure_max_entries,
+        )
+        file_contents: dict[str, str] = {}
         if isinstance(request, ReviewRequest):
             diff_text = request.diff_text or ""
             if request.diff_mode and not diff_text:
                 diff_text = self._context_builder.load_diff(request.repo_path)
+            file_contents = self._context_builder.load_diff_file_contents(
+                request.repo_path,
+                diff_text=diff_text,
+                max_files=self._settings.file_context_max_files,
+                max_chars_per_file=self._settings.file_context_max_chars_per_file,
+                max_chars_total=self._settings.file_context_max_chars_total,
+            )
         else:
             error_log_text = self._context_builder.load_error_log(
                 request.error_log_path, request.error_log_text
@@ -252,6 +265,8 @@ class AgentOrchestrator:
                     tool_schemas=serialized_tools,
                     diff_text=diff_text,
                     error_log=error_log_text,
+                    project_structure=project_structure,
+                    file_contents=file_contents,
                     tool_feedback=self._tool_feedback,
                     feedback_digest_index=self._feedback_digest_index,
                     prompt_input_token_budget=self._settings.prompt_input_token_budget,
@@ -324,10 +339,18 @@ class AgentOrchestrator:
             tool = registry.get(tool_name)
             if tool is None:
                 err = f"Tool not found: {tool_name}"
+                structured = {
+                    "ok": False,
+                    "error_type": "tool_not_found",
+                    "message": err,
+                    "recommended_next_step": (
+                        "Use list_dir on the parent directory first, then retry with a valid tool name/path."
+                    ),
+                }
                 state.errors.append(
                     ErrorDetail(file="", message=err, category="runtime")
                 )
-                results.append(ToolResult(ok=False, error=err))
+                results.append(ToolResult(ok=False, error=err, data=structured))
                 executed_feedback.append({"tool_call": raw_call, "result": results[-1]})
                 index += 1
                 continue
@@ -675,8 +698,9 @@ class AgentOrchestrator:
                 return result, None
             except ToolError as exc:
                 err = f"Tool execution failed for {tool_name}: {exc}"
+                hint = self._tool_error_hint(tool_name=tool_name, message=str(exc))
                 return (
-                    ToolResult(ok=False, error=err),
+                    ToolResult(ok=False, error=err, data=hint),
                     ErrorDetail(file=exc.path, message=err, category="runtime"),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -685,6 +709,26 @@ class AgentOrchestrator:
                     ToolResult(ok=False, error=err),
                     ErrorDetail(file="", message=err, category="runtime"),
                 )
+
+    @staticmethod
+    def _tool_error_hint(*, tool_name: str, message: str) -> dict[str, Any]:
+        lower = message.lower()
+        recommendation = "Inspect arguments and retry."
+        if "not found" in lower or "outside the allowed workspace" in lower:
+            recommendation = (
+                "Run list_dir on the parent directory to verify paths, then retry with a workspace-relative path."
+            )
+        elif "not a directory" in lower:
+            recommendation = "Validate parent directory with list_dir before calling glob_files/grep_files."
+        elif "invalid glob pattern" in lower or "invalid regex pattern" in lower:
+            recommendation = "Fix the search pattern syntax and retry."
+        return {
+            "ok": False,
+            "error_type": "tool_execution_failed",
+            "tool_name": tool_name,
+            "message": message,
+            "recommended_next_step": recommendation,
+        }
 
     @staticmethod
     def _tool_dedup_key(tool_name: str, args: dict[str, Any]) -> str:

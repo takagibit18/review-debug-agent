@@ -56,7 +56,7 @@ class ContextBuilder:
     def load_diff(self, repo_path: str) -> str:
         try:
             result = subprocess.run(
-                ["git", "-C", repo_path, "diff", "--cached"],
+                ["git", "-C", repo_path, "diff", "HEAD"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -66,6 +66,139 @@ class ContextBuilder:
             return result.stdout.strip()
         except Exception:  # noqa: BLE001
             return ""
+
+    def build_project_structure(
+        self,
+        repo_path: str,
+        *,
+        max_depth: int,
+        max_entries: int,
+    ) -> str:
+        root = Path(repo_path).resolve()
+        if not root.exists() or not root.is_dir():
+            return ""
+        lines: list[str] = [f"{root.name}/"]
+        emitted = 1
+        truncated = False
+
+        def walk(path: Path, depth: int) -> None:
+            nonlocal emitted, truncated
+            if truncated or depth > max_depth:
+                return
+            try:
+                children = sorted(path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+            except OSError:
+                return
+            for child in children:
+                if truncated:
+                    return
+                if child.name.startswith("."):
+                    continue
+                rel = child.relative_to(root).as_posix()
+                indent = "  " * depth
+                suffix = "/" if child.is_dir() else ""
+                lines.append(f"{indent}- {rel}{suffix}")
+                emitted += 1
+                if emitted >= max_entries:
+                    truncated = True
+                    lines.append(f"{indent}- ... (truncated)")
+                    return
+                if child.is_dir():
+                    walk(child, depth + 1)
+
+        walk(root, 1)
+        return "\n".join(lines)
+
+    def load_diff_file_contents(
+        self,
+        repo_path: str,
+        diff_text: str,
+        *,
+        max_files: int,
+        max_chars_per_file: int,
+        max_chars_total: int,
+    ) -> dict[str, str]:
+        root = Path(repo_path).resolve()
+        if not diff_text.strip() or not root.is_dir():
+            return {}
+        diff_files = self._extract_diff_paths(diff_text)
+        if not diff_files:
+            return {}
+        selected: list[str] = []
+        seen: set[str] = set()
+        for rel in diff_files:
+            if rel not in seen:
+                seen.add(rel)
+                selected.append(rel)
+        for rel in list(diff_files):
+            for neighbor in self._candidate_neighbor_files(rel):
+                if len(selected) >= max_files:
+                    break
+                if neighbor in seen:
+                    continue
+                seen.add(neighbor)
+                selected.append(neighbor)
+            if len(selected) >= max_files:
+                break
+
+        loaded: dict[str, str] = {}
+        total_chars = 0
+        for rel in selected:
+            if len(loaded) >= max_files or total_chars >= max_chars_total:
+                break
+            target = (root / rel).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError:
+                continue
+            if not target.is_file():
+                continue
+            try:
+                content = target.read_text(encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                continue
+            sliced = content[:max_chars_per_file]
+            remaining = max_chars_total - total_chars
+            if remaining <= 0:
+                break
+            if len(sliced) > remaining:
+                sliced = sliced[:remaining]
+            loaded[rel] = sliced
+            total_chars += len(sliced)
+        return loaded
+
+    @staticmethod
+    def _extract_diff_paths(diff_text: str) -> list[str]:
+        out: list[str] = []
+        for line in diff_text.splitlines():
+            if not line.startswith("diff --git "):
+                continue
+            parts = line.split(" ")
+            if len(parts) < 4:
+                continue
+            b_path = parts[3].strip()
+            if b_path.startswith("b/"):
+                b_path = b_path[2:]
+            if b_path and b_path != "/dev/null":
+                out.append(b_path)
+        return out
+
+    @staticmethod
+    def _candidate_neighbor_files(rel_path: str) -> list[str]:
+        path = Path(rel_path)
+        parent = path.parent
+        stem = path.stem
+        suffix = path.suffix
+        candidates: list[str] = []
+        if suffix == ".py":
+            if "tests" not in path.parts:
+                candidates.append((parent / "tests" / f"test_{stem}.py").as_posix())
+                candidates.append((parent / f"test_{stem}.py").as_posix())
+            candidates.append((parent / f"{stem}_test.py").as_posix())
+        if suffix in {".js", ".ts", ".tsx"}:
+            candidates.append((parent / f"{stem}.test{suffix}").as_posix())
+            candidates.append((parent / f"{stem}.spec{suffix}").as_posix())
+        return candidates
 
     def load_files(self, paths: list[str]) -> dict[str, str]:
         loaded: dict[str, str] = {}

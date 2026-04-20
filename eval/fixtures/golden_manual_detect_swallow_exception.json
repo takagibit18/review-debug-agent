@@ -1,0 +1,41 @@
+{
+  "id": "golden_manual_detect_swallow_exception",
+  "type": "review",
+  "source": {
+    "repo_full_name": "example/worker",
+    "pr_number": 103,
+    "url": "https://example.invalid/pr/103",
+    "merge_commit_sha": "manual",
+    "title": "Relax retry behavior"
+  },
+  "input": {
+    "diff_text": "diff --git a/src/retry.py b/src/retry.py\n--- a/src/retry.py\n+++ b/src/retry.py\n@@ -1,6 +1,8 @@\n def run_with_retry(task):\n     try:\n         return task()\n-    except TimeoutError:\n-        raise\n+    except Exception:\n+        return None\n",
+    "files": {
+      "src/retry.py": "def run_with_retry(task):\n    try:\n        return task()\n    except Exception:\n        return None\n"
+    },
+    "error_log": null
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "src/retry.py",
+        "path": "src/retry.py",
+        "line": 4,
+        "category": "reliability",
+        "description": "Catching broad Exception and returning None hides real failures."
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 3,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden_synth",
+    "tags": ["manual", "should-detect", "error-handling"],
+    "difficulty": "easy",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-04-20T00:00:00+00:00"
+  }
+}

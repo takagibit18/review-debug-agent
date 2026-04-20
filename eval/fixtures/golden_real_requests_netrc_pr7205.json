@@ -23,13 +23,14 @@
     "is_empty_annotation": true
   },
   "metadata": {
-    "suite": "golden_real",
+    "suite": "golden",
     "tags": [
       "github",
       "review",
       "auth",
       "netrc",
-      "negative-sample"
+      "negative-sample",
+      "zero-issue"
     ],
     "difficulty": "easy",
     "annotated_by": "manual",

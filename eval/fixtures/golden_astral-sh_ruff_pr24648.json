@@ -36,7 +36,8 @@
     "tags": [
       "github",
       "auto_discover",
-      "llm_assisted"
+      "llm_assisted",
+      "should-detect"
     ],
     "difficulty": "hard",
     "annotated_by": "llm_draft",

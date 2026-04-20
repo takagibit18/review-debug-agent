@@ -28,6 +28,12 @@ class ExpectedIssue(BaseModel):
 
     severity: Severity = Field(default=Severity.WARNING)
     location_pattern: str = Field(default="", description="Loose pattern matched in issue location.")
+    path: str = Field(
+        default="",
+        description="Canonical repo-relative path for semantic location matching.",
+    )
+    line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
     category: str = Field(default="logic")
     description: str = Field(default="")
 
@@ -115,6 +121,7 @@ class SampledFixtureResult(BaseModel):
 
     fixture_id: str
     fixture_type: FixtureType
+    expected_count: int = Field(default=0, ge=0)
     samples: int = Field(default=1, ge=1)
     runs: list[EvalResult] = Field(default_factory=list)
     pass_at_k_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -199,8 +206,11 @@ class MetricSummary(BaseModel):
         if not sampled_results:
             return cls()
 
-        pass_at_k_values = [item.pass_at_k_hit_rate for item in sampled_results]
-        mean_hit_values = [item.mean_hit_rate for item in sampled_results]
+        positive_results = [
+            item for item in sampled_results if _sampled_expected_count(item) > 0
+        ]
+        pass_at_k_values = [item.pass_at_k_hit_rate for item in positive_results]
+        mean_hit_values = [item.mean_hit_rate for item in positive_results]
         mean_fp_values = [item.mean_false_positive_rate for item in sampled_results]
         schema_valid_values = [item.schema_valid_rate for item in sampled_results]
         all_runs = [run for item in sampled_results for run in item.runs]
@@ -210,9 +220,9 @@ class MetricSummary(BaseModel):
 
         return cls(
             schema_validity_rate=float(mean(schema_valid_values)),
-            hit_rate=float(mean(mean_hit_values)),
-            pass_at_k_hit_rate=float(mean(pass_at_k_values)),
-            mean_hit_rate=float(mean(mean_hit_values)),
+            hit_rate=float(mean(mean_hit_values)) if mean_hit_values else 0.0,
+            pass_at_k_hit_rate=float(mean(pass_at_k_values)) if pass_at_k_values else 0.0,
+            mean_hit_rate=float(mean(mean_hit_values)) if mean_hit_values else 0.0,
             hit_rate_stddev=float(pstdev(mean_hit_values)) if len(mean_hit_values) > 1 else 0.0,
             false_positive_rate=float(mean(mean_fp_values)),
             mean_false_positive_rate=float(mean(mean_fp_values)),
@@ -224,6 +234,12 @@ class MetricSummary(BaseModel):
             p50_total_tokens=cls._percentile(token_values, 0.5),
             p95_total_tokens=cls._percentile(token_values, 0.95),
         )
+
+
+def _sampled_expected_count(item: SampledFixtureResult) -> int:
+    if item.expected_count > 0:
+        return item.expected_count
+    return max((run.expected_count for run in item.runs), default=0)
 
 
 class EvalReport(BaseModel):

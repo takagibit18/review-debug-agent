@@ -7,12 +7,12 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Iterable
+from typing import Iterable, Literal
 
 from eval.crawler.annotator import LLMAnnotator
 from eval.crawler.github_client import GithubCrawlerClient, PullRequestCandidate
 from eval.crawler.pr_parser import build_fixture_input, build_fixture_source, parse_unified_diff
-from eval.schemas import Fixture, FixtureManifest, FixtureManifestEntry
+from eval.schemas import Fixture, FixtureManifest, FixtureManifestEntry, FixtureMeta
 
 
 class FixtureGenerator:
@@ -204,13 +204,13 @@ class FixtureGenerator:
             source=fixture_source,
             input=fixture_input,
             expected=annotation,
-            metadata={
-                "suite": suite,
-                "tags": ["github", "auto_discover", "llm_assisted"],
-                "annotated_by": "llm_draft",
-                "reviewed": False,
-                "difficulty": self._estimate_difficulty(parsed_files),
-            },
+            metadata=FixtureMeta(
+                suite=suite,
+                tags=["github", "auto_discover", "llm_assisted"],
+                annotated_by="llm_draft",
+                reviewed=False,
+                difficulty=self._estimate_difficulty(parsed_files),
+            ),
         )
         return fixture, annotation_diagnostics
 
@@ -239,7 +239,7 @@ class FixtureGenerator:
         output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
-    def _estimate_difficulty(diff_files: list) -> str:
+    def _estimate_difficulty(diff_files: list) -> Literal["easy", "medium", "hard"]:
         file_count = len(diff_files)
         hunk_count = sum(len(item.hunks) for item in diff_files)
         score = file_count + hunk_count

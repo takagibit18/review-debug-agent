@@ -235,6 +235,10 @@ def assemble_review_payload(
             selected_part = _selected_part_for_label(selected, p.label)
             if selected_part is not None:
                 files_out[path] = selected_part.content
+    structure_out = ""
+    structure_part = _selected_part_for_label(selected, "structure")
+    if structure_part is not None:
+        structure_out = structure_part.content
 
     truncated: dict[str, Any] = {
         "any": any(not _contains_label_or_summary(sel, label) for label in all_l),
@@ -262,6 +266,7 @@ def assemble_review_payload(
         "diff_text": raw_diff_text,
         "diff_loaded": diff_loaded_out,
         "files": files_out,
+        "project_structure": structure_out,
         "constraints": context.constraints,
         "truncated": truncated,
     }
@@ -295,6 +300,10 @@ def assemble_debug_payload(
             selected_part = _selected_part_for_label(selected, p.label)
             if selected_part is not None:
                 files_out[path] = selected_part.content
+    structure_out = ""
+    structure_part = _selected_part_for_label(selected, "structure")
+    if structure_part is not None:
+        structure_out = structure_part.content
 
     truncated = {
         "any": any(not _contains_label_or_summary(sel, label) for label in all_l),
@@ -321,6 +330,7 @@ def assemble_debug_payload(
         "error_log_text": raw_error_log_text,
         "error_log_loaded": error_out,
         "files": files_out,
+        "project_structure": structure_out,
         "constraints": context.constraints,
         "truncated": truncated,
     }

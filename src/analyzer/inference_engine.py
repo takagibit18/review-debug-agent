@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_state import ContextState
 from src.analyzer.event_log import EventType
+from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import ReviewReport
 from src.analyzer.prompts import (
     FINALIZE_REVIEW_NOTICE,
@@ -52,6 +53,7 @@ class InferenceEngine:
         tool_schemas: list[dict[str, Any]] | None = None,
         diff_text: str = "",
         error_log: str = "",
+        project_structure: str = "",
         file_contents: dict[str, str] | None = None,
         tool_feedback: list[dict[str, Any]] | None = None,
         feedback_digest_index: dict[str, dict[str, Any]] | None = None,
@@ -80,6 +82,7 @@ class InferenceEngine:
                     summary_enabled=True,
                     summary_max_tokens_per_part=get_settings().summary_max_tokens_per_part,
                     summary_model_name=request.model_name or get_settings().model_name,
+                    project_structure=project_structure,
                 )
             else:
                 messages = build_review_messages(
@@ -89,6 +92,7 @@ class InferenceEngine:
                     file_contents,
                     prompt_token_budget=budget,
                     context_builder=cb,
+                    project_structure=project_structure,
                 )
         else:
             if get_settings().context_summary_enabled:
@@ -103,6 +107,7 @@ class InferenceEngine:
                     summary_enabled=True,
                     summary_max_tokens_per_part=get_settings().summary_max_tokens_per_part,
                     summary_model_name=request.model_name or get_settings().model_name,
+                    project_structure=project_structure,
                 )
             else:
                 messages = build_debug_messages(
@@ -112,6 +117,7 @@ class InferenceEngine:
                     file_contents,
                     prompt_token_budget=budget,
                     context_builder=cb,
+                    project_structure=project_structure,
                 )
 
         window_iterations = {
@@ -124,6 +130,9 @@ class InferenceEngine:
             messages.append(folded)
         if tool_feedback:
             messages.extend(self._build_tool_feedback_messages(tool_feedback))
+            failure_guidance = self._build_failure_guidance_message(tool_feedback)
+            if failure_guidance is not None:
+                messages.append(failure_guidance)
         if force_submit:
             notice = (
                 FINALIZE_REVIEW_NOTICE
@@ -175,6 +184,7 @@ class InferenceEngine:
             "submit_debug_seen": False,
             "submit_review_validation_error": "",
             "submit_debug_validation_error": "",
+            "location_warnings": [],
         }
 
         for raw in raw_calls:
@@ -190,7 +200,8 @@ class InferenceEngine:
 
             if name == "submit_review":
                 parse_meta["submit_review_seen"] = True
-                normalized_payload = self._normalize_review_payload(payload)
+                normalized_payload, warnings = self._normalize_review_payload(payload)
+                parse_meta["location_warnings"] = warnings
                 try:
                     draft_review = ReviewReport.model_validate(normalized_payload)
                 except ValidationError as exc:
@@ -236,7 +247,7 @@ class InferenceEngine:
         self, payload: dict[str, Any], request: ReviewRequest | DebugRequest
     ) -> AnalysisPlan | None:
         if isinstance(request, ReviewRequest):
-            normalized_payload = self._normalize_review_payload(payload)
+            normalized_payload, _ = self._normalize_review_payload(payload)
             try:
                 report = ReviewReport.model_validate(normalized_payload)
                 return AnalysisPlan(
@@ -271,14 +282,15 @@ class InferenceEngine:
             return None
 
     @staticmethod
-    def _normalize_review_payload(payload: Any) -> dict[str, Any]:
+    def _normalize_review_payload(payload: Any) -> tuple[dict[str, Any], list[dict[str, str]]]:
         if not isinstance(payload, dict):
-            return {}
+            return {}, []
         normalized = dict(payload)
         issues = normalized.get("issues")
         if not isinstance(issues, list):
-            return normalized
+            return normalized, []
         normalized_issues: list[Any] = []
+        warnings: list[dict[str, str]] = []
         for issue in issues:
             if not isinstance(issue, dict):
                 normalized_issues.append(issue)
@@ -288,9 +300,20 @@ class InferenceEngine:
             mapped = InferenceEngine._normalize_severity(raw_severity)
             if mapped:
                 issue_dict["severity"] = mapped
+            raw_location = str(issue_dict.get("location", "")).strip()
+            if raw_location:
+                parsed_location = normalize_location(raw_location)
+                issue_dict["location"] = parsed_location.canonical
+                if parsed_location.warning:
+                    warnings.append(
+                        {
+                            "location": raw_location,
+                            "warning": parsed_location.warning,
+                        }
+                    )
             normalized_issues.append(issue_dict)
         normalized["issues"] = normalized_issues
-        return normalized
+        return normalized, warnings
 
     @staticmethod
     def _normalize_severity(value: str) -> str:
@@ -379,6 +402,45 @@ class InferenceEngine:
             )
         return Message(role="user", content="\n".join(lines))
 
+    @staticmethod
+    def _build_failure_guidance_message(
+        tool_feedback: list[dict[str, Any]],
+    ) -> Message | None:
+        failed: list[str] = []
+        for item in tool_feedback:
+            result = item.get("result")
+            payload: dict[str, Any]
+            if isinstance(result, ToolResult):
+                payload = result.model_dump()
+            elif isinstance(result, dict):
+                payload = result
+            else:
+                continue
+            if payload.get("ok") is not False:
+                continue
+            call = item.get("tool_call", {}) if isinstance(item, dict) else {}
+            fn = ""
+            if isinstance(call, dict):
+                fn_block = call.get("function", {})
+                if isinstance(fn_block, dict):
+                    fn = str(fn_block.get("name", "")).strip()
+            error = str(payload.get("error") or "")
+            recommendation = ""
+            data = payload.get("data")
+            if isinstance(data, dict):
+                recommendation = str(data.get("recommended_next_step", "")).strip()
+            failed.append(f"- tool={fn or 'unknown'} error={error} next={recommendation or 'inspect args'}")
+        if not failed:
+            return None
+        return Message(
+            role="user",
+            content=(
+                "Tool failures observed. Do not blindly retry the same path/args. "
+                "If path is uncertain, run list_dir on parent directory first.\n"
+                + "\n".join(failed[:8])
+            ),
+        )
+
     def _record_trace(
         self,
         response: ModelResponse,
@@ -429,6 +491,7 @@ class InferenceEngine:
                 "submit_debug_validation_error": self._trace_recorder.build_text_preview(
                     str(parse_meta.get("submit_debug_validation_error", ""))
                 ),
+                "location_warnings": parse_meta.get("location_warnings", []),
                 "fallback_json_found": fallback_json_found,
                 "fallback_parse_valid": fallback_parse_valid,
             },

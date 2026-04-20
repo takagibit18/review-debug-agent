@@ -5,7 +5,12 @@ from __future__ import annotations
 from uuid import uuid4
 
 from src.analyzer.context_state import ContextState, DecisionStep
-from src.analyzer.output_formatter import ReviewIssue, ReviewReport
+from src.analyzer.output_formatter import (
+    ReviewIssue,
+    ReviewReport,
+    Severity,
+    has_specific_diff_evidence,
+)
 from src.analyzer.schemas import AnalysisPlan, DebugResponse, ReviewResponse
 from src.tools.base import ToolResult
 
@@ -79,6 +84,8 @@ class ResultProcessor:
         merged_issues: list[ReviewIssue] = []
         for report in reports:
             for issue in report.issues:
+                if not ResultProcessor._passes_issue_filter(issue):
+                    continue
                 key = (issue.severity.value, issue.location, issue.suggestion)
                 if key in seen:
                     continue
@@ -92,6 +99,12 @@ class ResultProcessor:
             )
         )
         return ReviewReport(summary=merged_summary, issues=merged_issues)
+
+    @staticmethod
+    def _passes_issue_filter(issue: ReviewIssue) -> bool:
+        if issue.severity in {Severity.CRITICAL, Severity.WARNING}:
+            return has_specific_diff_evidence(issue.evidence)
+        return True
 
     def is_budget_exhausted(self, total_tokens: int) -> bool:
         """Backward-compatible: True when soft cap is reached."""

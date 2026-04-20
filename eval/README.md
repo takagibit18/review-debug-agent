@@ -50,6 +50,17 @@ eval/
 | 人工可接受度 | 人工 spot-check 评分 |
 | 耗时 / Token | 工程回归指标 |
 
+### Review target semantics
+
+For review fixtures, the primary input is the pull request diff. The temporary
+sandbox contains the files from the fixture as post-diff context so the agent can
+read surrounding code when needed. Expected issues should target problems that
+the submitted diff introduces, exposes, or fails to fix; the eval is not a
+general audit of the pre-diff repository.
+
+When `diff_mode=True`, the eval measures review quality for the submitted diff.
+File reads are contextual evidence only.
+
 ### 补充维度：公开 benchmark
 
 在黄金集跑通后，可从 SWE-bench 等公开数据中抽取少量实例做外推验证。子集规模、筛选规则需写入评测说明，与主评测通过/失败口径分开汇报。

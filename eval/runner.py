@@ -12,7 +12,14 @@ from statistics import mean, pstdev
 from time import perf_counter
 from typing import Any
 
-from eval.schemas import EvalIssueMatch, EvalResult, Fixture, SampledFixtureResult
+from eval.schemas import (
+    EvalIssueMatch,
+    EvalResult,
+    Fixture,
+    FixtureManifest,
+    SampledFixtureResult,
+)
+from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import Severity
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.config import get_settings
@@ -29,10 +36,9 @@ def load_fixtures(
 ) -> list[Fixture]:
     """Load fixtures for one suite."""
     root = Path(fixtures_dir)
+    fixture_paths = _resolve_fixture_paths(root)
     fixtures: list[Fixture] = []
-    for path in sorted(root.glob("*.json")):
-        if path.name == "manifest.json":
-            continue
+    for path in fixture_paths:
         fixture = Fixture.model_validate_json(path.read_text(encoding="utf-8"))
         if fixture.metadata.suite != suite:
             continue
@@ -40,6 +46,27 @@ def load_fixtures(
             continue
         fixtures.append(fixture)
     return fixtures
+
+
+def _resolve_fixture_paths(root: Path) -> list[Path]:
+    manifest_path = root / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = FixtureManifest.model_validate_json(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            resolved: list[Path] = []
+            for entry in manifest.entries:
+                candidate = Path(entry.path)
+                if not candidate.is_absolute():
+                    candidate = (root.parent / candidate).resolve()
+                if candidate.exists() and candidate.suffix == ".json":
+                    resolved.append(candidate)
+            if resolved:
+                return sorted(resolved)
+        except Exception:  # noqa: BLE001
+            pass
+    return sorted(path for path in root.glob("*.json") if path.name != "manifest.json")
 
 
 async def run_single(fixture: Fixture, *, temperature: float = 0.0) -> EvalResult:
@@ -53,53 +80,61 @@ async def run_single(fixture: Fixture, *, temperature: float = 0.0) -> EvalResul
             sandbox_context = _build_sandbox_context(fixture.input.files, repo_root)
 
             start = perf_counter()
+            parsed_response: ReviewResponse | DebugResponse
+            actual_count = 0
             if fixture.type == "review":
                 original_diff = fixture.input.diff_text or ""
-                request = ReviewRequest(
+                review_request = ReviewRequest(
                     repo_path=str(repo_root),
                     diff_mode=bool(original_diff),
                     diff_text=_prepend_context(original_diff, sandbox_context),
                     verbose=False,
                 )
-                response = await orchestrator.run_review(request)
-                parsed = ReviewResponse.model_validate(response.model_dump())
-                actual_issues = parsed.report.issues
+                review_response = await orchestrator.run_review(review_request)
+                parsed_response = ReviewResponse.model_validate(review_response.model_dump())
+                actual_count = len(parsed_response.report.issues)
             else:
                 original_error_log = fixture.input.error_log or ""
-                request = DebugRequest(
+                debug_request = DebugRequest(
                     repo_path=str(repo_root),
                     error_log_text=_prepend_context(original_error_log, sandbox_context),
                     verbose=False,
                 )
-                response = await orchestrator.run_debug(request)
-                parsed = DebugResponse.model_validate(response.model_dump())
-                actual_issues = parsed.steps
+                debug_response = await orchestrator.run_debug(debug_request)
+                parsed_response = DebugResponse.model_validate(debug_response.model_dump())
+                actual_count = len(parsed_response.steps)
             latency = perf_counter() - start
 
-            total_tokens = _read_total_tokens(repo_root, parsed.run_id)
-            log_stats = _read_event_log_stats(repo_root, parsed.run_id)
-            resolved_log = _resolve_event_log_path(repo_root, parsed.run_id)
+            total_tokens = _read_total_tokens(repo_root, parsed_response.run_id)
+            log_stats = _read_event_log_stats(repo_root, parsed_response.run_id)
+            resolved_log = _resolve_event_log_path(repo_root, parsed_response.run_id)
             event_log_path = _persist_event_log_to_outputs(
                 Path(resolved_log) if resolved_log else None,
                 fixture.id,
-                parsed.run_id,
+                parsed_response.run_id,
             )
-            matches, matched_count, false_positive_count = _match_issues(fixture, parsed)
-            raw_output = parsed.model_dump(mode="json")
+            matches, matched_count, false_positive_count = _match_issues(fixture, parsed_response)
+            raw_output = parsed_response.model_dump(mode="json")
 
-            placeholder = _is_placeholder_response(parsed)
+            placeholder = _is_placeholder_response(parsed_response)
+            empty_business_output = _is_empty_business_output(parsed_response)
             return EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
-                run_id=parsed.run_id,
-                schema_valid=True,
+                run_id=parsed_response.run_id,
+                schema_valid=not empty_business_output,
                 expected_count=expected_count,
-                actual_count=len(actual_issues),
+                actual_count=actual_count,
                 matched_count=matched_count,
                 false_positive_count=false_positive_count,
                 latency_seconds=latency,
                 total_tokens=total_tokens,
                 event_log_path=event_log_path,
+                error=(
+                    "Empty review output: no summary or issues."
+                    if empty_business_output
+                    else None
+                ),
                 issue_matches=matches,
                 raw_output=raw_output,
                 placeholder_summary=placeholder,
@@ -179,6 +214,7 @@ def _aggregate_sampled_result(
     return SampledFixtureResult(
         fixture_id=fixture.id,
         fixture_type=fixture.type,
+        expected_count=expected_count,
         samples=len(runs) or 1,
         runs=runs,
         pass_at_k_hit_rate=pass_at_k,
@@ -250,6 +286,14 @@ def _is_placeholder_response(parsed: ReviewResponse | DebugResponse) -> bool:
     return (
         parsed.summary.strip() == _PLACEHOLDER_DEBUG_SUMMARY and not parsed.steps
     )
+
+
+def _is_empty_business_output(parsed: ReviewResponse | DebugResponse) -> bool:
+    if isinstance(parsed, ReviewResponse):
+        if _is_placeholder_response(parsed):
+            return False
+        return not parsed.report.summary.strip() and not parsed.report.issues
+    return False
 
 
 def _read_event_log_stats(repo_root: Path, run_id: str) -> dict[str, Any]:
@@ -389,7 +433,9 @@ def _match_issues(
         for actual_idx, location in enumerate(actual_locations):
             if actual_idx in used_actual_indices:
                 continue
-            if not _location_matches(expected_issue.location_pattern, location):
+            semantic_hit = _semantic_location_matches(expected_issue, location)
+            legacy_hit = _location_matches(expected_issue.location_pattern, location)
+            if not semantic_hit and not legacy_hit:
                 continue
             if _severity_rank(actual_severity[actual_idx]) < _severity_rank(
                 expected_issue.severity.value
@@ -419,6 +465,27 @@ def _location_matches(pattern: str, location: str) -> bool:
         return re.search(pattern, location) is not None
     except re.error:
         return pattern in location
+
+
+def _semantic_location_matches(expected_issue: Any, location: str) -> bool:
+    expected_path = str(getattr(expected_issue, "path", "") or "").strip().replace("\\", "/")
+    raw_expected_line = getattr(expected_issue, "line", None)
+    raw_expected_end_line = getattr(expected_issue, "end_line", None)
+    expected_line = raw_expected_line if isinstance(raw_expected_line, int) else None
+    expected_end_line = raw_expected_end_line if isinstance(raw_expected_end_line, int) else None
+    if not expected_path and expected_line is None and expected_end_line is None:
+        return False
+    parsed = normalize_location(location)
+    if not parsed.valid:
+        return False
+    if expected_path and parsed.path != expected_path:
+        return False
+    if expected_line is None:
+        return True
+    actual_start = parsed.line or expected_line
+    actual_end = parsed.end_line or actual_start
+    expected_end = expected_end_line or expected_line
+    return actual_start <= expected_end and actual_end >= expected_line
 
 
 

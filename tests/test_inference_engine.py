@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from typing import cast
 
 from src.analyzer.context_state import ContextState
 from src.analyzer.event_log import EventType
@@ -16,7 +17,7 @@ from src.tools.base import ToolResult
 
 
 def _extract_payload_from_user_message(content: str) -> dict[str, Any]:
-    return json.loads(content.split("\n", 1)[1])
+    return cast(dict[str, Any], json.loads(content.split("\n", 1)[1]))
 
 
 class RecordingFakeModelClient:
@@ -202,3 +203,22 @@ def test_analyze_emits_model_detail_and_plan_parsed_events(monkeypatch) -> None:
         payload for event_type, _, payload in events if event_type == EventType.PLAN_PARSED
     )
     assert plan_event["iteration"] == 1
+
+
+def test_normalize_review_payload_canonicalizes_location() -> None:
+    payload = {
+        "summary": "ok",
+        "issues": [
+            {
+                "severity": "warning",
+                "location": "in src\\api\\handler.py:33",
+                "evidence": "x",
+                "suggestion": "y",
+                "confidence": 0.6,
+            }
+        ],
+    }
+    normalized, warnings = InferenceEngine._normalize_review_payload(payload)
+    issues = normalized["issues"]
+    assert issues[0]["location"] == "src/api/handler.py:33"
+    assert warnings
