@@ -17,6 +17,8 @@ from src.tools.base import ToolResult
 
 class ResultProcessor:
     """Convert phase outputs into final structured responses."""
+    _MIN_CRITICAL_CONFIDENCE = 0.85
+    _MIN_WARNING_CONFIDENCE = 0.85
 
     def __init__(self, token_budget: int = 12000) -> None:
         self._token_budget = token_budget
@@ -102,8 +104,16 @@ class ResultProcessor:
 
     @staticmethod
     def _passes_issue_filter(issue: ReviewIssue) -> bool:
-        if issue.severity in {Severity.CRITICAL, Severity.WARNING}:
-            return has_specific_diff_evidence(issue.evidence)
+        if issue.severity == Severity.CRITICAL:
+            return (
+                issue.confidence >= ResultProcessor._MIN_CRITICAL_CONFIDENCE
+                and has_specific_diff_evidence(issue.evidence)
+            )
+        if issue.severity == Severity.WARNING:
+            return (
+                issue.confidence >= ResultProcessor._MIN_WARNING_CONFIDENCE
+                and has_specific_diff_evidence(issue.evidence)
+            )
         return True
 
     def is_budget_exhausted(self, total_tokens: int) -> bool:

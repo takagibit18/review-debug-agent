@@ -21,6 +21,7 @@ def test_merge_review_reports_sorts_by_severity_priority() -> None:
                 location="b:1",
                 evidence="+ cache.clear() now runs on every request",
                 suggestion="x",
+                confidence=0.9,
             ),
             ReviewIssue(severity=Severity.STYLE, location="c:1", evidence="x", suggestion="x"),
             ReviewIssue(
@@ -28,6 +29,7 @@ def test_merge_review_reports_sorts_by_severity_priority() -> None:
                 location="d:1",
                 evidence="@@ -1,1 +1,1 @@\n- allow_all = True\n+ allow_all = is_admin",
                 suggestion="x",
+                confidence=0.9,
             ),
         ],
     )
@@ -114,6 +116,39 @@ def test_merge_review_reports_keeps_bug_findings_with_diff_evidence() -> None:
         "src/auth.py:14",
         "src/cache.py:8",
         "src/jobs.py:3",
+    ]
+
+
+def test_merge_review_reports_filters_low_confidence_warning_and_critical() -> None:
+    report = ReviewReport(
+        summary="summary",
+        issues=[
+            ReviewIssue(
+                severity=Severity.CRITICAL,
+                location="src/auth.py:10",
+                evidence="@@ -1,1 +1,1 @@\n- return True\n+ return user.is_admin",
+                suggestion="Restore guard.",
+                confidence=0.8,
+            ),
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="src/cache.py:8",
+                evidence="+ cache.clear()",
+                suggestion="Narrow invalidation.",
+                confidence=0.84,
+            ),
+            ReviewIssue(
+                severity=Severity.INFO,
+                location="src/logging.py:1",
+                evidence="FYI",
+                suggestion="Optional improvement.",
+                confidence=0.2,
+            ),
+        ],
+    )
+    merged = ResultProcessor.merge_review_reports([report])
+    assert [(issue.severity, issue.location) for issue in merged.issues] == [
+        (Severity.INFO, "src/logging.py:1"),
     ]
 
 
