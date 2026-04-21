@@ -23,7 +23,7 @@
     "is_empty_annotation": true
   },
   "metadata": {
-    "suite": "golden_real",
+    "suite": "golden",
     "tags": [
       "github",
       "review",

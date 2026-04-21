@@ -135,7 +135,7 @@
 - MVP 入口：仅 CLI。
 - 默认模型：云端 API。
 - Review 维度：不强制 CWE/性能分类，但可给出相关建议。
-- Debug 执行：允许容器内运行测试命令，保留超时与目录限制。
+- Debug 执行：允许在受控环境下运行测试/验证命令（当前默认主机 `subprocess` 硬化；容器内执行见 [execute_tools_design.md](execute_tools_design.md) 与路线图「Docker 后端」待办），保留超时与目录限制。
 - 许可证：MIT。
 - 展示语言：中文 README + 英文代码注释。
 
@@ -144,4 +144,5 @@
 ## 7. 下一步
 
 - 对齐 `docs/shared_contracts.md` 中的接口协议，再拆解 Issue 与 Milestone，按周迭代落地。
+- execute 类工具的设计与安全规范见 [execute_tools_design.md](execute_tools_design.md)；MVP+ 中 Docker 后端与容器跑测的最终对齐见 [mvp_plus_roadmap.md](mvp_plus_roadmap.md) §3.1「工具与安全」。
 - MVP+ 阶段增量（评测辅助指标、Analyzer/编排补强等）集中记录在 [mvp_plus_roadmap.md](mvp_plus_roadmap.md)，与本文 §2 路线表对照使用。

@@ -2,7 +2,7 @@
 
 本文档列出 **Analyzer Agent** 与 **Integration Agent**（及编排层）在实现前或变更时需要 **对齐并共同维护** 的契约。重大变更应先更新本文档或关联 Issue，再改代码。
 
-**相关文档**：[README](../README.md)、[CONTRIBUTING](../CONTRIBUTING.md)、[architecture](./architecture.md)、项目规划 [project_plan.md](./project_plan.md)、Agent 约束 [agent.md](../agent.md)。
+**相关文档**：[README](../README.md)、[CONTRIBUTING](../CONTRIBUTING.md)、[architecture](./architecture.md)、项目规划 [project_plan.md](./project_plan.md)、execute 工具专项 [execute_tools_design.md](./execute_tools_design.md)、编排与安全契约 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md)、Agent 约束 [agent.md](../agent.md)。
 
 ---
 
