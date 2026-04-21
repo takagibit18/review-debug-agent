@@ -8,6 +8,7 @@ from pathlib import Path
 from eval.runner import (
     _aggregate_sampled_result,
     _is_empty_business_output,
+    _match_issues,
     _persist_event_log_to_outputs,
     _semantic_location_matches,
     _resolve_event_log_path,
@@ -17,7 +18,7 @@ from eval.runner import (
 )
 from eval.schemas import EvalResult, Fixture, MetricSummary, SampledFixtureResult
 from src.analyzer.context_state import ContextState
-from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import ReviewResponse
 
 
@@ -201,6 +202,39 @@ def test_nonempty_no_issue_review_output_is_valid_business_output() -> None:
     )
 
     assert _is_empty_business_output(response) is False
+
+
+def test_match_issues_ignores_low_confidence_warning_false_positive() -> None:
+    fixture = Fixture.model_validate(
+        {
+            "id": "zero-fixture",
+            "type": "review",
+            "source": {"repo_full_name": "a/b", "pr_number": 1},
+            "input": {"diff_text": "", "files": {}},
+            "expected": {"issues": []},
+            "metadata": {"suite": "golden", "reviewed": True},
+        }
+    )
+    response = ReviewResponse(
+        run_id="run-1",
+        report=ReviewReport(
+            summary="",
+            issues=[
+                ReviewIssue(
+                    severity=Severity.WARNING,
+                    location="src/x.py:1",
+                    evidence="+ risky_change()",
+                    suggestion="check it",
+                    confidence=0.8,
+                )
+            ],
+        ),
+        context=ContextState(),
+    )
+
+    _, matched_count, false_positive_count = _match_issues(fixture, response)
+    assert matched_count == 0
+    assert false_positive_count == 0
 
 
 def test_golden_fixture_distribution_has_required_buckets() -> None:

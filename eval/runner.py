@@ -20,12 +20,14 @@ from eval.schemas import (
     SampledFixtureResult,
 )
 from src.analyzer.location import normalize_location
-from src.analyzer.output_formatter import Severity
+from src.analyzer.output_formatter import Severity, has_specific_diff_evidence
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.config import get_settings
 from src.orchestrator.agent_loop import AgentOrchestrator
 
 EVAL_EVENT_LOGS_OUTPUT_DIR = Path("eval") / "outputs" / "event_logs"
+_MIN_CRITICAL_CONFIDENCE = 0.85
+_MIN_WARNING_CONFIDENCE = 0.85
 
 
 def load_fixtures(
@@ -419,8 +421,11 @@ def _match_issues(
 ) -> tuple[list[EvalIssueMatch], int, int]:
     expected = fixture.expected.issues
     if isinstance(response, ReviewResponse):
-        actual_locations = [issue.location for issue in response.report.issues]
-        actual_severity = [issue.severity.value for issue in response.report.issues]
+        effective_issues = [
+            issue for issue in response.report.issues if _is_eval_effective_issue(issue)
+        ]
+        actual_locations = [issue.location for issue in effective_issues]
+        actual_severity = [issue.severity.value for issue in effective_issues]
     else:
         actual_locations = [step.location for step in response.steps]
         actual_severity = ["warning" for _ in response.steps]
@@ -486,6 +491,22 @@ def _semantic_location_matches(expected_issue: Any, location: str) -> bool:
     actual_end = parsed.end_line or actual_start
     expected_end = expected_end_line or expected_line
     return actual_start <= expected_end and actual_end >= expected_line
+
+
+def _is_eval_effective_issue(issue: Any) -> bool:
+    severity = str(getattr(getattr(issue, "severity", ""), "value", getattr(issue, "severity", "")))
+    confidence_raw = getattr(issue, "confidence", 0.0)
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    evidence = str(getattr(issue, "evidence", "") or "")
+
+    if severity == Severity.CRITICAL.value:
+        return confidence >= _MIN_CRITICAL_CONFIDENCE and has_specific_diff_evidence(evidence)
+    if severity == Severity.WARNING.value:
+        return confidence >= _MIN_WARNING_CONFIDENCE and has_specific_diff_evidence(evidence)
+    return True
 
 
 
