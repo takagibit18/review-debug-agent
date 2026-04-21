@@ -40,6 +40,9 @@ jobs:
           EVAL_SAMPLES: "1"
           EVAL_CONCURRENCY: "1"
           EVAL_TEMPERATURE: "0.0"
+          REVIEW_MAX_ITERATIONS: "4"
+          TOKEN_BUDGET: "48000"
+          PROMPT_INPUT_TOKEN_BUDGET: "48000"
         run: |
           python -m eval.run eval --suite golden --output-json eval/outputs/ci_report.json
 
