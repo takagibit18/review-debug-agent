@@ -21,9 +21,14 @@ def main(
 ) -> None:
     payload = json.loads(Path(report_path).read_text(encoding="utf-8"))
     metrics = payload.get("metrics", {})
-    schema_validity = float(metrics.get("schema_validity_rate", 0.0) or 0.0)
-    hit_rate = float(metrics.get("hit_rate", 0.0) or 0.0)
-    false_positive_rate = float(metrics.get("false_positive_rate", 1.0) or 1.0)
+    schema_validity_raw = metrics.get("schema_validity_rate", 0.0)
+    hit_rate_raw = metrics.get("hit_rate", 0.0)
+    false_positive_rate_raw = metrics.get("false_positive_rate", 1.0)
+    schema_validity = float(0.0 if schema_validity_raw is None else schema_validity_raw)
+    hit_rate = float(0.0 if hit_rate_raw is None else hit_rate_raw)
+    false_positive_rate = float(
+        1.0 if false_positive_rate_raw is None else false_positive_rate_raw
+    )
 
     failures: list[str] = []
     if schema_validity < schema_validity_min:
