@@ -97,12 +97,19 @@ def crawl_cmd(
     type=float,
     help="Model sampling temperature for eval runs. Defaults to EVAL_TEMPERATURE or 0.0.",
 )
+@click.option(
+    "--output-json",
+    default=None,
+    type=click.Path(exists=False),
+    help="Optional fixed output path for report JSON.",
+)
 def eval_cmd(
     suite: str,
     include_unreviewed: bool,
     samples: int | None,
     concurrency: int | None,
     temperature: float | None,
+    output_json: str | None,
 ) -> None:
     """Run evaluation for one suite."""
     settings = get_settings()
@@ -117,6 +124,7 @@ def eval_cmd(
             temperature=(
                 temperature if temperature is not None else settings.eval_temperature
             ),
+            output_json=output_json,
         )
     )
 
@@ -189,6 +197,7 @@ async def _evaluate(
     samples: int = 1,
     concurrency: int = 1,
     temperature: float = 0.0,
+    output_json: str | None = None,
 ) -> None:
     fixtures = load_fixtures(suite=suite, reviewed_only=not include_unreviewed)
     if not fixtures:
@@ -206,7 +215,7 @@ async def _evaluate(
         results=results,
         sampled_results=sampled_results,
     )
-    report_path = save_report_json(report)
+    report_path = save_report_json(report, output_path=output_json)
     review_sheet = write_human_review_template(
         report,
         output_path=Path("eval") / "outputs" / f"{suite}_human_review.md",

@@ -25,21 +25,30 @@ SYSTEM_PROMPT_REVIEW = (
     "actionable findings. The final answer must be submitted via the submit_review tool. "
     "Use only these severity values: critical, warning, info, style. "
     "Each issue must include severity, location, evidence, suggestion, and confidence between 0 and 1. "
+    "Location must be canonical: path[:line[-end_line]], using repo-relative forward-slash paths. "
+    "Do not use free-form natural language for location. "
     "Evidence must cite the concrete changed diff lines or hunk that support the claim. "
-    "Do not label something critical unless the diff itself clearly supports it."
+    "Do not label something critical unless the diff itself clearly supports it. "
+    "When paths are uncertain, use list_dir first before glob/grep/read_file. "
+    "After any Directory/File not found error, validate parent directory first and avoid blind retries."
 )
 SYSTEM_PROMPT_DEBUG = (
-    "You are a senior debugging assistant. Produce structured hypotheses and steps."
+    "You are a senior debugging assistant. Produce structured hypotheses and steps. "
+    "When paths are uncertain, use list_dir first before glob/grep/read_file. "
+    "After any Directory/File not found error, validate parent directory first and avoid blind retries. "
+    "Use canonical step locations: path[:line[-end_line]] whenever location is provided."
 )
 
 USER_PREFIX_REVIEW = (
     "Review the payload and call submit_review exactly once with final JSON. "
     "Prioritize concrete bugs/regressions over optimization advice. "
     "If evidence cannot point to a specific diff snippet, lower the severity instead of forcing a bug claim. "
+    "If the payload shows truncated files/context, prioritize path exploration and targeted reads. "
     "Do not return plain-text-only final answers.\n"
 )
 USER_PREFIX_DEBUG = (
-    "Return tool calls if needed, then submit_debug with final JSON.\n"
+    "Return tool calls if needed, then submit_debug with final JSON. "
+    "If path is unknown, call list_dir first.\n"
 )
 
 FINALIZE_REVIEW_NOTICE = (

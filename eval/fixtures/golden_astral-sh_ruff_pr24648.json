@@ -24,7 +24,7 @@
         "severity": "info",
         "location_pattern": "crates/ruff_linter/src/rules/flake8_async/rules/async_function_with_timeout.rs",
         "category": "logic",
-        "description": "ASYNC109 still fires on @abstractmethod methods (visible in updated snapshot: Foo.foo at line 20 is reported), while @override methods are now exempted. This creates a contradictory diagnostic: the lint suggests removing `timeout` from the abstract method, but doing so would break the override's signature contract that the rule explicitly protects. @abstractmethod methods should likely also be exempted for consistency."
+        "description": "This PR is a partial fix: it exempts `@override` methods from ASYNC109, but the same updated fixture still reports the matching `@abstractmethod` declaration (`Foo.foo` in the new snapshot). That leaves the rule behavior internally inconsistent after the change, because the abstract method defines the signature contract that the override must preserve. Treat this as a diff-scoped 'fails to fix completely' finding, not a pre-existing baseline audit issue."
       }
     ],
     "min_issues": 0,
@@ -36,7 +36,8 @@
     "tags": [
       "github",
       "auto_discover",
-      "llm_assisted"
+      "llm_assisted",
+      "should-detect"
     ],
     "difficulty": "hard",
     "annotated_by": "llm_draft",

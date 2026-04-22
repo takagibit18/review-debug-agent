@@ -45,7 +45,11 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                         "type": "string",
                                         "enum": ["critical", "warning", "info", "style"],
                                     },
-                                    "location": {"type": "string"},
+                                    "location": {
+                                        "type": "string",
+                                        "description": "Canonical location: path[:line[-end_line]]",
+                                        "pattern": r"^[^:\s][^:]*(:\d+(-\d+)?)?$",
+                                    },
                                     "evidence": {"type": "string"},
                                     "suggestion": {"type": "string"},
                                     "confidence": {"type": "number"},
@@ -80,7 +84,11 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                 "properties": {
                                     "title": {"type": "string"},
                                     "detail": {"type": "string"},
-                                    "location": {"type": "string"},
+                                    "location": {
+                                        "type": "string",
+                                        "description": "Canonical location: path[:line[-end_line]]",
+                                        "pattern": r"^[^:\s][^:]*(:\d+(-\d+)?)?$",
+                                    },
                                     "evidence": {"type": "string"},
                                     "confidence": {"type": "number"},
                                 },

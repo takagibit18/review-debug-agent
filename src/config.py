@@ -110,6 +110,32 @@ class Settings(BaseModel):
         ge=1,
         description="Max estimated tokens for truncatable context parts (meta, diff, files, structure)",
     )
+    project_structure_max_depth: int = Field(
+        default_factory=lambda: int(os.getenv("PROJECT_STRUCTURE_MAX_DEPTH", "3")),
+        ge=1,
+        le=8,
+        description="Max tree depth included in project_structure context.",
+    )
+    project_structure_max_entries: int = Field(
+        default_factory=lambda: int(os.getenv("PROJECT_STRUCTURE_MAX_ENTRIES", "200")),
+        ge=10,
+        description="Max number of file/dir entries included in project_structure context.",
+    )
+    file_context_max_files: int = Field(
+        default_factory=lambda: int(os.getenv("FILE_CONTEXT_MAX_FILES", "20")),
+        ge=1,
+        description="Max number of files loaded into file_contents context.",
+    )
+    file_context_max_chars_per_file: int = Field(
+        default_factory=lambda: int(os.getenv("FILE_CONTEXT_MAX_CHARS_PER_FILE", "12000")),
+        ge=100,
+        description="Max chars loaded per file for file_contents context.",
+    )
+    file_context_max_chars_total: int = Field(
+        default_factory=lambda: int(os.getenv("FILE_CONTEXT_MAX_CHARS_TOTAL", "120000")),
+        ge=1000,
+        description="Max aggregate chars loaded across file_contents context.",
+    )
     context_summary_enabled: bool = Field(
         default_factory=lambda: os.getenv(
             "CONTEXT_SUMMARY_ENABLED", "true"

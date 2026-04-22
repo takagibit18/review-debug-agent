@@ -14,14 +14,22 @@ from eval.schemas import EvalReport
 def save_report_json(
     report: EvalReport,
     output_dir: str | Path = Path("eval") / "outputs",
+    *,
+    output_path: str | Path | None = None,
 ) -> Path:
     """Save report as JSON file."""
+    if output_path is not None:
+        target = Path(output_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        return target
+
     target_dir = Path(output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    output_path = target_dir / f"{timestamp}_report.json"
-    output_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    return output_path
+    generated_path = target_dir / f"{timestamp}_report.json"
+    generated_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    return generated_path
 
 
 def render_report(report: EvalReport, console: Console | None = None) -> None:
@@ -49,6 +57,8 @@ def render_report(report: EvalReport, console: Console | None = None) -> None:
     detail = Table(title="Fixture Details")
     detail.add_column("fixture_id")
     detail.add_column("valid")
+    detail.add_column("placeholder")
+    detail.add_column("budget")
     detail.add_column("matched/expected")
     detail.add_column("false_pos")
     detail.add_column("pass@k")
@@ -66,6 +76,8 @@ def render_report(report: EvalReport, console: Console | None = None) -> None:
         detail.add_row(
             item.fixture_id,
             "yes" if item.schema_valid else "no",
+            "yes" if item.placeholder_summary else "no",
+            item.budget_state,
             f"{item.matched_count}/{item.expected_count}",
             str(item.false_positive_count),
             pass_at_k,

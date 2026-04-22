@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+from typing import Any, cast
 
 from src.analyzer.context_builder import ContextBuilder, ContextPart
 from src.analyzer.context_priority import (
@@ -21,8 +22,8 @@ from src.analyzer.prompts import build_debug_messages, build_review_messages
 from src.analyzer.schemas import DebugRequest, ReviewRequest
 
 
-def _user_payload(content: str) -> dict[str, object]:
-    return json.loads(content.split("\n", 1)[1])
+def _user_payload(content: str) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(content.split("\n", 1)[1]))
 
 
 def test_split_diff_hunks_single_file_two_hunks() -> None:

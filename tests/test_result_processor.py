@@ -16,15 +16,140 @@ def test_merge_review_reports_sorts_by_severity_priority() -> None:
         summary="summary",
         issues=[
             ReviewIssue(severity=Severity.INFO, location="a:1", evidence="x", suggestion="x"),
-            ReviewIssue(severity=Severity.WARNING, location="b:1", evidence="x", suggestion="x"),
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="b:1",
+                evidence="+ cache.clear() now runs on every request",
+                suggestion="x",
+                confidence=0.9,
+            ),
             ReviewIssue(severity=Severity.STYLE, location="c:1", evidence="x", suggestion="x"),
-            ReviewIssue(severity=Severity.CRITICAL, location="d:1", evidence="x", suggestion="x"),
+            ReviewIssue(
+                severity=Severity.CRITICAL,
+                location="d:1",
+                evidence="@@ -1,1 +1,1 @@\n- allow_all = True\n+ allow_all = is_admin",
+                suggestion="x",
+                confidence=0.9,
+            ),
         ],
     )
 
     merged = ResultProcessor.merge_review_reports([report])
     order = [issue.severity for issue in merged.issues]
     assert order == [Severity.CRITICAL, Severity.WARNING, Severity.INFO, Severity.STYLE]
+
+
+def test_merge_review_reports_filters_bug_findings_without_diff_evidence() -> None:
+    report = ReviewReport(
+        summary="summary",
+        issues=[
+            ReviewIssue(
+                severity=Severity.CRITICAL,
+                location="src/auth.py:14",
+                evidence="Authorization logic looks risky after this change.",
+                suggestion="Restore the authorization guard.",
+                confidence=1.0,
+            ),
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="src/cache.py:8",
+                evidence="Cache invalidation may be too broad.",
+                suggestion="Guard the invalidation.",
+                confidence=0.95,
+            ),
+            ReviewIssue(
+                severity=Severity.INFO,
+                location="src/logging.py:3",
+                evidence="Consider reducing noisy debug logs.",
+                suggestion="Use trace logging instead.",
+                confidence=0.7,
+            ),
+            ReviewIssue(
+                severity=Severity.STYLE,
+                location="src/style.py:1",
+                evidence="Spacing is inconsistent.",
+                suggestion="Normalize whitespace.",
+                confidence=0.7,
+            ),
+        ],
+    )
+
+    merged = ResultProcessor.merge_review_reports([report])
+
+    assert [(issue.severity, issue.location) for issue in merged.issues] == [
+        (Severity.INFO, "src/logging.py:3"),
+        (Severity.STYLE, "src/style.py:1"),
+    ]
+
+
+def test_merge_review_reports_keeps_bug_findings_with_diff_evidence() -> None:
+    report = ReviewReport(
+        summary="summary",
+        issues=[
+            ReviewIssue(
+                severity=Severity.CRITICAL,
+                location="src/auth.py:14",
+                evidence="```diff\n- return True\n+ return user.is_admin\n```",
+                suggestion="Restore the authorization guard.",
+                confidence=0.95,
+            ),
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="src/cache.py:8",
+                evidence="diff --git a/src/cache.py b/src/cache.py\n+ cache.clear()",
+                suggestion="Guard the invalidation.",
+                confidence=0.9,
+            ),
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="src/jobs.py:3",
+                evidence="+ run_all_jobs()",
+                suggestion="Keep the job filter.",
+                confidence=0.9,
+            ),
+        ],
+    )
+
+    merged = ResultProcessor.merge_review_reports([report])
+
+    assert [issue.location for issue in merged.issues] == [
+        "src/auth.py:14",
+        "src/cache.py:8",
+        "src/jobs.py:3",
+    ]
+
+
+def test_merge_review_reports_filters_low_confidence_warning_and_critical() -> None:
+    report = ReviewReport(
+        summary="summary",
+        issues=[
+            ReviewIssue(
+                severity=Severity.CRITICAL,
+                location="src/auth.py:10",
+                evidence="@@ -1,1 +1,1 @@\n- return True\n+ return user.is_admin",
+                suggestion="Restore guard.",
+                confidence=0.8,
+            ),
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="src/cache.py:8",
+                evidence="+ cache.clear()",
+                suggestion="Narrow invalidation.",
+                confidence=0.84,
+            ),
+            ReviewIssue(
+                severity=Severity.INFO,
+                location="src/logging.py:1",
+                evidence="FYI",
+                suggestion="Optional improvement.",
+                confidence=0.2,
+            ),
+        ],
+    )
+    merged = ResultProcessor.merge_review_reports([report])
+    assert [(issue.severity, issue.location) for issue in merged.issues] == [
+        (Severity.INFO, "src/logging.py:1"),
+    ]
 
 
 def test_result_processor_budget_from_constructor() -> None:

@@ -25,7 +25,10 @@ class ReviewIssue(BaseModel):
     """A single review finding."""
 
     severity: Severity
-    location: str = Field(..., description="file:line or diff hunk reference")
+    location: str = Field(
+        ...,
+        description="Canonical location: path[:line[-end_line]] using repo-relative forward-slash paths",
+    )
     evidence: str = Field(..., description="Code snippet or observation")
     suggestion: str = Field(..., description="Recommended fix or action")
     confidence: float = Field(
@@ -88,11 +91,11 @@ def _is_must_fix_critical(issue: ReviewIssue) -> bool:
     return (
         issue.severity == Severity.CRITICAL
         and issue.confidence >= _MUST_FIX_MIN_CONFIDENCE
-        and _has_specific_diff_evidence(issue.evidence)
+        and has_specific_diff_evidence(issue.evidence)
     )
 
 
-def _has_specific_diff_evidence(evidence: str) -> bool:
+def has_specific_diff_evidence(evidence: str) -> bool:
     text = evidence.strip()
     if not text:
         return False

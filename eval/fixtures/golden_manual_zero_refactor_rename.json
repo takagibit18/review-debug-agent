@@ -1,0 +1,32 @@
+{
+  "id": "golden_manual_zero_refactor_rename",
+  "type": "review",
+  "source": {
+    "repo_full_name": "example/lib",
+    "pr_number": 201,
+    "url": "https://example.invalid/pr/201",
+    "merge_commit_sha": "manual",
+    "title": "Rename local variable for readability"
+  },
+  "input": {
+    "diff_text": "diff --git a/src/math_utils.py b/src/math_utils.py\n--- a/src/math_utils.py\n+++ b/src/math_utils.py\n@@ -1,4 +1,4 @@\n def area(radius: float) -> float:\n-    r = radius\n-    return 3.14 * r * r\n+    value = radius\n+    return 3.14 * value * value\n",
+    "files": {
+      "src/math_utils.py": "def area(radius: float) -> float:\n    value = radius\n    return 3.14 * value * value\n"
+    },
+    "error_log": null
+  },
+  "expected": {
+    "issues": [],
+    "min_issues": 0,
+    "max_issues": 0,
+    "is_empty_annotation": true
+  },
+  "metadata": {
+    "suite": "golden_synth",
+    "tags": ["manual", "zero-issue", "refactor"],
+    "difficulty": "easy",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-04-20T00:00:00+00:00"
+  }
+}

@@ -48,8 +48,8 @@ def write_human_review_template(
         "",
         "请为每条样本填写 score(0-5) 与 comment。",
         "",
-        "| fixture_id | schema_valid | matched/expected | false_positive | pass@k | mean_hit | stddev | score(0-5) | comment |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| fixture_id | schema_valid | placeholder | budget_state | matched/expected | false_positive | pass@k | mean_hit | stddev | score(0-5) | comment |",
+        "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     sampled_by_fixture = {item.fixture_id: item for item in report.sampled_results}
     for item in report.results:
@@ -60,7 +60,8 @@ def write_human_review_template(
         stddev = f"{sampled.hit_rate_stddev:.2%}" if sampled else "-"
         lines.append(
             "| "
-            f"{item.fixture_id} | {item.schema_valid} | {ratio} | "
+            f"{item.fixture_id} | {item.schema_valid} | "
+            f"{item.placeholder_summary} | {item.budget_state} | {ratio} | "
             f"{item.false_positive_count} | {pass_at_k} | {mean_hit} | {stddev} |  |  |"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
