@@ -1,0 +1,41 @@
+{
+  "id": "golden_real_flask_context_order_pr5797",
+  "type": "review",
+  "source": {
+    "repo_full_name": "pallets/flask",
+    "pr_number": 5797,
+    "url": "https://github.com/pallets/flask/pull/5797",
+    "merge_commit_sha": "",
+    "title": "push preserved contexts in correct order"
+  },
+  "input": {
+    "diff_text": "diff --git a/src/flask/testing.py b/src/flask/testing.py\nindex ded2391b02..55eb12fe75 100644\n--- a/src/flask/testing.py\n+++ b/src/flask/testing.py\n@@ -240,10 +240,10 @@ def open(\n         response.json_module = self.application.json  # type: ignore[assignment]\n \n         # Re-push contexts that were preserved during the request.\n-        while self._new_contexts:\n-            cm = self._new_contexts.pop()\n+        for cm in self._new_contexts:\n             self._context_stack.enter_context(cm)\n \n+        self._new_contexts.clear()\n         return response\n \n     def __enter__(self) -> FlaskClient:\ndiff --git a/tests/test_testing.py b/tests/test_testing.py\nindex de0521520a..20f9f6ddba 100644\n--- a/tests/test_testing.py\n+++ b/tests/test_testing.py\n@@ -138,32 +138,21 @@ def index():\n     assert rv.data == b\"http://xxx.example.com:1234/foo/\"\n \n \n-def test_redirect_keep_session(app, client, app_ctx):\n-    @app.route(\"/\", methods=[\"GET\", \"POST\"])\n+def test_redirect_session(app, client, app_ctx):\n+    @app.route(\"/redirect\")\n     def index():\n-        if flask.request.method == \"POST\":\n-            return flask.redirect(\"/getsession\")\n-        flask.session[\"data\"] = \"foo\"\n-        return \"index\"\n+        flask.session[\"redirect\"] = True\n+        return flask.redirect(\"/target\")\n \n-    @app.route(\"/getsession\")\n+    @app.route(\"/target\")\n     def get_session():\n-        return flask.session.get(\"data\", \"<missing>\")\n+        flask.session[\"target\"] = True\n+        return \"\"\n \n     with client:\n-        rv = client.get(\"/getsession\")\n-        assert rv.data == b\"<missing>\"\n-\n-        rv = client.get(\"/\")\n-        assert rv.data == b\"index\"\n-        assert flask.session.get(\"data\") == \"foo\"\n-\n-        rv = client.post(\"/\", data={}, follow_redirects=True)\n-        assert rv.data == b\"foo\"\n-        assert flask.session.get(\"data\") == \"foo\"\n-\n-        rv = client.get(\"/getsession\")\n-        assert rv.data == b\"foo\"\n+        client.get(\"/redirect\", follow_redirects=True)\n+        assert flask.session[\"redirect\"] is True\n+        assert flask.session[\"target\"] is True\n \n \n def test_session_transactions(app, client):",
+    "files": {
+      "src/flask/testing.py": "def open(\n    self,\n    *args,\n    **kwargs,\n):\n    response = super().open(*args, **kwargs)\n    response.json_module = self.application.json  # type: ignore[assignment]\n\n    # Re-push contexts that were preserved during the request.\n    for cm in self._new_contexts:\n        self._context_stack.enter_context(cm)\n\n    self._new_contexts.clear()\n    return response\n\ndef __enter__(self) -> FlaskClient:\n    return self",
+      "tests/test_testing.py": "def test_redirect_session(app, client, app_ctx):\n    @app.route(\"/redirect\")\n    def index():\n        flask.session[\"redirect\"] = True\n        return flask.redirect(\"/target\")\n\n    @app.route(\"/target\")\n    def get_session():\n        flask.session[\"target\"] = True\n        return \"\"\n\n    with client:\n        client.get(\"/redirect\", follow_redirects=True)\n        assert flask.session[\"redirect\"] is True\n        assert flask.session[\"target\"] is True"
+    },
+    "error_log": null
+  },
+  "expected": {
+    "issues": [],
+    "min_issues": 0,
+    "max_issues": 0,
+    "is_empty_annotation": true
+  },
+  "metadata": {
+    "suite": "golden_real",
+    "tags": [
+      "github",
+      "review",
+      "negative-sample",
+      "flask",
+      "follow_redirects",
+      "session",
+      "context-order"
+    ],
+    "difficulty": "medium",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-04-22T00:00:00+08:00"
+  }
+}
