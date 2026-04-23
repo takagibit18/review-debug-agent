@@ -22,7 +22,7 @@ def test_docker_execute_settings_have_expected_defaults(monkeypatch) -> None:
 
     settings = get_settings()
 
-    assert settings.execute_docker_image == "cr-debug-agent-execute:latest"
+    assert settings.execute_docker_image == "mergewarden-execute:latest"
     assert settings.execute_docker_workdir == "/workspace"
     assert settings.execute_docker_network == "none"
     assert settings.execute_docker_memory_mb == 0

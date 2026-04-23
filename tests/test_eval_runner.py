@@ -23,10 +23,10 @@ from src.analyzer.schemas import ReviewResponse
 
 
 def test_resolve_event_log_path_returns_existing_file(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("EVENT_LOG_DIR", ".cr-debug-agent/logs")
+    monkeypatch.setenv("EVENT_LOG_DIR", ".mergewarden/logs")
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True)
-    log_dir = repo_root / ".cr-debug-agent" / "logs"
+    log_dir = repo_root / ".mergewarden" / "logs"
     log_dir.mkdir(parents=True)
     log_path = log_dir / "run-1.jsonl"
     log_path.write_text('{"event_type":"model_call"}\n', encoding="utf-8")
@@ -36,7 +36,7 @@ def test_resolve_event_log_path_returns_existing_file(monkeypatch, tmp_path: Pat
 
 
 def test_resolve_event_log_path_returns_none_when_missing(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("EVENT_LOG_DIR", ".cr-debug-agent/logs")
+    monkeypatch.setenv("EVENT_LOG_DIR", ".mergewarden/logs")
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True)
 

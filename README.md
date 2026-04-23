@@ -1,11 +1,14 @@
-# Code Review & Debug Agent
+# MergeWarden
 
-一个可部署的 LLM Agent，能对本地仓库或 PR 代码做结构化 Review，并辅助定位与修复问题。
+> AI PR Gatekeeper for Safer Merges
+
+面向开发团队的 PR 守门 Agent，会审查代码变更、诊断 CI 失败原因，并帮助团队更安全地合并代码。
 
 ## 功能概述
 
-- **Code Review**：按严重级别分类的问题列表（安全 / 正确性 / 风格 / 可维护性），支持行号引用与 diff hunk 定位
-- **Debug 辅助**：假设 → 验证步骤 → 建议补丁（最小 diff），支持建议运行命令由用户确认执行
+- **PR 自动审查**：按严重级别分类问题（安全 / 正确性 / 风格 / 可维护性），支持行号引用与 diff hunk 定位
+- **CI / Debug 辅助**：提取关键报错、推测失败原因、给出验证步骤与最小修复建议
+- **合并门禁提示**：结合代码上下文、测试结果和工程约束，提示合并前风险与测试缺口
 
 ### 输入
 
@@ -29,8 +32,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/<your-org>/code-review-debug-agent.git
-cd code-review-debug-agent
+git clone https://github.com/<your-org>/mergewarden.git
+cd mergewarden
 
 # 创建虚拟环境并安装依赖
 python -m venv .venv

@@ -174,7 +174,7 @@ def test_event_log_directory_is_relative_to_repo_path(tmp_path, monkeypatch) -> 
     orchestrator = AgentOrchestrator()
 
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=str(repo))))
-    log_path = repo / ".cr-debug-agent" / "logs" / f"{response.run_id}.jsonl"
+    log_path = repo / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
     assert log_path.exists()
 
 
@@ -604,7 +604,7 @@ def test_execute_tools_emits_tool_io_event_with_iteration(tmp_path, monkeypatch)
     )
 
     asyncio.run(orchestrator.execute_tools(plan, registry, state))
-    log_path = tmp_path / ".cr-debug-agent" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
     events = [
         json.loads(line)
         for line in log_path.read_text(encoding="utf-8").splitlines()
@@ -623,7 +623,7 @@ def test_format_result_emits_format_result_event(tmp_path, monkeypatch) -> None:
     state = orchestrator.prepare_context(ReviewRequest(repo_path="."))
 
     orchestrator.format_result(state, tool_results=[])
-    log_path = tmp_path / ".cr-debug-agent" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
     events = [
         json.loads(line)
         for line in log_path.read_text(encoding="utf-8").splitlines()

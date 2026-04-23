@@ -96,7 +96,7 @@ flowchart TD
 | `execute_allowed_commands` | `EXECUTE_ALLOWED_COMMANDS` | 逗号分隔；表示 **argv[0] 允许集合**。默认包含 `python`、`pytest`、`pip`、`node`、`npm`、`ruff`、`mypy`、`git` 等。 |
 | `execute_default_timeout_ms` | `EXECUTE_DEFAULT_TIMEOUT_MS` | 默认超时（毫秒）。 |
 | `execute_max_output_bytes` | `EXECUTE_MAX_OUTPUT_BYTES` | stdout/stderr **各自**字节上限；超出则截断并标记 `*_truncated`。 |
-| `execute_docker_image` | `EXECUTE_DOCKER_IMAGE` | Docker execute backend 使用的镜像名；默认 `cr-debug-agent-execute:latest`。 |
+| `execute_docker_image` | `EXECUTE_DOCKER_IMAGE` | Docker execute backend 使用的镜像名；默认 `mergewarden-execute:latest`。 |
 | `execute_docker_workdir` | `EXECUTE_DOCKER_WORKDIR` | 容器内工作目录；默认 `/workspace`。 |
 | `execute_docker_network` | `EXECUTE_DOCKER_NETWORK` | Docker network 模式；默认 `none`。 |
 | `execute_docker_memory_mb` | `EXECUTE_DOCKER_MEMORY_MB` | 可选内存限制（MB）；`0` 表示不设置。 |
@@ -158,7 +158,7 @@ flowchart TD
 
 ### 7.1 最小演示流程
 
-1. 构建执行镜像：`docker build -f Dockerfile.execute -t cr-debug-agent-execute:latest .`
+1. 构建执行镜像：`docker build -f Dockerfile.execute -t mergewarden-execute:latest .`
 2. 设置环境变量：`EXECUTE_BACKEND=docker`
 3. 运行 execute 级 smoke test：`pytest -q tests/test_docker_backend_smoke.py -rs`
 4. 预期结果：命令在容器内执行，stdout/stderr 仍按 `SandboxResult` 结构返回，超时和缺失 Docker 可得到结构化错误。

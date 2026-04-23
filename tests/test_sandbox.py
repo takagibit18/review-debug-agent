@@ -143,7 +143,7 @@ def test_run_sandboxed_command_docker_backend_builds_expected_argv(monkeypatch) 
     assert "CUSTOM_FLAG=1" in docker_argv
     assert not any(item.startswith("PATH=") for item in docker_argv)
     assert docker_argv[-4:] == [
-        "cr-debug-agent-execute:latest",
+        "mergewarden-execute:latest",
         "pytest",
         "-q",
         "tests/test_config.py",

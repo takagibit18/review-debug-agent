@@ -177,7 +177,7 @@ class Settings(BaseModel):
         description="Maximum completion tokens for one summarized context part",
     )
     event_log_dir: str = Field(
-        default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".cr-debug-agent/logs"),
+        default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".mergewarden/logs"),
         min_length=1,
     )
     agent_trace_detail: TraceDetailMode = Field(default_factory=_default_agent_trace_detail)
@@ -233,7 +233,7 @@ class Settings(BaseModel):
     )
     execute_docker_image: str = Field(
         default_factory=lambda: os.getenv(
-            "EXECUTE_DOCKER_IMAGE", "cr-debug-agent-execute:latest"
+            "EXECUTE_DOCKER_IMAGE", "mergewarden-execute:latest"
         ),
         min_length=1,
         description="Docker image used by the docker execute backend.",
@@ -284,9 +284,9 @@ class Settings(BaseModel):
     @classmethod
     def _validate_event_log_dir(cls, value: object) -> str:
         if value is None:
-            return ".cr-debug-agent/logs"
+            return ".mergewarden/logs"
         raw = str(value).strip()
-        return raw or ".cr-debug-agent/logs"
+        return raw or ".mergewarden/logs"
 
     @field_validator("execute_backend", mode="before")
     @classmethod
@@ -324,9 +324,9 @@ class Settings(BaseModel):
     @classmethod
     def _validate_execute_docker_image(cls, value: object) -> str:
         if value is None:
-            return "cr-debug-agent-execute:latest"
+            return "mergewarden-execute:latest"
         raw = str(value).strip()
-        return raw or "cr-debug-agent-execute:latest"
+        return raw or "mergewarden-execute:latest"
 
     @field_validator("execute_docker_workdir", mode="before")
     @classmethod

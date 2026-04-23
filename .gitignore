@@ -42,3 +42,4 @@ eval/outputs/
 runs/
 *.log
 .cr-debug-agent/
+.mergewarden/
