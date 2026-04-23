@@ -68,6 +68,34 @@ def _default_agent_trace_detail() -> TraceDetailMode:
     return "off"
 
 
+def _default_execute_docker_workdir() -> str:
+    raw = str(os.getenv("EXECUTE_DOCKER_WORKDIR", "/workspace")).strip()
+    if not raw or not raw.startswith("/"):
+        return "/workspace"
+    return raw.rstrip("/") or "/workspace"
+
+
+def _default_execute_docker_network() -> str:
+    raw = str(os.getenv("EXECUTE_DOCKER_NETWORK", "none")).strip()
+    return raw or "none"
+
+
+def _default_execute_docker_memory_mb() -> int:
+    raw = str(os.getenv("EXECUTE_DOCKER_MEMORY_MB", "0")).strip() or "0"
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _default_execute_docker_cpus() -> float:
+    raw = str(os.getenv("EXECUTE_DOCKER_CPUS", "0")).strip() or "0"
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.0
+
+
 class Settings(BaseModel):
     """Application-wide settings loaded from environment."""
 
@@ -203,6 +231,33 @@ class Settings(BaseModel):
         ge=1024,
         description="Per-stream (stdout/stderr) byte cap; exceeded output is truncated with a marker.",
     )
+    execute_docker_image: str = Field(
+        default_factory=lambda: os.getenv(
+            "EXECUTE_DOCKER_IMAGE", "cr-debug-agent-execute:latest"
+        ),
+        min_length=1,
+        description="Docker image used by the docker execute backend.",
+    )
+    execute_docker_workdir: str = Field(
+        default_factory=_default_execute_docker_workdir,
+        min_length=1,
+        description="Container workdir where the workspace root is mounted.",
+    )
+    execute_docker_network: str = Field(
+        default_factory=_default_execute_docker_network,
+        min_length=1,
+        description="Docker network mode for execute backend containers.",
+    )
+    execute_docker_memory_mb: int = Field(
+        default_factory=_default_execute_docker_memory_mb,
+        ge=0,
+        description="Optional Docker memory limit in MB; 0 disables the limit.",
+    )
+    execute_docker_cpus: float = Field(
+        default_factory=_default_execute_docker_cpus,
+        ge=0.0,
+        description="Optional Docker CPU quota; 0 disables the limit.",
+    )
 
     @field_validator("openai_api_key", "model_name", mode="before")
     @classmethod
@@ -264,6 +319,52 @@ class Settings(BaseModel):
         if raw in {"off", "compact", "full"}:
             return raw
         return "off"
+
+    @field_validator("execute_docker_image", mode="before")
+    @classmethod
+    def _validate_execute_docker_image(cls, value: object) -> str:
+        if value is None:
+            return "cr-debug-agent-execute:latest"
+        raw = str(value).strip()
+        return raw or "cr-debug-agent-execute:latest"
+
+    @field_validator("execute_docker_workdir", mode="before")
+    @classmethod
+    def _validate_execute_docker_workdir(cls, value: object) -> str:
+        if value is None:
+            return "/workspace"
+        raw = str(value).strip()
+        if not raw or not raw.startswith("/"):
+            return "/workspace"
+        return raw.rstrip("/") or "/workspace"
+
+    @field_validator("execute_docker_network", mode="before")
+    @classmethod
+    def _validate_execute_docker_network(cls, value: object) -> str:
+        if value is None:
+            return "none"
+        raw = str(value).strip()
+        return raw or "none"
+
+    @field_validator("execute_docker_memory_mb", mode="before")
+    @classmethod
+    def _validate_execute_docker_memory_mb(cls, value: object) -> int:
+        if value is None:
+            return 0
+        try:
+            return max(0, int(str(value).strip() or "0"))
+        except ValueError:
+            return 0
+
+    @field_validator("execute_docker_cpus", mode="before")
+    @classmethod
+    def _validate_execute_docker_cpus(cls, value: object) -> float:
+        if value is None:
+            return 0.0
+        try:
+            return max(0.0, float(str(value).strip() or "0"))
+        except ValueError:
+            return 0.0
 
 
 def _resolve_permission_mode(raw: object) -> PermissionMode:

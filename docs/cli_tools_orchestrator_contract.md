@@ -300,7 +300,8 @@ class AnalysisPlan(BaseModel):
 
 - 命令字符串经 `shlex.split` 解析为 argv；backend 调用 `subprocess.run(argv, shell=False, ...)`，**禁止** `shell=True`。
 - 首词必须命中 `EXECUTE_ALLOWED_COMMANDS`；`git` 仅允许只读子命令（`status/diff/log/show/rev-parse`）。`&&`、`|`、`;`、`>`、`` ` ``、`$(` 等 shell 操作符若出现在 argv 中，必定被拒。
-- 后端可切换：`EXECUTE_BACKEND=subprocess|docker`；`docker` 当前仅 stub，会抛 `NotImplementedError`。
+- 后端可切换：`EXECUTE_BACKEND=subprocess|docker`；`docker` 通过 `docker run` 执行预构建镜像，默认将 workspace 挂载到 `EXECUTE_DOCKER_WORKDIR=/workspace`，并保持 `shell=False`。
+- Docker backend 额外配置：`EXECUTE_DOCKER_IMAGE`、`EXECUTE_DOCKER_WORKDIR`、`EXECUTE_DOCKER_NETWORK`、`EXECUTE_DOCKER_MEMORY_MB`、`EXECUTE_DOCKER_CPUS`。
 - `stdout` / `stderr` 按字节上限（`EXECUTE_MAX_OUTPUT_BYTES`）截断，并在 `SandboxResult` 中以 `stdout_truncated` / `stderr_truncated` 标注。
 - 违反 policy 抛 `CommandNotAllowedError(ToolError)`，经编排层纳入 `ContextState.errors.category=security`，与高危门控拒绝同语义。
 - 可见性：Review 模式不暴露 execute 工具；Debug 模式通过 `create_default_registry(include_execute=True)` 暴露。全局开关 `EXECUTE_ENABLED=false` 时，Debug 模式也不注册 execute 工具。

@@ -76,6 +76,18 @@ def test_run_command_tool_passes_argv_not_shell(monkeypatch) -> None:
     assert captured["argv"] == ["pytest", "-q", "tests"]
 
 
+def test_run_command_tool_uses_configured_docker_backend(monkeypatch) -> None:
+    tool = RunCommandTool()
+    repo_root = Path(__file__).resolve().parent.parent
+
+    monkeypatch.setenv("EXECUTE_BACKEND", "docker")
+    captured = _stub_sandbox(monkeypatch)
+
+    asyncio.run(tool.execute(command="python -V", cwd=str(repo_root)))
+
+    assert captured["backend"] == "docker"
+
+
 def test_run_command_tool_rejects_non_allowlisted_head() -> None:
     tool = RunCommandTool()
     repo_root = Path(__file__).resolve().parent.parent
