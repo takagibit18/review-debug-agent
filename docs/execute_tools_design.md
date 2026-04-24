@@ -7,7 +7,7 @@
 ## 1. 目标与范围
 
 - **目标**：在允许模型于 Debug 流程中运行有限命令的前提下，将命令执行面缩到最小、可审计、可配置，并避免 shell 注入、环境泄露与输出撑爆上下文。
-- **范围**：仅涵盖 **execute 类**工具；不包含 `apply_patch` 等写入类工具。Docker 后端在架构上预留，真实实现可独立于本文档所述策略迭代。
+- **范围**：仅涵盖 **execute 类**工具；不包含 `apply_patch` 等写入类工具。Docker 后端已落地为本地交互式 Debug 的可选执行后端；CI 仍默认拒绝 execute。
 
 ---
 
@@ -16,7 +16,7 @@
 ### 2.1 沙箱后端
 
 - **默认**：`subprocess` 硬化——`shell=False`，仅接受解析后的 **argv 列表**。
-- **可选**：Docker 作为可插拔后端（`Settings.execute_backend`）；未实现前以 stub 安全失败（例如 `NotImplementedError`），避免误用未就绪能力。
+- **可选**：Docker 作为可插拔后端（`Settings.execute_backend`）；通过 `docker run` 执行预构建镜像，保持 `shell=False`、workspace 挂载与输出截断语义和本地后端一致。
 
 ### 2.2 命令策略（混合）
 
@@ -55,7 +55,7 @@ flowchart TD
     Gate["_is_high_risk_allowed (CI / plan / confirm)"]
     Tool[RunCommandTool / RunTestsTool]
     Policy["exec_policy: resolve_command / validate_extra_args"]
-    Backend["ExecBackend.run (subprocess | docker stub)"]
+    Backend["ExecBackend.run (subprocess | docker)"]
     Result[SandboxResult + truncation flags]
     Err[记录为 security 类别]
 
@@ -75,7 +75,7 @@ flowchart TD
 | 职责 | 主要位置 |
 |------|-----------|
 | 首词白名单、argv 解析、`git` 子命令只读限制、禁止 token、`extra_args` 校验、输出截断工具函数 | `src/security/exec_policy.py` |
-| 后端协议、本地 subprocess 实现、环境清洗、Docker stub | `src/security/backends.py` |
+| 后端协议、本地 subprocess 实现、环境清洗、Docker backend 实现 | `src/security/backends.py` |
 | 按 `execute_backend` 派发、统一 `SandboxResult`（含 `stdout_truncated` / `stderr_truncated` 等） | `src/security/sandbox.py` |
 | 命令不允许异常类型 | `src/tools/exceptions.py` → `CommandNotAllowedError` |
 | `run_command` / `run_tests` 实现 | `src/tools/run_command_tool.py`、`src/tools/run_tests_tool.py` |
@@ -92,10 +92,15 @@ flowchart TD
 | 配置字段 | 环境变量（典型） | 说明 |
 |----------|------------------|------|
 | `execute_enabled` | `EXECUTE_ENABLED` | 全局总开关；为 false 时不注册 execute 工具。 |
-| `execute_backend` | `EXECUTE_BACKEND` | `subprocess`（默认）或 `docker`（占位）。 |
+| `execute_backend` | `EXECUTE_BACKEND` | `subprocess`（默认）或 `docker`。 |
 | `execute_allowed_commands` | `EXECUTE_ALLOWED_COMMANDS` | 逗号分隔；表示 **argv[0] 允许集合**。默认包含 `python`、`pytest`、`pip`、`node`、`npm`、`ruff`、`mypy`、`git` 等。 |
 | `execute_default_timeout_ms` | `EXECUTE_DEFAULT_TIMEOUT_MS` | 默认超时（毫秒）。 |
 | `execute_max_output_bytes` | `EXECUTE_MAX_OUTPUT_BYTES` | stdout/stderr **各自**字节上限；超出则截断并标记 `*_truncated`。 |
+| `execute_docker_image` | `EXECUTE_DOCKER_IMAGE` | Docker execute backend 使用的镜像名；默认 `mergewarden-execute:latest`。 |
+| `execute_docker_workdir` | `EXECUTE_DOCKER_WORKDIR` | 容器内工作目录；默认 `/workspace`。 |
+| `execute_docker_network` | `EXECUTE_DOCKER_NETWORK` | Docker network 模式；默认 `none`。 |
+| `execute_docker_memory_mb` | `EXECUTE_DOCKER_MEMORY_MB` | 可选内存限制（MB）；`0` 表示不设置。 |
+| `execute_docker_cpus` | `EXECUTE_DOCKER_CPUS` | 可选 CPU 配额；`0` 表示不设置。 |
 
 **`git` 子命令**：即使 `git` 在白名单内，仍只允许只读子集（实现中为 `status`、`diff`、`log`、`show`、`rev-parse` 等，以 `exec_policy` 为准）。
 
@@ -123,11 +128,13 @@ flowchart TD
 ### 6.5 工作目录
 
 - 命令工作目录应限制在 **workspace 根目录内**（与既有 `ensure_path_allowed` 等路径策略一致），避免任意路径执行。
+- Docker backend 会将当前 workspace root bind-mount 到 `EXECUTE_DOCKER_WORKDIR`，并把 host `cwd` 映射为容器内相对路径后执行。
 
 ### 6.6 环境变量清洗
 
 - 子进程环境 **不继承**完整父进程环境；以 **白名单键** 从父环境拷贝允许变量（如 `PATH`、`HOME` / `USERPROFILE`、`LANG`、`LC_ALL`、`PYTHONPATH`、`VIRTUAL_ENV`、Windows 下 `SYSTEMROOT` / `TEMP` / `TMP` 等，以 `backends.build_scrubbed_env` 为准）。
 - 按 **前缀 / 后缀** 剔除敏感变量（如 `OPENAI_`、`AWS_`、`AZURE_`、`GITHUB_` 前缀，以及 `_KEY`、`_SECRET`、`_TOKEN`、`_PASSWORD` 等后缀），降低密钥注入子进程的风险。
+- Docker backend 对 host 进程仍使用 scrubbed env，并只把适合容器的变量通过 `-e` 透传，避免把 host `PATH`、`HOME` 等直接覆写到容器内。
 
 ### 6.7 输出截断
 
@@ -146,8 +153,15 @@ flowchart TD
 
 ## 7. 演进与已知边界
 
-- **Docker 后端**：接口与配置位可先落地；真实实现、镜像策略与资源限制可在单独变更中完成。
+- **Docker 后端**：当前范围仅覆盖本地交互式 Debug。默认依赖本地 Docker Desktop/Engine，不扩展到远程容器服务、Kubernetes 或 CI execute。
 - **交互确认 UI**：复用既有 `confirm_high_risk` 契约，不在 execute 模块内重复实现一套确认逻辑。
+
+### 7.1 最小演示流程
+
+1. 构建执行镜像：`docker build -f Dockerfile.execute -t mergewarden-execute:latest .`
+2. 设置环境变量：`EXECUTE_BACKEND=docker`
+3. 运行 execute 级 smoke test：`pytest -q tests/test_docker_backend_smoke.py -rs`
+4. 预期结果：命令在容器内执行，stdout/stderr 仍按 `SandboxResult` 结构返回，超时和缺失 Docker 可得到结构化错误。
 
 ---
 

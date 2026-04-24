@@ -1,4 +1,4 @@
-# Code Review & Debug Agent — 开源项目规划（意图对齐 · 架构 · 流程 · 分工）
+# MergeWarden — 开源项目规划（意图对齐 · 架构 · 流程 · 分工）
 
 > 本文档由根目录 `code_review_debug_agent_plan.md` 迁移至 `docs/`，用于统一开发指导文档入口。
 > 面向：大三 CS，求职 Agent 开发 / LLM 应用工程师；2 人远程协作并强化工程化能力。

@@ -71,7 +71,7 @@
 - 内存短缓存：维护最近 N 条请求/响应对，供 `InferenceEngine` 在多轮循环中快速组装上下文
 - 会话级 JSONL 持久化：每个 session（run_id）一个 `.jsonl` 文件，追加写入事件记录（model call、tool call、decision、error）
 - 数据模型：`EventType` 枚举：`EventEntry(timestamp, run_id, event_type, phase, payload)` — Pydantic 模型，逐行 JSON 序列化
-- 存储路径：环境变量 `EVENT_LOG_DIR`（默认 `.cr-debug-agent/logs`）。若为**相对路径**，则解析为 `{repo_path}/{EVENT_LOG_DIR}/{run_id}.jsonl`（`repo_path` 来自请求）；若为绝对路径则直接使用该目录下的 `{run_id}.jsonl`
+- 存储路径：环境变量 `EVENT_LOG_DIR`（默认 `.mergewarden/logs`）。若为**相对路径**，则解析为 `{repo_path}/{EVENT_LOG_DIR}/{run_id}.jsonl`（`repo_path` 来自请求）；若为绝对路径则直接使用该目录下的 `{run_id}.jsonl`
 - 理由：
   - 内存缓存避免多轮循环中反复读盘
   - JSONL 追加写入性能好、可增量读取，天然适合事件流

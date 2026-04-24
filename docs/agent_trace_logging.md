@@ -24,7 +24,7 @@ Review/Debug 跑完后，有时只看到最终结果（例如 `issues` 为空、
 
 ## 3. 日志写在哪里？
 
-- 目录：由环境变量 `EVENT_LOG_DIR` 决定，默认 `.cr-debug-agent/logs`（相对路径会落在**本次运行的工作区/repo 根目录**下）。
+- 目录：由环境变量 `EVENT_LOG_DIR` 决定，默认 `.mergewarden/logs`（相对路径会落在**本次运行的工作区/repo 根目录**下）。
 - 文件：`{run_id}.jsonl`，一行一个事件，按时间追加。
 
 编排器在每次 run 开始时生成 `run_id`，与最终 `ReviewResponse` / `DebugResponse` 里的 `run_id` 一致，便于和评测、人工排查对齐。

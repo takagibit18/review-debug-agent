@@ -1,4 +1,4 @@
-"""CLI entry point for the Code Review & Debug Agent.
+"""CLI entry point for MergeWarden.
 
 Provides ``review`` and ``debug`` subcommands via Click.
 """
@@ -18,7 +18,7 @@ T = TypeVar("T")
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="cr-debug-agent")
+@click.version_option(version=__version__, prog_name="mergewarden")
 @click.option(
     "--model",
     default=None,
@@ -38,7 +38,7 @@ def main(
     verbose: bool,
     permission_mode: str | None,
 ) -> None:
-    """Code Review & Debug Agent — structured code review and debug assistance."""
+    """MergeWarden — AI PR gatekeeper for safer merges."""
     ctx.ensure_object(dict)
     ctx.obj["model"] = model
     ctx.obj["verbose"] = verbose

@@ -41,3 +41,8 @@ def ensure_path_allowed(path: Path, *, tool_name: str) -> Path:
             path=str(resolved),
         )
     return resolved
+
+
+def get_tool_workspace_root() -> Path | None:
+    """Return the active workspace root bound for tool execution, if any."""
+    return _WORKSPACE_ROOT.get()

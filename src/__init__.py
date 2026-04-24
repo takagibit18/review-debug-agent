@@ -1,3 +1,3 @@
-"""Code Review & Debug Agent - core package."""
+"""MergeWarden core package."""
 
 __version__ = "0.1.0"

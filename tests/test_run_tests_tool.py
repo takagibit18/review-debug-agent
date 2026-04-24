@@ -75,6 +75,17 @@ def test_unittest_branch_builds_expected_argv(monkeypatch) -> None:
     assert captured["argv"] == ["python", "-m", "unittest", "mypkg.tests.test_x"]
 
 
+def test_run_tests_tool_uses_configured_docker_backend(monkeypatch) -> None:
+    tool = RunTestsTool()
+    repo_root = Path(__file__).resolve().parent.parent
+    monkeypatch.setenv("EXECUTE_BACKEND", "docker")
+    captured = _stub_sandbox(monkeypatch)
+
+    asyncio.run(tool.execute(framework="pytest", cwd=str(repo_root)))
+
+    assert captured["backend"] == "docker"
+
+
 def test_extra_args_rejects_network_flag() -> None:
     tool = RunTestsTool()
     repo_root = Path(__file__).resolve().parent.parent
