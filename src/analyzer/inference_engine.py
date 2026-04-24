@@ -53,6 +53,7 @@ class InferenceEngine:
         diff_text: str = "",
         error_log: str = "",
         file_contents: dict[str, str] | None = None,
+        project_structure: str | None = None,
         tool_feedback: list[dict[str, Any]] | None = None,
         feedback_digest_index: dict[str, dict[str, Any]] | None = None,
         prompt_input_token_budget: int | None = None,
@@ -74,6 +75,7 @@ class InferenceEngine:
                     state,
                     diff_text,
                     file_contents,
+                    project_structure=project_structure,
                     prompt_token_budget=budget,
                     context_builder=cb,
                     compressor_model_client=self._model_client,
@@ -87,6 +89,7 @@ class InferenceEngine:
                     state,
                     diff_text,
                     file_contents,
+                    project_structure=project_structure,
                     prompt_token_budget=budget,
                     context_builder=cb,
                 )
@@ -97,6 +100,7 @@ class InferenceEngine:
                     state,
                     error_log,
                     file_contents,
+                    project_structure=project_structure,
                     prompt_token_budget=budget,
                     context_builder=cb,
                     compressor_model_client=self._model_client,
@@ -110,6 +114,7 @@ class InferenceEngine:
                     state,
                     error_log,
                     file_contents,
+                    project_structure=project_structure,
                     prompt_token_budget=budget,
                     context_builder=cb,
                 )
@@ -160,7 +165,17 @@ class InferenceEngine:
                 parsed = self._try_parse_submit_payload_from_json(fallback, request)
                 if parsed:
                     fallback_parse_valid = True
+                    parsed.submit_review_seen = bool(parse_meta.get("submit_review_seen"))
+                    parsed.submit_debug_seen = bool(parse_meta.get("submit_debug_seen"))
+                    parsed.submit_review_validation_error = str(
+                        parse_meta.get("submit_review_validation_error", "")
+                    )
+                    parsed.submit_debug_validation_error = str(
+                        parse_meta.get("submit_debug_validation_error", "")
+                    )
                     plan = parsed
+        plan.fallback_json_found = fallback_json_found
+        plan.fallback_parse_valid = fallback_parse_valid
         self._record_trace(response, plan, parse_meta, iteration, fallback_json_found, fallback_parse_valid)
         return plan, response.usage.total_tokens
 
@@ -220,6 +235,14 @@ class InferenceEngine:
                     needs_tools=bool(tool_calls),
                     tool_calls=tool_calls,
                     draft_review=draft_review,
+                    submit_review_seen=bool(parse_meta["submit_review_seen"]),
+                    submit_debug_seen=bool(parse_meta["submit_debug_seen"]),
+                    submit_review_validation_error=str(
+                        parse_meta["submit_review_validation_error"]
+                    ),
+                    submit_debug_validation_error=str(
+                        parse_meta["submit_debug_validation_error"]
+                    ),
                 ),
                 parse_meta,
             )
@@ -228,6 +251,14 @@ class InferenceEngine:
                 needs_tools=bool(tool_calls),
                 tool_calls=tool_calls,
                 draft_debug=draft_debug,
+                submit_review_seen=bool(parse_meta["submit_review_seen"]),
+                submit_debug_seen=bool(parse_meta["submit_debug_seen"]),
+                submit_review_validation_error=str(
+                    parse_meta["submit_review_validation_error"]
+                ),
+                submit_debug_validation_error=str(
+                    parse_meta["submit_debug_validation_error"]
+                ),
             ),
             parse_meta,
         )
@@ -240,7 +271,11 @@ class InferenceEngine:
             try:
                 report = ReviewReport.model_validate(normalized_payload)
                 return AnalysisPlan(
-                    needs_tools=False, tool_calls=[], draft_review=report
+                    needs_tools=False,
+                    tool_calls=[],
+                    draft_review=report,
+                    fallback_json_found=True,
+                    fallback_parse_valid=True,
                 )
             except ValidationError as exc:
                 logger.warning("Invalid fallback review JSON ignored: %s", exc)
@@ -253,7 +288,13 @@ class InferenceEngine:
                     "context": {"goal": "", "constraints": [], "decisions": []},
                 }
             )
-            return AnalysisPlan(needs_tools=False, tool_calls=[], draft_debug=draft_debug)
+            return AnalysisPlan(
+                needs_tools=False,
+                tool_calls=[],
+                draft_debug=draft_debug,
+                fallback_json_found=True,
+                fallback_parse_valid=True,
+            )
         except ValidationError:
             return None
 

@@ -61,6 +61,20 @@ def _default_execute_backend() -> ExecuteBackend:
     return "subprocess"
 
 
+def _default_execute_docker_image() -> str:
+    raw = (os.getenv("EXECUTE_DOCKER_IMAGE", "python:3.11-slim") or "").strip()
+    return raw or "python:3.11-slim"
+
+
+def _default_execute_docker_workdir() -> str:
+    raw = (os.getenv("EXECUTE_DOCKER_WORKDIR", "/workspace") or "").strip()
+    if not raw:
+        return "/workspace"
+    if not raw.startswith("/"):
+        return f"/{raw.lstrip('/')}"
+    return raw
+
+
 def _default_agent_trace_detail() -> TraceDetailMode:
     raw = str(os.getenv("AGENT_TRACE_DETAIL", "off")).strip().lower() or "off"
     if raw in {"off", "compact", "full"}:
@@ -177,6 +191,22 @@ class Settings(BaseModel):
         ge=1024,
         description="Per-stream (stdout/stderr) byte cap; exceeded output is truncated with a marker.",
     )
+    execute_docker_image: str = Field(
+        default_factory=_default_execute_docker_image,
+        min_length=1,
+        description="Docker image used when EXECUTE_BACKEND=docker.",
+    )
+    execute_docker_workdir: str = Field(
+        default_factory=_default_execute_docker_workdir,
+        min_length=1,
+        description="Container working directory used by the Docker execute backend.",
+    )
+    execute_docker_network_disabled: bool = Field(
+        default_factory=lambda: _parse_bool_env(
+            "EXECUTE_DOCKER_NETWORK_DISABLED", True
+        ),
+        description="When true, the Docker execute backend adds --network none.",
+    )
 
     @field_validator("openai_api_key", "model_name", mode="before")
     @classmethod
@@ -216,6 +246,26 @@ class Settings(BaseModel):
         if raw in {"subprocess", "docker"}:
             return raw
         return "subprocess"
+
+    @field_validator("execute_docker_image", mode="before")
+    @classmethod
+    def _validate_execute_docker_image(cls, value: object) -> str:
+        if value is None:
+            return "python:3.11-slim"
+        raw = str(value).strip()
+        return raw or "python:3.11-slim"
+
+    @field_validator("execute_docker_workdir", mode="before")
+    @classmethod
+    def _validate_execute_docker_workdir(cls, value: object) -> str:
+        if value is None:
+            return "/workspace"
+        raw = str(value).strip()
+        if not raw:
+            return "/workspace"
+        if not raw.startswith("/"):
+            return f"/{raw.lstrip('/')}"
+        return raw
 
     @field_validator("execute_allowed_commands", mode="before")
     @classmethod

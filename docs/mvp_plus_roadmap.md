@@ -11,7 +11,7 @@
 
 - CLI + 五阶段编排；Review / Debug 结构化输出（`severity`、`location`、`evidence`、`suggestion` 等）。
 - 只读工具与工作区约束；可复现的最小运行路径与基础工程骨架。
-- **Execute 类工具（Debug 可见）**：`run_command` / `run_tests`；首词白名单、`shlex` argv 化、`shell=False`、环境清洗、输出截断；可插拔后端默认 `subprocess`，`docker` 为 stub；编排层高危门控与 `EXECUTE_*` 配置见 [execute_tools_design.md](execute_tools_design.md)、[shared_contracts.md](shared_contracts.md) §2 / §6。
+- **Execute 类工具（Debug 可见）**：`run_command` / `run_tests`；首词白名单、`shlex` argv 化、`shell=False`、环境清洗、输出截断；可插拔后端支持 `subprocess` 与 `docker`；编排层高危门控与 `EXECUTE_*` 配置见 [execute_tools_design.md](execute_tools_design.md)、[shared_contracts.md](shared_contracts.md) §2 / §6。
 - 评测与 Golden 管线（`eval/`）作为 **质量与回归的配套能力**，而非产品本体。
 - 成功标准侧重：**可跑通、可复现、行为与契约一致**（见 `project_plan.md` §1.4）；评测集用于约束迭代，不单独定义「产品完成度」。
 
@@ -33,13 +33,13 @@
 | 能力域                | MVP+ 增量方向（摘要）                                                                                                                                                               |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **编排与资源**          | Token 预算与迭代轮次；`stop:*` 与 `errors` 的展示优先级（例如与 `budget_exhausted` 同时成立时）可优化，避免误导；**输入侧**长上下文已由 Analyzer 侧预算 + 混合摘要承接（见 §3.3），编排层仍可关注展示与终止语义一致性。                                                                        |
-| **Analyzer / 上下文** | **已落地**：优先级截断 + **溢出块** LLM 摘要（`ContextCompressor`、`truncate_with_summary`）；环境变量 `CONTEXT_SUMMARY_ENABLED`、`SUMMARY_MAX_TOKENS_PER_PART`；用户 JSON 中 `truncated.summarized` 与摘要内容 `[SUMMARIZED]` 前缀。**仍待办**：`ContextBuilder.load_diff` 与「工作区全量 diff」语义对齐；连续工具失败 / 空结果的降级路径与 `analyzer_dev_plan` 一致细化。              |
-| **生产路径与提示**        | 非稀疏场景下：`AgentOrchestrator.analyze` 接入 `**project_structure`、按需 `file_contents`**；工具目标不存在时的回退提示；`SYSTEM_PROMPT_REVIEW` 与沙箱 `repo_path`、工具路径语义一致；生产侧「先探明目录」等约束与评测侧已部分缓解的策略对齐。 |
+| **Analyzer / 上下文** | **已落地**：优先级截断 + **溢出块** LLM 摘要（`ContextCompressor`、`truncate_with_summary`）；环境变量 `CONTEXT_SUMMARY_ENABLED`、`SUMMARY_MAX_TOKENS_PER_PART`；用户 JSON 中 `truncated.summarized` 与摘要内容 `[SUMMARIZED]` 前缀；`ContextBuilder.load_diff` 已对齐到「优先工作区全量 diff，失败时再回退」语义。**仍待办**：连续工具失败 / 空结果的降级路径与 `analyzer_dev_plan` 一致细化。              |
+| **生产路径与提示**        | **已落地**：`AgentOrchestrator.analyze` 接入 `project_structure`，并基于 Review diff / Debug error log 按需注入 `file_contents`；payload 显式输出 `project_structure`；`SYSTEM_PROMPT_REVIEW` / `SYSTEM_PROMPT_DEBUG` 增补「先利用结构、必要时先 `list_dir`」约束。**仍待办**：工具目标不存在时的更细粒度回退提示、生产侧约束与评测侧策略的持续对齐。 |
 | **路径与沙箱**          | 相对路径相对 workspace 解析、上下文写明工作区根（已部分实现）；稀疏沙箱与完整仓库行为对齐，避免「评测能过、生产行为漂移」。                                                                                                         |
-| **工具与安全**          | **已落地**：execute 管道（`exec_policy` + `backends` + `sandbox`）、`run_command` / `run_tests`、Review 不暴露 execute、Debug 注册、`EXECUTE_*` 与输出截断；高危门控与 CI 拒绝与 [cli_tools_orchestrator_contract.md](cli_tools_orchestrator_contract.md) §11 一致。**仍待办**：Docker 后端真实实现（当前 stub）、与 `project_plan` §6「容器内跑测」的最终对齐、可选命令/策略的更细粒度审计与可观测性字段。 |
+| **工具与安全**          | **已落地**：execute 管道（`exec_policy` + `backends` + `sandbox`）、`run_command` / `run_tests`、Review 不暴露 execute、Debug 注册、`EXECUTE_*` 与输出截断、Docker backend（镜像/工作目录/禁网可配）；高危门控与 CI 拒绝与 [cli_tools_orchestrator_contract.md](cli_tools_orchestrator_contract.md) §11 一致。**仍待办**：与 `project_plan` §6「容器内跑测」的更严格资源隔离最终对齐、可选命令/策略的更细粒度审计与可观测性字段。 |
 | **契约与输出**          | Review 的 `location` 语义清晰化；`submit_review` / `ReviewReport` 校验失败可观测（日志与降级）；协议演进时同步 CLI 与配套文档。                                                                                |
 | **观测与调试**          | 结构化日志、失败原因（如 `submit_review` 校验失败）更易排查；事件日志 phase 粒度可按需补全。                                                                                                                  |
-| **交付与 CI**         | Docker 一键 demo；CI 与本地流水线一致（与 `project_plan` 中 W2/W3 等里程碑对齐）。                                                                                                                |
+| **交付与 CI**         | **已落地**：PR review workflow 雏形（生成 PR diff → 调 CLI `review --diff-file --json` → 渲染并回写评论）；lint/test CI 仍保持本地一致。**仍待办**：Docker 一键 demo 的运行时闭环、PR review 的失败分级与更细的可观测性、与 `project_plan` 中 W2/W3 里程碑的进一步对齐。                                                                                                                |
 | **可选服务层**          | FastAPI 薄层（`project_plan` §2 方案 B），与现有 CLI 能力等价、可观测性不降级。                                                                                                                    |
 | **评测与回归**          | 维持可复现的主指标与报告形态；Golden/爬虫侧标注质量与「可证伪缺陷」约束；**指标扩展、辅助维度与人工复核流程** 见 `eval/README.md`，本路线图不展开细则。                                                                                  |
 

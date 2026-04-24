@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path, PurePath
+from typing import Any
 
+from src.analyzer.context_state import ContextState
 from src.analyzer.event_log import EventType
+from src.analyzer.output_formatter import ReviewReport
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
@@ -95,6 +99,20 @@ class SlowReadonlyTool(BaseTool):
         return {"name": self._name}
 
 
+class RecordingEngine:
+    """Capture orchestrator-to-engine inputs for context-loading assertions."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def analyze(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls.append(kwargs)
+        request = kwargs["request"]
+        if isinstance(request, ReviewRequest):
+            return AnalysisPlan(needs_tools=False, tool_calls=[]), 0
+        return AnalysisPlan(needs_tools=False, tool_calls=[]), 0
+
+
 def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "1")
     monkeypatch.chdir(tmp_path)
@@ -176,6 +194,82 @@ def test_event_log_directory_is_relative_to_repo_path(tmp_path, monkeypatch) -> 
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=str(repo))))
     log_path = repo / ".cr-debug-agent" / "logs" / f"{response.run_id}.jsonl"
     assert log_path.exists()
+
+
+def test_analyze_passes_review_project_context_to_engine() -> None:
+    repo_root = (
+        Path(__file__).resolve().parent.parent
+        / ".pytest-workspaces"
+        / "codex-review-engine-context"
+        / "repo"
+    )
+    workspace = repo_root.parent
+    shutil.rmtree(workspace, ignore_errors=True)
+    target_file = repo_root / "src" / "app.py"
+    try:
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text("print('ok')\n", encoding="utf-8")
+        diff_text = """diff --git a/src/app.py b/src/app.py
+--- a/src/app.py
++++ b/src/app.py
+@@ -0,0 +1 @@
++print('ok')
+"""
+        request = ReviewRequest(repo_path=str(repo_root), diff_text=diff_text)
+        orchestrator = AgentOrchestrator()
+        state = orchestrator.prepare_context(request)
+        engine = RecordingEngine()
+        orchestrator._model_client = object()  # noqa: SLF001
+        orchestrator._reset_run(max_iterations=1, repo_path=str(repo_root))  # noqa: SLF001
+        orchestrator._build_engine = lambda: engine  # type: ignore[method-assign]  # noqa: SLF001
+
+        asyncio.run(orchestrator.analyze(state, request, tool_specs=[]))
+
+        captured = engine.calls[-1]
+        assert captured["file_contents"]["src/app.py"] == "print('ok')\n"
+        assert "Project structure" in captured["project_structure"]
+        assert "- src/" in captured["project_structure"]
+        assert state.current_files == [str(repo_root), "src/app.py"]
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_analyze_passes_debug_project_context_to_engine() -> None:
+    repo_root = (
+        Path(__file__).resolve().parent.parent
+        / ".pytest-workspaces"
+        / "codex-debug-engine-context"
+        / "repo"
+    )
+    workspace = repo_root.parent
+    shutil.rmtree(workspace, ignore_errors=True)
+    target_file = repo_root / "src" / "service.py"
+    try:
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+        error_log = (
+            "Traceback (most recent call last):\n"
+            f'  File "{target_file}", line 1, in <module>\n'
+            "    raise RuntimeError('boom')\n"
+            "RuntimeError: boom\n"
+        )
+        request = DebugRequest(repo_path=str(repo_root), error_log_text=error_log)
+        orchestrator = AgentOrchestrator()
+        state = orchestrator.prepare_context(request)
+        engine = RecordingEngine()
+        orchestrator._model_client = object()  # noqa: SLF001
+        orchestrator._reset_run(max_iterations=1, repo_path=str(repo_root))  # noqa: SLF001
+        orchestrator._build_engine = lambda: engine  # type: ignore[method-assign]  # noqa: SLF001
+
+        asyncio.run(orchestrator.analyze(state, request, tool_specs=[]))
+
+        captured = engine.calls[-1]
+        assert captured["file_contents"]["src/service.py"] == "raise RuntimeError('boom')\n"
+        assert "Project structure" in captured["project_structure"]
+        assert "- src/" in captured["project_structure"]
+        assert state.current_files == [str(repo_root), "src/service.py"]
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 def test_execute_tools_uses_registry(tmp_path, monkeypatch) -> None:
@@ -390,6 +484,7 @@ def test_execute_tools_wraps_readonly_tool_errors() -> None:
     assert len(results) == 1
     assert results[0].ok is False
     assert "Tool execution failed for read_file" in (results[0].error or "")
+    assert "list_dir" in (results[0].error or "")
     assert any(error.category == "runtime" for error in state.errors)
 
 
@@ -634,3 +729,58 @@ def test_format_result_emits_format_result_event(tmp_path, monkeypatch) -> None:
     )
     assert format_event["payload"]["iteration"] == 0
     assert "used_placeholder_summary" in format_event["payload"]
+
+
+def test_attach_run_diagnostics_rewrites_placeholder_review_summary(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = AgentOrchestrator()
+    orchestrator._reset_run(max_iterations=1, repo_path=".")  # noqa: SLF001
+    state = ContextState(goal="review")
+    orchestrator._last_plan = AnalysisPlan(  # noqa: SLF001
+        needs_tools=False,
+        tool_calls=[],
+        submit_review_seen=True,
+        submit_review_validation_error="1 validation error for ReviewReport",
+    )
+    orchestrator._last_decision_reason = "max_iterations"  # noqa: SLF001
+    orchestrator._finalize_attempted = True  # noqa: SLF001
+
+    response = orchestrator.format_result(state, tool_results=[])
+    response = orchestrator._attach_run_diagnostics(state, response)  # noqa: SLF001
+
+    assert state.run_diagnostics is not None
+    assert state.run_diagnostics.status == "degraded"
+    assert "invalid" in state.run_diagnostics.headline.lower()
+    assert response.report.summary == state.run_diagnostics.headline
+    assert any(
+        "payload failed validation" in reason
+        for reason in state.run_diagnostics.reasons
+    )
+
+
+def test_run_review_records_final_status_event(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = AgentOrchestrator()
+
+    async def _analyze_once(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        return AnalysisPlan(
+            needs_tools=False,
+            tool_calls=[],
+            draft_review=ReviewReport(summary="ok"),
+        )
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze_once)
+
+    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+    log_path = tmp_path / ".cr-debug-agent" / "logs" / f"{response.run_id}.jsonl"
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    final_status = next(item for item in events if item["phase"] == "final_status")
+    assert final_status["event_type"] == EventType.DECISION.value
+    assert final_status["payload"]["run_id"] == response.run_id
+    assert final_status["payload"]["status"] == "completed"

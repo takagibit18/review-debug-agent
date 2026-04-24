@@ -57,7 +57,7 @@ Tools declare their safety level (`readonly` / `write` / `execute`).
 The executor uses this to decide concurrency and confirmation requirements.
 OpenAI-compatible **tool schemas** (registered tools plus `submit_*` pseudo-tools) are built in `src/orchestrator/tool_schemas.py` and passed into the inference layer by `AgentOrchestrator`.
 
-Execute-class tools (`run_command`, `run_tests`) use `src/security/exec_policy.py` for argv parsing and allowlists, `src/security/backends.py` for pluggable backends (default `subprocess`, `docker` stub), and `src/security/sandbox.py` as the dispatch entry. Debug-only registration and `EXECUTE_*` settings are documented in [execute_tools_design.md](./execute_tools_design.md) and [shared_contracts.md](./shared_contracts.md).
+Execute-class tools (`run_command`, `run_tests`) use `src/security/exec_policy.py` for argv parsing and allowlists, `src/security/backends.py` for pluggable backends (default `subprocess`, optional `docker`), and `src/security/sandbox.py` as the dispatch entry. Debug-only registration and `EXECUTE_*` settings are documented in [execute_tools_design.md](./execute_tools_design.md) and [shared_contracts.md](./shared_contracts.md).
 
 ### Structured Output
 

@@ -13,7 +13,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
-from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
+from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail, RunDiagnostics
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
@@ -25,7 +25,7 @@ from src.models.exceptions import ModelClientError
 from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
 from src.tools import create_default_registry
 from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
-from src.tools.exceptions import ToolError
+from src.tools.exceptions import FileNotFoundToolError, PathNotAllowedError, ToolError
 from src.tools.path_utils import tool_workspace_root
 
 
@@ -66,6 +66,10 @@ class AgentOrchestrator:
         self._budget_state: str = "none"
         self._model_completed = False
         self._last_decision_reason: str = ""
+        self._tool_error_count = 0
+        self._had_blocking_tool_error = False
+        self._finalize_attempted = False
+        self._finalize_submit_seen = False
         self._workspace_root: Path | None = None
         self._temperature = temperature
         self._trace_recorder = TraceRecorder(
@@ -95,6 +99,7 @@ class AgentOrchestrator:
             self._iteration += 1
         response = await self._maybe_force_submit_review(state, request, response)
         assert isinstance(response, ReviewResponse)
+        response = self._attach_run_diagnostics(state, response)
         self._close_event_log()
         return response
 
@@ -119,6 +124,7 @@ class AgentOrchestrator:
             self._iteration += 1
         response = await self._maybe_force_submit_debug(state, request, response)
         assert isinstance(response, DebugResponse)
+        response = self._attach_run_diagnostics(state, response)
         self._close_event_log()
         return response
 
@@ -140,8 +146,10 @@ class AgentOrchestrator:
         plan = self._last_plan
         if plan is None or plan.draft_review is not None:
             return response
+        self._finalize_attempted = True
         finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
         self._last_plan = finalize_plan
+        self._finalize_submit_seen = finalize_plan.draft_review is not None
         response = self.format_result(state, tool_results=[])
         self._record_event(
             EventType.DECISION,
@@ -171,8 +179,10 @@ class AgentOrchestrator:
         plan = self._last_plan
         if plan is None or plan.draft_debug is not None:
             return response
+        self._finalize_attempted = True
         finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
         self._last_plan = finalize_plan
+        self._finalize_submit_seen = finalize_plan.draft_debug is not None
         response = self.format_result(state, tool_results=[])
         self._record_event(
             EventType.DECISION,
@@ -219,13 +229,31 @@ class AgentOrchestrator:
 
         diff_text = ""
         error_log_text = ""
+        file_contents: dict[str, str] = {}
+        project_structure = self._context_builder.describe_project_structure(
+            request.repo_path
+        )
         if isinstance(request, ReviewRequest):
             diff_text = request.diff_text or ""
             if request.diff_mode and not diff_text:
                 diff_text = self._context_builder.load_diff(request.repo_path)
+            file_contents = self._context_builder.build_review_file_context(
+                request.repo_path,
+                diff_text,
+            )
         else:
             error_log_text = self._context_builder.load_error_log(
                 request.error_log_path, request.error_log_text
+            )
+            file_contents = self._context_builder.build_debug_file_context(
+                request.repo_path,
+                error_log_text,
+            )
+
+        if file_contents:
+            state.current_files = self._merge_current_files(
+                request.repo_path,
+                list(file_contents.keys()),
             )
 
         engine = self._build_engine()
@@ -252,6 +280,8 @@ class AgentOrchestrator:
                     tool_schemas=serialized_tools,
                     diff_text=diff_text,
                     error_log=error_log_text,
+                    file_contents=file_contents,
+                    project_structure=project_structure,
                     tool_feedback=self._tool_feedback,
                     feedback_digest_index=self._feedback_digest_index,
                     prompt_input_token_budget=self._settings.prompt_input_token_budget,
@@ -488,6 +518,7 @@ class AgentOrchestrator:
             index += len(batch_calls)
 
         self._append_tool_feedback(executed_feedback)
+        self._tool_error_count += sum(1 for result in results if not result.ok)
         return results
 
     def format_result(
@@ -512,6 +543,7 @@ class AgentOrchestrator:
                 plan, tool_results, state
             )
         self._blocking_error = blocking_error
+        self._had_blocking_tool_error = self._had_blocking_tool_error or blocking_error
         response.context = state
         response.run_id = self._run_id or str(uuid4())
         self._record_event(
@@ -541,6 +573,8 @@ class AgentOrchestrator:
                     and response.report.summary
                     == "Review pipeline completed with placeholder summary."
                 ),
+                "submit_review_validation_error": plan.submit_review_validation_error,
+                "submit_debug_validation_error": plan.submit_debug_validation_error,
                 "issues_count": (
                     len(response.report.issues)
                     if isinstance(response, ReviewResponse)
@@ -607,6 +641,167 @@ class AgentOrchestrator:
         )
         return not stop
 
+    def _attach_run_diagnostics(
+        self,
+        state: ContextState,
+        response: ReviewResponse | DebugResponse,
+    ) -> ReviewResponse | DebugResponse:
+        diagnostics = self._build_run_diagnostics(state, response)
+        state.run_diagnostics = diagnostics
+        if isinstance(response, ReviewResponse):
+            if (
+                diagnostics.headline
+                and response.report.summary
+                == "Review pipeline completed with placeholder summary."
+            ):
+                response.report.summary = diagnostics.headline
+        elif (
+            diagnostics.headline
+            and response.summary == "Debug pipeline completed with placeholder summary."
+        ):
+            response.summary = diagnostics.headline
+        self._record_event(
+            EventType.DECISION,
+            "final_status",
+            {
+                "iteration": self._iteration,
+                "run_id": response.run_id,
+                **diagnostics.model_dump(),
+            },
+        )
+        return response
+
+    def _build_run_diagnostics(
+        self,
+        state: ContextState,
+        response: ReviewResponse | DebugResponse,
+    ) -> RunDiagnostics:
+        plan = self._last_plan or AnalysisPlan(needs_tools=False, tool_calls=[])
+        is_review = isinstance(response, ReviewResponse)
+        submit_seen = (
+            self._submit_review_seen_any or plan.submit_review_seen
+            if is_review
+            else self._submit_debug_seen_any or plan.submit_debug_seen
+        )
+        validation_error = (
+            plan.submit_review_validation_error
+            if is_review
+            else plan.submit_debug_validation_error
+        )
+        used_placeholder_summary = self._uses_placeholder_summary(response)
+        fallback_plan_used = any(
+            error.message.startswith("Model client unavailable")
+            or error.message.startswith("Model analysis failed:")
+            for error in state.errors
+        )
+        reasons: list[str] = []
+        if self._last_decision_reason == "budget_hard_capped":
+            reasons.append("Token budget hard cap reached before the run could finish.")
+        elif self._last_decision_reason == "budget_soft_capped":
+            reasons.append("Token budget soft cap reached; returning the latest partial result.")
+        elif self._last_decision_reason == "max_iterations":
+            reasons.append("Iteration limit reached before the run could continue.")
+        elif self._last_decision_reason == "model_completed" and used_placeholder_summary:
+            reasons.append("The model stopped without producing a valid final structured submission.")
+
+        if self._tool_error_count:
+            count = self._tool_error_count
+            reasons.append(f"{count} tool call{'s' if count != 1 else ''} failed during execution.")
+
+        if fallback_plan_used:
+            reasons.append("The orchestrator had to fall back because model analysis was unavailable or failed.")
+
+        if validation_error:
+            submit_name = "submit_review" if is_review else "submit_debug"
+            reasons.append(f"Model called {submit_name}, but the payload failed validation.")
+
+        if plan.fallback_json_found and not plan.fallback_parse_valid:
+            reasons.append("Assistant text contained fallback JSON, but it did not match the expected schema.")
+
+        if used_placeholder_summary:
+            if self._finalize_attempted and not self._finalize_submit_seen:
+                reasons.append("A finalize-only retry still did not produce a valid final submission.")
+            elif not submit_seen:
+                reasons.append("The model never produced a valid final submission.")
+        elif self._had_blocking_tool_error:
+            reasons.append("A structured result was produced, but some earlier tool executions failed.")
+
+        if self._permission_mode == "plan":
+            reasons.append("Plan mode disabled tool execution and final submission.")
+
+        reasons = list(dict.fromkeys(reason for reason in reasons if reason))
+        if used_placeholder_summary or validation_error or fallback_plan_used:
+            status = "degraded"
+        elif self._budget_state != "none" or self._tool_error_count > 0:
+            status = "partial"
+        else:
+            status = "completed"
+
+        return RunDiagnostics(
+            status=status,
+            stop_reason=self._last_decision_reason,
+            budget_state=self._budget_state,
+            blocking_tool_error=self._had_blocking_tool_error,
+            tool_error_count=self._tool_error_count,
+            error_count=len(state.errors),
+            used_placeholder_summary=used_placeholder_summary,
+            finalize_attempted=self._finalize_attempted,
+            finalize_submit_seen=self._finalize_submit_seen,
+            submit_review_seen=self._submit_review_seen_any or plan.submit_review_seen,
+            submit_debug_seen=self._submit_debug_seen_any or plan.submit_debug_seen,
+            submit_review_validation_error=plan.submit_review_validation_error,
+            submit_debug_validation_error=plan.submit_debug_validation_error,
+            fallback_json_found=plan.fallback_json_found,
+            fallback_parse_valid=plan.fallback_parse_valid,
+            fallback_plan_used=fallback_plan_used,
+            headline=self._build_diagnostic_headline(
+                is_review=is_review,
+                used_placeholder_summary=used_placeholder_summary,
+                validation_error=validation_error,
+                submit_seen=submit_seen,
+                fallback_plan_used=fallback_plan_used,
+            ),
+            reasons=reasons,
+        )
+
+    def _build_diagnostic_headline(
+        self,
+        *,
+        is_review: bool,
+        used_placeholder_summary: bool,
+        validation_error: str,
+        submit_seen: bool,
+        fallback_plan_used: bool,
+    ) -> str:
+        label = "Review" if is_review else "Debug"
+        if fallback_plan_used:
+            return f"{label} fell back because model analysis was unavailable or failed."
+        if validation_error:
+            return f"{label} stopped because the final structured submission was invalid."
+        if used_placeholder_summary:
+            if self._last_decision_reason in {"budget_soft_capped", "budget_hard_capped"}:
+                return f"{label} stopped because the token budget was exhausted before a final submission."
+            if self._last_decision_reason == "max_iterations":
+                return f"{label} stopped at the iteration limit before a final submission."
+            if self._finalize_attempted and not self._finalize_submit_seen:
+                return f"{label} retried final submission, but still did not get a valid final result."
+            if not submit_seen:
+                return f"{label} finished without producing a valid final submission."
+            return f"{label} returned placeholder output because no valid final submission was available."
+        if self._tool_error_count > 0 and self._budget_state != "none":
+            return f"{label} returned the latest partial result after tool failures and budget pressure."
+        if self._tool_error_count > 0:
+            return f"{label} returned a partial result because some tool calls failed."
+        if self._budget_state != "none":
+            return f"{label} returned the latest partial result before the budget limit."
+        return ""
+
+    @staticmethod
+    def _uses_placeholder_summary(response: ReviewResponse | DebugResponse) -> bool:
+        if isinstance(response, ReviewResponse):
+            return response.report.summary == "Review pipeline completed with placeholder summary."
+        return response.summary == "Debug pipeline completed with placeholder summary."
+
     def _reset_run(self, max_iterations: int, repo_path: str) -> None:
         self._run_id = str(uuid4())
         self._workspace_root = Path(repo_path).resolve()
@@ -632,6 +827,10 @@ class AgentOrchestrator:
         self._budget_state = "none"
         self._model_completed = False
         self._last_decision_reason = ""
+        self._tool_error_count = 0
+        self._had_blocking_tool_error = False
+        self._finalize_attempted = False
+        self._finalize_submit_seen = False
         self._record_event(EventType.PHASE_START, "prepare", {"run_id": self._run_id})
 
     async def _execute_one_tool(
@@ -674,7 +873,10 @@ class AgentOrchestrator:
                     self._tool_dedup_cache[dedup_key] = result
                 return result, None
             except ToolError as exc:
-                err = f"Tool execution failed for {tool_name}: {exc}"
+                err = (
+                    f"Tool execution failed for {tool_name}: {exc}"
+                    f"{self._tool_recovery_hint(exc)}"
+                )
                 return (
                     ToolResult(ok=False, error=err),
                     ErrorDetail(file=exc.path, message=err, category="runtime"),
@@ -694,6 +896,14 @@ class AgentOrchestrator:
             serialized = str(args)
         digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
         return f"{tool_name}:{digest}"
+
+    @staticmethod
+    def _tool_recovery_hint(exc: ToolError) -> str:
+        if isinstance(exc, FileNotFoundToolError):
+            return " Hint: verify the path under repo_path with list_dir before retrying."
+        if isinstance(exc, PathNotAllowedError):
+            return " Hint: stay under repo_path and use list_dir to discover allowed directories."
+        return ""
 
     def _append_tool_feedback(self, entries: list[dict[str, Any]]) -> None:
         """Append feedback entries with iteration metadata, maintain ring-buffer window
@@ -880,3 +1090,15 @@ class AgentOrchestrator:
     def _close_event_log(self) -> None:
         if self._event_log is not None:
             self._event_log.close()
+
+    @staticmethod
+    def _merge_current_files(repo_path: str, file_paths: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for item in [repo_path, *file_paths]:
+            normalized = str(item).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+        return merged

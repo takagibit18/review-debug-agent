@@ -26,20 +26,27 @@ SYSTEM_PROMPT_REVIEW = (
     "Use only these severity values: critical, warning, info, style. "
     "Each issue must include severity, location, evidence, suggestion, and confidence between 0 and 1. "
     "Evidence must cite the concrete changed diff lines or hunk that support the claim. "
-    "Do not label something critical unless the diff itself clearly supports it."
+    "Do not label something critical unless the diff itself clearly supports it. "
+    "If the repository layout is unclear, use the provided project structure first and prefer "
+    "list_dir before broader search tools."
 )
 SYSTEM_PROMPT_DEBUG = (
-    "You are a senior debugging assistant. Produce structured hypotheses and steps."
+    "You are a senior debugging assistant. Produce structured hypotheses and steps. "
+    "Use the provided project structure and any preloaded files first; if paths are uncertain, "
+    "verify directories before deeper search."
 )
 
 USER_PREFIX_REVIEW = (
     "Review the payload and call submit_review exactly once with final JSON. "
     "Prioritize concrete bugs/regressions over optimization advice. "
     "If evidence cannot point to a specific diff snippet, lower the severity instead of forcing a bug claim. "
+    "Use preloaded project_structure/files when available; if a path is missing, fall back to the "
+    "listed workspace layout instead of guessing hidden directories. "
     "Do not return plain-text-only final answers.\n"
 )
 USER_PREFIX_DEBUG = (
-    "Return tool calls if needed, then submit_debug with final JSON.\n"
+    "Return tool calls if needed, then submit_debug with final JSON. "
+    "Use project_structure/files already in the payload before requesting more reads.\n"
 )
 
 FINALIZE_REVIEW_NOTICE = (

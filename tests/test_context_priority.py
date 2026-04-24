@@ -143,6 +143,21 @@ def test_assemble_review_truncated_flags() -> None:
     assert "/a" in payload["truncated"]["files"]
 
 
+def test_assemble_review_payload_includes_project_structure_when_selected() -> None:
+    req = ReviewRequest(repo_path="/r")
+    ctx = ContextState()
+    all_parts = build_review_context_parts(
+        req,
+        ctx,
+        diff_loaded="",
+        file_contents={},
+        project_structure="- src/\n  - app.py",
+    )
+    payload = assemble_review_payload(req, ctx, all_parts, all_parts)
+    assert payload["project_structure"] == "- src/\n  - app.py"
+    assert payload["truncated"]["structure"] is False
+
+
 def test_debug_error_log_before_files_in_priority() -> None:
     req = DebugRequest(repo_path=".")
     ctx = ContextState()
@@ -169,6 +184,21 @@ def test_assemble_debug_payload_error_dropped() -> None:
     payload = assemble_debug_payload(req, ctx, all_parts, selected)
     assert payload["error_log_loaded"] == ""
     assert payload["truncated"]["error_log"] is True
+
+
+def test_assemble_debug_payload_includes_project_structure_when_selected() -> None:
+    req = DebugRequest(repo_path=".")
+    ctx = ContextState()
+    all_parts = build_debug_context_parts(
+        req,
+        ctx,
+        error_log_loaded="",
+        file_contents={},
+        project_structure="- src/\n  - app.py",
+    )
+    payload = assemble_debug_payload(req, ctx, all_parts, all_parts)
+    assert payload["project_structure"] == "- src/\n  - app.py"
+    assert payload["truncated"]["structure"] is False
 
 
 def test_review_messages_do_not_embed_full_direct_diff_text_when_truncated() -> None:

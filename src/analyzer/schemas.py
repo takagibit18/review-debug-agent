@@ -173,3 +173,27 @@ class AnalysisPlan(BaseModel):
         default=None,
         description="Optional draft debug result produced by model",
     )
+    submit_review_seen: bool = Field(
+        default=False,
+        description="Whether the model attempted submit_review during parsing.",
+    )
+    submit_debug_seen: bool = Field(
+        default=False,
+        description="Whether the model attempted submit_debug during parsing.",
+    )
+    submit_review_validation_error: str = Field(
+        default="",
+        description="Validation error captured while parsing submit_review, if any.",
+    )
+    submit_debug_validation_error: str = Field(
+        default="",
+        description="Validation error captured while parsing submit_debug, if any.",
+    )
+    fallback_json_found: bool = Field(
+        default=False,
+        description="Whether JSON fallback content was detected in assistant text.",
+    )
+    fallback_parse_valid: bool = Field(
+        default=False,
+        description="Whether JSON fallback content parsed into a valid final payload.",
+    )

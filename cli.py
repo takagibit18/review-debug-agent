@@ -5,6 +5,7 @@ Provides ``review`` and ``debug`` subcommands via Click.
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any, TypeVar
 
 import click
@@ -59,6 +60,7 @@ def _render_review_response(response: ReviewResponse, verbose: bool) -> None:
         f"Optimization suggestions: {len(triage.optimization_suggestions)}"
     )
     click.echo(f"Tracked files: {len(response.context.current_files)}")
+    _render_run_diagnostics(response.context.run_diagnostics)
     if triage.must_fix_critical:
         click.secho("Must-Fix Critical Bugs:", fg="red", bold=True)
         for index, issue in enumerate(triage.must_fix_critical, start=1):
@@ -93,8 +95,43 @@ def _render_debug_response(response: DebugResponse, verbose: bool) -> None:
     click.echo(f"Hypotheses: {len(response.hypotheses)}")
     click.echo(f"Steps: {len(response.steps)}")
     click.echo(f"Tracked files: {len(response.context.current_files)}")
+    _render_run_diagnostics(response.context.run_diagnostics)
     if verbose:
         click.echo(response.model_dump_json(indent=2))
+
+
+def _render_run_diagnostics(diagnostics: Any | None) -> None:
+    """Render human-readable stop/degradation details when a run was not clean."""
+    if diagnostics is None:
+        return
+    if diagnostics.status == "completed" and not diagnostics.reasons:
+        return
+    color = "red" if diagnostics.status == "degraded" else "yellow"
+    click.secho(f"Status: {diagnostics.status}", fg=color, bold=True)
+    if diagnostics.headline:
+        click.echo(f"Why this ended: {diagnostics.headline}")
+    if diagnostics.stop_reason:
+        click.echo(f"Stop reason: {diagnostics.stop_reason}")
+    for reason in diagnostics.reasons:
+        click.echo(f"- {reason}")
+    validation_error = (
+        diagnostics.submit_review_validation_error
+        or diagnostics.submit_debug_validation_error
+    )
+    if validation_error:
+        click.echo(f"Validation detail: {_preview_text(validation_error, 180)}")
+
+
+def _preview_text(text: str, limit: int) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 3)] + "..."
+
+
+def _load_text_file(path: str) -> str:
+    """Read a UTF-8 text file for CLI-provided payloads such as PR diffs."""
+    return Path(path).read_text(encoding="utf-8", errors="replace")
 
 
 def _run_async_command(
@@ -113,17 +150,39 @@ def _run_async_command(
 @click.option(
     "--diff", is_flag=True, help="Analyse staged git diff instead of full files."
 )
+@click.option(
+    "--diff-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Path to a unified diff file. Useful for PR automation in CI.",
+)
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit only the structured JSON response.",
+)
 @click.pass_context
-def review(ctx: click.Context, path: str, diff: bool) -> None:
+def review(
+    ctx: click.Context,
+    path: str,
+    diff: bool,
+    diff_file: str | None,
+    json_output: bool,
+) -> None:
     """Run a structured code review on the target path or diff."""
+    diff_text = _load_text_file(diff_file) if diff_file else None
     request = ReviewRequest(
         repo_path=path,
-        diff_mode=diff,
+        diff_mode=diff or diff_file is not None,
+        diff_text=diff_text,
         model_name=ctx.obj["model"],
         verbose=ctx.obj["verbose"],
     )
     orchestrator = AgentOrchestrator(permission_mode=ctx.obj["permission_mode"])
     response = _run_async_command(orchestrator.run_review(request), "review")
+    if json_output:
+        click.echo(response.model_dump_json(indent=2))
+        return
     _render_review_response(response, ctx.obj["verbose"])
 
 
@@ -132,8 +191,19 @@ def review(ctx: click.Context, path: str, diff: bool) -> None:
 @click.option(
     "--error-log", type=click.Path(exists=True), help="Path to error log file."
 )
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Emit only the structured JSON response.",
+)
 @click.pass_context
-def debug(ctx: click.Context, path: str, error_log: str | None) -> None:
+def debug(
+    ctx: click.Context,
+    path: str,
+    error_log: str | None,
+    json_output: bool,
+) -> None:
     """Analyse a codebase to locate and suggest fixes for bugs."""
     request = DebugRequest(
         repo_path=path,
@@ -143,6 +213,9 @@ def debug(ctx: click.Context, path: str, error_log: str | None) -> None:
     )
     orchestrator = AgentOrchestrator(permission_mode=ctx.obj["permission_mode"])
     response = _run_async_command(orchestrator.run_debug(request), "debug")
+    if json_output:
+        click.echo(response.model_dump_json(indent=2))
+        return
     _render_debug_response(response, ctx.obj["verbose"])
 
 

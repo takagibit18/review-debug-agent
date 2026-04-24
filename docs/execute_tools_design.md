@@ -16,7 +16,7 @@
 ### 2.1 沙箱后端
 
 - **默认**：`subprocess` 硬化——`shell=False`，仅接受解析后的 **argv 列表**。
-- **可选**：Docker 作为可插拔后端（`Settings.execute_backend`）；未实现前以 stub 安全失败（例如 `NotImplementedError`），避免误用未就绪能力。
+- **可选**：Docker 作为可插拔后端（`Settings.execute_backend`）；当前通过 `docker run --rm` 执行同一份 argv，默认 `--network none`，并将当前工作目录 bind mount 到容器工作目录。
 
 ### 2.2 命令策略（混合）
 
@@ -55,7 +55,7 @@ flowchart TD
     Gate["_is_high_risk_allowed (CI / plan / confirm)"]
     Tool[RunCommandTool / RunTestsTool]
     Policy["exec_policy: resolve_command / validate_extra_args"]
-    Backend["ExecBackend.run (subprocess | docker stub)"]
+    Backend["ExecBackend.run (subprocess | docker)"]
     Result[SandboxResult + truncation flags]
     Err[记录为 security 类别]
 
@@ -75,7 +75,7 @@ flowchart TD
 | 职责 | 主要位置 |
 |------|-----------|
 | 首词白名单、argv 解析、`git` 子命令只读限制、禁止 token、`extra_args` 校验、输出截断工具函数 | `src/security/exec_policy.py` |
-| 后端协议、本地 subprocess 实现、环境清洗、Docker stub | `src/security/backends.py` |
+| 后端协议、本地 subprocess 实现、环境清洗、Docker backend | `src/security/backends.py` |
 | 按 `execute_backend` 派发、统一 `SandboxResult`（含 `stdout_truncated` / `stderr_truncated` 等） | `src/security/sandbox.py` |
 | 命令不允许异常类型 | `src/tools/exceptions.py` → `CommandNotAllowedError` |
 | `run_command` / `run_tests` 实现 | `src/tools/run_command_tool.py`、`src/tools/run_tests_tool.py` |
@@ -92,10 +92,13 @@ flowchart TD
 | 配置字段 | 环境变量（典型） | 说明 |
 |----------|------------------|------|
 | `execute_enabled` | `EXECUTE_ENABLED` | 全局总开关；为 false 时不注册 execute 工具。 |
-| `execute_backend` | `EXECUTE_BACKEND` | `subprocess`（默认）或 `docker`（占位）。 |
+| `execute_backend` | `EXECUTE_BACKEND` | `subprocess`（默认）或 `docker`（容器执行）。 |
 | `execute_allowed_commands` | `EXECUTE_ALLOWED_COMMANDS` | 逗号分隔；表示 **argv[0] 允许集合**。默认包含 `python`、`pytest`、`pip`、`node`、`npm`、`ruff`、`mypy`、`git` 等。 |
 | `execute_default_timeout_ms` | `EXECUTE_DEFAULT_TIMEOUT_MS` | 默认超时（毫秒）。 |
 | `execute_max_output_bytes` | `EXECUTE_MAX_OUTPUT_BYTES` | stdout/stderr **各自**字节上限；超出则截断并标记 `*_truncated`。 |
+| `execute_docker_image` | `EXECUTE_DOCKER_IMAGE` | Docker backend 所用镜像；默认 `python:3.11-slim`。 |
+| `execute_docker_workdir` | `EXECUTE_DOCKER_WORKDIR` | 容器内工作目录；默认 `/workspace`。 |
+| `execute_docker_network_disabled` | `EXECUTE_DOCKER_NETWORK_DISABLED` | 是否默认禁网；为 true 时追加 `--network none`。 |
 
 **`git` 子命令**：即使 `git` 在白名单内，仍只允许只读子集（实现中为 `status`、`diff`、`log`、`show`、`rev-parse` 等，以 `exec_policy` 为准）。
 
@@ -146,7 +149,7 @@ flowchart TD
 
 ## 7. 演进与已知边界
 
-- **Docker 后端**：接口与配置位可先落地；真实实现、镜像策略与资源限制可在单独变更中完成。
+- **Docker 后端**：基础执行链路已落地；镜像策略、资源限制与更严格的运行时隔离仍可继续增强。
 - **交互确认 UI**：复用既有 `confirm_high_risk` 契约，不在 execute 模块内重复实现一套确认逻辑。
 
 ---

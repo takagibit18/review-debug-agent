@@ -7,6 +7,8 @@ make informed decisions at each phase.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -30,6 +32,85 @@ class ErrorDetail(BaseModel):
     )
 
 
+class RunDiagnostics(BaseModel):
+    """Structured end-of-run diagnostics surfaced to CLI/JSON consumers."""
+
+    status: Literal["completed", "partial", "degraded"] = Field(
+        default="completed",
+        description="Overall run quality from the user's perspective.",
+    )
+    stop_reason: str = Field(
+        default="",
+        description="Final orchestrator stop reason such as model_completed or budget_soft_capped.",
+    )
+    budget_state: Literal["none", "soft_capped", "hard_capped"] = Field(
+        default="none",
+        description="Budget state observed at stop time.",
+    )
+    blocking_tool_error: bool = Field(
+        default=False,
+        description="Whether any tool call failed during the run.",
+    )
+    tool_error_count: int = Field(
+        default=0,
+        ge=0,
+        description="Count of failed tool calls observed across iterations.",
+    )
+    error_count: int = Field(
+        default=0,
+        ge=0,
+        description="Count of structured errors accumulated in ContextState.",
+    )
+    used_placeholder_summary: bool = Field(
+        default=False,
+        description="Whether the final user-visible summary is a placeholder fallback.",
+    )
+    finalize_attempted: bool = Field(
+        default=False,
+        description="Whether the orchestrator performed a finalize-only retry.",
+    )
+    finalize_submit_seen: bool = Field(
+        default=False,
+        description="Whether the finalize-only retry produced a valid submit payload.",
+    )
+    submit_review_seen: bool = Field(
+        default=False,
+        description="Whether the model attempted submit_review at least once.",
+    )
+    submit_debug_seen: bool = Field(
+        default=False,
+        description="Whether the model attempted submit_debug at least once.",
+    )
+    submit_review_validation_error: str = Field(
+        default="",
+        description="Validation error from the latest submit_review attempt, if any.",
+    )
+    submit_debug_validation_error: str = Field(
+        default="",
+        description="Validation error from the latest submit_debug attempt, if any.",
+    )
+    fallback_json_found: bool = Field(
+        default=False,
+        description="Whether fallback JSON was detected in assistant text output.",
+    )
+    fallback_parse_valid: bool = Field(
+        default=False,
+        description="Whether fallback JSON could be parsed into the expected schema.",
+    )
+    fallback_plan_used: bool = Field(
+        default=False,
+        description="Whether the orchestrator had to use its non-model fallback plan.",
+    )
+    headline: str = Field(
+        default="",
+        description="Short human-readable explanation for the final outcome.",
+    )
+    reasons: list[str] = Field(
+        default_factory=list,
+        description="Human-readable contributing factors behind the final outcome.",
+    )
+
+
 class ContextState(BaseModel):
     """Session-wide mutable state shared across agent phases.
 
@@ -49,4 +130,8 @@ class ContextState(BaseModel):
     )
     errors: list[ErrorDetail] = Field(
         default_factory=list, description="Errors discovered so far"
+    )
+    run_diagnostics: RunDiagnostics | None = Field(
+        default=None,
+        description="Final structured diagnostics for why the run stopped or degraded.",
     )

@@ -44,6 +44,12 @@ cp .env.example .env
 # 运行
 python cli.py review --help
 python cli.py debug --help
+
+# 对 PR diff 做 review（例如 CI 里预先生成的统一 diff）
+python cli.py review . --diff-file pr.diff
+
+# 输出机器可读 JSON（便于 CI / PR 评论脚本消费）
+python cli.py review . --diff-file pr.diff --json
 ```
 
 ### Docker
@@ -51,6 +57,30 @@ python cli.py debug --help
 ```bash
 docker compose up --build
 ```
+
+若要让 Debug 模式下的 execute 工具在容器内运行，可在 `.env` 中设置：
+
+```dotenv
+EXECUTE_BACKEND=docker
+EXECUTE_DOCKER_IMAGE=python:3.11-slim
+EXECUTE_DOCKER_WORKDIR=/workspace
+EXECUTE_DOCKER_NETWORK_DISABLED=true
+```
+
+Docker backend 会把当前执行 `cwd` bind mount 到容器工作目录，复用现有命令白名单、超时和输出截断策略。若项目测试依赖额外工具或依赖，请将 `EXECUTE_DOCKER_IMAGE` 指向你自己的预构建镜像。
+
+### PR 自动 Review
+
+仓库内置了 GitHub Actions 工作流 [`.github/workflows/pr-review.yml`](.github/workflows/pr-review.yml)，会在 `pull_request` 事件下：
+
+1. 生成当前 PR 相对 base branch 的 unified diff
+2. 调用现有 CLI `review --diff-file ... --json`
+3. 渲染 Markdown 评论并自动更新 / 创建 PR 评论
+
+启用前至少需要配置：
+
+- `OPENAI_API_KEY` GitHub Actions Secret
+- 可选：`MODEL_NAME` GitHub Actions Variable（不配则走默认模型）
 
 ## 项目结构
 
