@@ -171,17 +171,25 @@ class ContextBuilder:
     def _extract_diff_paths(diff_text: str) -> list[str]:
         out: list[str] = []
         for line in diff_text.splitlines():
-            if not line.startswith("diff --git "):
-                continue
-            parts = line.split(" ")
-            if len(parts) < 4:
-                continue
-            b_path = parts[3].strip()
-            if b_path.startswith("b/"):
-                b_path = b_path[2:]
-            if b_path and b_path != "/dev/null":
-                out.append(b_path)
+            path = ""
+            if line.startswith("diff --git "):
+                parts = line.split(" ")
+                if len(parts) >= 4:
+                    path = parts[3].strip()
+            elif line.startswith("+++ "):
+                path = line[4:].strip().split("\t", 1)[0].strip()
+            normalized = ContextBuilder._normalize_diff_path(path)
+            if normalized:
+                out.append(normalized)
         return out
+
+    @staticmethod
+    def _normalize_diff_path(path: str) -> str:
+        if not path or path == "/dev/null":
+            return ""
+        if path.startswith(("a/", "b/")):
+            path = path[2:]
+        return path if path and path != "/dev/null" else ""
 
     @staticmethod
     def _candidate_neighbor_files(rel_path: str) -> list[str]:
