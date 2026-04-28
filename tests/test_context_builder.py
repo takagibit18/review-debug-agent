@@ -57,3 +57,27 @@ def test_load_diff_file_contents_prioritizes_diff_files(tmp_path: Path) -> None:
     )
     assert "src/module.py" in loaded
     assert len(loaded["src/module.py"]) <= 20
+
+
+def test_load_diff_file_contents_extracts_paths_from_plain_unified_diff(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "module.py").write_text("value = 2\n", encoding="utf-8")
+
+    diff = (
+        "--- a/src/module.py\n"
+        "+++ b/src/module.py\n"
+        "@@ -1 +1 @@\n"
+        "-value = 1\n"
+        "+value = 2\n"
+    )
+
+    loaded = ContextBuilder().load_diff_file_contents(
+        str(root),
+        diff_text=diff,
+        max_files=1,
+        max_chars_per_file=100,
+        max_chars_total=100,
+    )
+
+    assert loaded == {"src/module.py": "value = 2\n"}
