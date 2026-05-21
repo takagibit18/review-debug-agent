@@ -263,6 +263,81 @@ def test_github_advisory_publish_requires_token_when_not_dry_run(
     assert "ghp_" not in result.output
 
 
+def test_github_advisory_publish_closes_client_on_publish_event_loop(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "response.json"
+    changed_lines_path = tmp_path / "changed.json"
+    output_path = tmp_path / "publish.json"
+    response = ReviewResponse(
+        run_id="run-publish",
+        report=ReviewReport(summary="summary"),
+        context=ContextState(),
+    )
+    response_path.write_text(response.model_dump_json(), encoding="utf-8")
+    changed_lines_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+
+    class LoopBoundClient:
+        def __init__(self, token: str) -> None:
+            assert token == "ghp_test"
+            self.loop = None
+
+        async def list_review_comments(self, owner_repo: str, pr_number: int):  # type: ignore[no-untyped-def]
+            import asyncio
+
+            self.loop = asyncio.get_running_loop()
+            return []
+
+        async def create_check_run(self, owner_repo: str, payload):  # type: ignore[no-untyped-def]
+            import asyncio
+
+            assert asyncio.get_running_loop() is self.loop
+            return {"id": 101}
+
+        async def create_review_comment(self, owner_repo, pr_number, payload):  # type: ignore[no-untyped-def]
+            raise AssertionError("no inline comments expected")
+
+        async def update_review_comment(self, owner_repo, comment_id, body):  # type: ignore[no-untyped-def]
+            raise AssertionError("no lifecycle comments expected")
+
+        async def close(self) -> None:
+            import asyncio
+
+            if asyncio.get_running_loop() is not self.loop:
+                raise RuntimeError("Event loop is closed")
+
+    monkeypatch.setattr(cli, "GitHubApiClient", LoopBoundClient)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "github-advisory",
+            "publish",
+            "--repo",
+            "owner/repo",
+            "--pr-number",
+            "7",
+            "--head-sha",
+            "abc123",
+            "--response-json",
+            str(response_path),
+            "--changed-lines-json",
+            str(changed_lines_path),
+            "--publish",
+            "--output-json",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "published"
+    assert "github-advisory close failed" not in result.output
+
+
 def test_review_command_can_export_response_and_run_summary(
     cli_runner: CliRunner,
     tmp_path: Path,

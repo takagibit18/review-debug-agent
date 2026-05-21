@@ -20,6 +20,7 @@ from src.integrations.github_adapter import build_github_advisory_payload
 from src.integrations.github_publisher import (
     GitHubApiClient,
     GitHubPublishRequest,
+    GitHubPublishResult,
     GitHubPublisher,
     GitHubPublisherClient,
     resolve_github_token,
@@ -118,6 +119,19 @@ def _run_async_command(
         return asyncio.run(operation)
     except Exception as exc:  # noqa: BLE001
         raise click.ClickException(f"{command_name} failed: {exc}") from exc
+
+
+async def _publish_and_close_client(
+    publisher: GitHubPublisher,
+    request: GitHubPublishRequest,
+    client: GitHubPublisherClient,
+) -> GitHubPublishResult:
+    try:
+        return await publisher.publish(request)
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            await close()
 
 
 @main.command()
@@ -330,12 +344,10 @@ def github_advisory_publish(
             raise click.ClickException("GITHUB_TOKEN is required when using --publish.")
         client = GitHubApiClient(resolved_token)
     publisher = GitHubPublisher(client)
-    try:
-        result = _run_async_command(publisher.publish(request), "github-advisory publish")
-    finally:
-        close = getattr(client, "close", None)
-        if close is not None:
-            _run_async_command(close(), "github-advisory close")
+    result = _run_async_command(
+        _publish_and_close_client(publisher, request, client),
+        "github-advisory publish",
+    )
     output = result.model_dump_json(indent=2)
     if output_json:
         Path(output_json).write_text(output + "\n", encoding="utf-8")
