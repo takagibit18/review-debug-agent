@@ -1,0 +1,2177 @@
+diff --git a/.env.example b/.env.example
+index 7835a44..a7781ce 100644
+--- a/.env.example
++++ b/.env.example
+@@ -6,6 +6,10 @@ MODEL_NAME=gpt-4o
+ # "Contents: Read" on target repos and search scope as needed. Also accepted: GH_TOKEN, github_token.
+ # On Windows, remove any empty/stale GITHUB_TOKEN from User/System env — it used to override .env.
+ GITHUB_TOKEN=ghp_your_token_for_crawler
++# Advisory publishing from GitHub Actions needs pull-requests:write and checks:write.
++# Dry-run remains the default unless CLI --publish is passed or this is set to false.
++GITHUB_ADVISORY_DRY_RUN=true
++GITHUB_ADVISORY_COMMENT_MARKER=<!-- mergewarden:comment -->
+ 
+ # Logging
+ LOG_LEVEL=INFO
+diff --git a/.github/workflows/github-advisory.yml b/.github/workflows/github-advisory.yml
+new file mode 100644
+index 0000000..b215d6a
+--- /dev/null
++++ b/.github/workflows/github-advisory.yml
+@@ -0,0 +1,136 @@
++name: GitHub Advisory
++
++on:
++  pull_request:
++    types: [opened, synchronize, reopened, ready_for_review]
++
++permissions:
++  contents: read
++  checks: write
++  pull-requests: write
++
++jobs:
++  advisory:
++    name: MergeWarden advisory
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    if: ${{ !github.event.pull_request.draft }}
++
++    env:
++      ARTIFACT_DIR: artifacts/github-advisory
++      REVIEW_RESPONSE_JSON: artifacts/github-advisory/review_response.json
++      RUN_SUMMARY_JSON: artifacts/github-advisory/run_summary.json
++      CHANGED_LINES_JSON: artifacts/github-advisory/changed_lines.json
++      PUBLISH_DRY_RUN_JSON: artifacts/github-advisory/publish_dry_run.json
++      PUBLISH_RESULT_JSON: artifacts/github-advisory/publish_result.json
++      PR_DIFF_PATH: artifacts/github-advisory/pr.diff
++      OWNER_REPO: ${{ github.repository }}
++      PR_NUMBER: ${{ github.event.pull_request.number }}
++      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
++      BASE_REF_NAME: ${{ github.event.pull_request.base.ref }}
++
++    steps:
++      - name: Check out PR head
++        uses: actions/checkout@v4
++        with:
++          ref: ${{ github.event.pull_request.head.sha }}
++          fetch-depth: 0
++
++      - name: Set up Python
++        uses: actions/setup-python@v5
++        with:
++          python-version: "3.11"
++
++      - name: Install dependencies
++        run: |
++          python -m pip install --upgrade pip
++          pip install -r requirements-dev.txt
++
++      - name: Prepare PR diff and changed-lines map
++        shell: bash
++        run: |
++          set -euo pipefail
++          mkdir -p "$ARTIFACT_DIR"
++          git fetch --no-tags origin "+refs/heads/$BASE_REF_NAME:refs/remotes/origin/$BASE_REF_NAME"
++          MERGE_BASE="$(git merge-base "origin/$BASE_REF_NAME" "$HEAD_SHA")"
++          echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
++          git diff --no-ext-diff "$MERGE_BASE" "$HEAD_SHA" > "$PR_DIFF_PATH"
++          python scripts/github_changed_lines.py --diff-file "$PR_DIFF_PATH" --output "$CHANGED_LINES_JSON"
++          git reset --soft "$MERGE_BASE"
++
++      - name: Check review credentials
++        id: review-credentials
++        env:
++          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
++        shell: bash
++        run: |
++          if [ -z "${OPENAI_API_KEY:-}" ]; then
++            echo "has_key=false" >> "$GITHUB_OUTPUT"
++            echo "::notice::OPENAI_API_KEY is not configured; skipping MergeWarden review and publish."
++          else
++            echo "has_key=true" >> "$GITHUB_OUTPUT"
++          fi
++
++      - name: Run MergeWarden review
++        if: steps.review-credentials.outputs.has_key == 'true'
++        env:
++          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
++          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
++          MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
++          EVENT_LOG_DIR: .mergewarden/logs
++          REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '4' }}
++          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '88000' }}
++          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '88000' }}
++        run: |
++          python cli.py review . --diff --output-json "$REVIEW_RESPONSE_JSON" --summary-json "$RUN_SUMMARY_JSON"
++
++      - name: Dry-run GitHub advisory publish
++        if: steps.review-credentials.outputs.has_key == 'true'
++        run: |
++          python cli.py github-advisory publish \
++            --repo "$OWNER_REPO" \
++            --pr-number "$PR_NUMBER" \
++            --head-sha "$HEAD_SHA" \
++            --response-json "$REVIEW_RESPONSE_JSON" \
++            --changed-lines-json "$CHANGED_LINES_JSON" \
++            --dry-run \
++            --output-json "$PUBLISH_DRY_RUN_JSON"
++
++      - name: Publish GitHub advisory
++        if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name == github.repository
++        env:
++          GITHUB_TOKEN: ${{ github.token }}
++        run: |
++          python cli.py github-advisory publish \
++            --repo "$OWNER_REPO" \
++            --pr-number "$PR_NUMBER" \
++            --head-sha "$HEAD_SHA" \
++            --response-json "$REVIEW_RESPONSE_JSON" \
++            --changed-lines-json "$CHANGED_LINES_JSON" \
++            --publish \
++            --output-json "$PUBLISH_RESULT_JSON"
++
++      - name: Preserve dry-run result for non-writable PRs
++        if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name != github.repository
++        run: |
++          cp "$PUBLISH_DRY_RUN_JSON" "$PUBLISH_RESULT_JSON"
++
++      - name: Write skipped publish result
++        if: steps.review-credentials.outputs.has_key != 'true'
++        run: |
++          printf '{"status":"skipped","reason":"OPENAI_API_KEY is not configured"}\n' > "$PUBLISH_RESULT_JSON"
++
++      - name: Upload GitHub advisory artifacts
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: github-advisory-${{ github.event.pull_request.number }}
++          if-no-files-found: ignore
++          path: |
++            artifacts/github-advisory/review_response.json
++            artifacts/github-advisory/run_summary.json
++            artifacts/github-advisory/changed_lines.json
++            artifacts/github-advisory/pr.diff
++            artifacts/github-advisory/publish_dry_run.json
++            artifacts/github-advisory/publish_result.json
++            .mergewarden/logs/*.jsonl
+diff --git a/.mypy_cache_temp/3.11/cache.db b/.mypy_cache_temp/3.11/cache.db
+new file mode 100644
+index 0000000..04ca106
+Binary files /dev/null and b/.mypy_cache_temp/3.11/cache.db differ
+diff --git a/.mypy_cache_temp/3.11/cache.db-journal b/.mypy_cache_temp/3.11/cache.db-journal
+new file mode 100644
+index 0000000..36ddc46
+Binary files /dev/null and b/.mypy_cache_temp/3.11/cache.db-journal differ
+diff --git a/README.md b/README.md
+index 005c4ec..2f79f00 100644
+--- a/README.md
++++ b/README.md
+@@ -86,6 +86,7 @@ Available endpoints:
+ - `GET /health`
+ - `POST /review`
+ - `POST /debug`
++- `GET /runs/{run_id}/summary`
+ 
+ ### MVP+ status
+ 
+@@ -97,15 +98,33 @@ stable eval gate are in place. The current golden baseline is
+ `hit_rate >= 0.6` target. Details are recorded in
+ [docs/mvp_plus_eval_closure.md](docs/mvp_plus_eval_closure.md).
+ 
+-Phase 2 readiness adds local diagnostics and advisory export commands without
+-publishing GitHub comments:
++Phase 2 adds productized run summaries and GitHub Actions-friendly advisory
++publishing. Publishing is advisory-only: MergeWarden writes a neutral soft check
++and optional review comments, while GitHub CI / branch protection remains the
++hard merge authority. Dry-run is the default.
+ 
+ ```bash
+ python -m eval.run diagnose --input eval/outputs/20260518_151719_report.json
+ python -m eval.run trend --inputs "eval/outputs/*_report.json"
++python scripts/github_changed_lines.py --diff-file pr.diff --output changed_lines.json
+ python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
++python cli.py review . --diff --output-json review_response.json --summary-json run_summary.json
++python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
+ ```
+ 
++The repository includes `.github/workflows/github-advisory.yml` for the PR
++loop: it builds the PR diff, writes `changed_lines.json`, runs
++`review --diff --output-json --summary-json`, dry-runs advisory publishing,
++then publishes on same-repository PRs where `GITHUB_TOKEN` has write
++permissions. It uploads the response, run summary, changed-lines map, PR diff,
++publish result, and event JSONL logs as workflow artifacts.
++
++To publish from GitHub Actions, grant `checks: write` and `pull-requests: write`
++to `GITHUB_TOKEN`, then pass `--publish`. Inline comments are limited to changed
++lines; findings outside changed lines stay in the soft-check summary. MergeWarden
++comments include hidden fingerprints so later runs can update matching comments
++and mark stale findings without touching human comments.
++
+ ## 项目结构
+ 
+ ```
+diff --git a/cli.py b/cli.py
+index fde3e02..7f360a6 100644
+--- a/cli.py
++++ b/cli.py
+@@ -12,9 +12,18 @@ from typing import Any, TypeVar
+ import click
+ 
+ from src.analyzer.output_formatter import ReviewIssue, triage_review_report
++from src.analyzer.run_summary import summarize_run_artifacts
+ from src import __version__
+ from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
++from src.config import get_settings
+ from src.integrations.github_adapter import build_github_advisory_payload
++from src.integrations.github_publisher import (
++    GitHubApiClient,
++    GitHubPublishRequest,
++    GitHubPublisher,
++    GitHubPublisherClient,
++    resolve_github_token,
++)
+ from src.orchestrator.agent_loop import AgentOrchestrator
+ 
+ T = TypeVar("T")
+@@ -116,8 +125,26 @@ def _run_async_command(
+ @click.option(
+     "--diff", is_flag=True, help="Analyse staged git diff instead of full files."
+ )
++@click.option(
++    "--output-json",
++    default=None,
++    type=click.Path(exists=False),
++    help="Optional path to write the ReviewResponse JSON.",
++)
++@click.option(
++    "--summary-json",
++    default=None,
++    type=click.Path(exists=False),
++    help="Optional path to write a compact run artifact summary JSON.",
++)
+ @click.pass_context
+-def review(ctx: click.Context, path: str, diff: bool) -> None:
++def review(
++    ctx: click.Context,
++    path: str,
++    diff: bool,
++    output_json: str | None,
++    summary_json: str | None,
++) -> None:
+     """Run a structured code review on the target path or diff."""
+     request = ReviewRequest(
+         repo_path=path,
+@@ -127,6 +154,19 @@ def review(ctx: click.Context, path: str, diff: bool) -> None:
+     )
+     orchestrator = AgentOrchestrator(permission_mode=ctx.obj["permission_mode"])
+     response = _run_async_command(orchestrator.run_review(request), "review")
++    if output_json:
++        Path(output_json).write_text(response.model_dump_json(indent=2) + "\n", encoding="utf-8")
++        click.echo(f"Review response saved to: {Path(output_json).as_posix()}")
++    if summary_json:
++        event_log_path = _resolve_event_log_path(path, response.run_id)
++        summary = summarize_run_artifacts(
++            run_id=response.run_id,
++            event_log_path=event_log_path,
++            response_json_path=output_json,
++            publish_status="not_requested",
++        )
++        Path(summary_json).write_text(summary.model_dump_json(indent=2) + "\n", encoding="utf-8")
++        click.echo(f"Run summary saved to: {Path(summary_json).as_posix()}")
+     _render_review_response(response, ctx.obj["verbose"])
+ 
+ 
+@@ -206,5 +246,137 @@ def _load_changed_lines(path: Path) -> dict[str, set[int]]:
+     return changed
+ 
+ 
++@main.group("github-advisory")
++def github_advisory() -> None:
++    """Publish MergeWarden advisory checks and PR comments."""
++
++
++@github_advisory.command("publish")
++@click.option(
++    "--repo",
++    "owner_repo",
++    required=True,
++    help="GitHub repository in owner/name form.",
++)
++@click.option(
++    "--pr-number",
++    required=True,
++    type=int,
++    help="Pull request number.",
++)
++@click.option(
++    "--head-sha",
++    required=True,
++    help="Pull request head SHA used for the check run and metadata.",
++)
++@click.option(
++    "--response-json",
++    required=True,
++    type=click.Path(exists=True),
++    help="Path to a ReviewResponse JSON file.",
++)
++@click.option(
++    "--changed-lines-json",
++    required=True,
++    type=click.Path(exists=True),
++    help="JSON object mapping repo-relative paths to changed line numbers.",
++)
++@click.option(
++    "--dry-run/--publish",
++    default=None,
++    help="Dry-run by default; pass --publish to write to GitHub.",
++)
++@click.option(
++    "--token",
++    default=None,
++    help="GitHub token override. Defaults to GITHUB_TOKEN/GH_TOKEN.",
++)
++@click.option(
++    "--output-json",
++    default=None,
++    type=click.Path(exists=False),
++    help="Optional output path. Defaults to stdout.",
++)
++def github_advisory_publish(
++    owner_repo: str,
++    pr_number: int,
++    head_sha: str,
++    response_json: str,
++    changed_lines_json: str,
++    dry_run: bool,
++    token: str | None,
++    output_json: str | None,
++) -> None:
++    """Publish a GitHub soft check and advisory comments for a review response."""
++    response = ReviewResponse.model_validate_json(
++        Path(response_json).read_text(encoding="utf-8")
++    )
++    changed_lines = _load_changed_lines(Path(changed_lines_json))
++    effective_dry_run = get_settings().github_advisory_dry_run if dry_run is None else dry_run
++    request = GitHubPublishRequest(
++        owner_repo=owner_repo,
++        pr_number=pr_number,
++        head_sha=head_sha,
++        response=response,
++        changed_lines={key: sorted(value) for key, value in changed_lines.items()},
++        dry_run=effective_dry_run,
++    )
++    client: GitHubPublisherClient
++    if effective_dry_run:
++        client = _DryRunGithubClient()
++    else:
++        resolved_token = resolve_github_token(token)
++        if not resolved_token:
++            raise click.ClickException("GITHUB_TOKEN is required when using --publish.")
++        client = GitHubApiClient(resolved_token)
++    publisher = GitHubPublisher(client)
++    try:
++        result = _run_async_command(publisher.publish(request), "github-advisory publish")
++    finally:
++        close = getattr(client, "close", None)
++        if close is not None:
++            _run_async_command(close(), "github-advisory close")
++    output = result.model_dump_json(indent=2)
++    if output_json:
++        Path(output_json).write_text(output + "\n", encoding="utf-8")
++        click.echo(f"GitHub advisory publish result saved to: {Path(output_json).as_posix()}")
++        return
++    click.echo(output)
++
++
++class _DryRunGithubClient:
++    """Client placeholder; dry-runs never call network methods."""
++
++    async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]:
++        raise RuntimeError("dry-run should not list GitHub comments")
++
++    async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
++        raise RuntimeError("dry-run should not create GitHub check runs")
++
++    async def create_review_comment(
++        self,
++        owner_repo: str,
++        pr_number: int,
++        payload: dict[str, Any],
++    ) -> dict[str, Any]:
++        raise RuntimeError("dry-run should not create GitHub comments")
++
++    async def update_review_comment(
++        self,
++        owner_repo: str,
++        comment_id: int,
++        body: str,
++    ) -> dict[str, Any]:
++        raise RuntimeError("dry-run should not update GitHub comments")
++
++
++def _resolve_event_log_path(repo_path: str, run_id: str) -> Path:
++    settings = get_settings()
++    raw = Path(settings.event_log_dir)
++    if raw.is_absolute():
++        return raw / f"{run_id}.jsonl"
++    return Path(repo_path) / raw / f"{run_id}.jsonl"
++
++
+ if __name__ == "__main__":
+     main()
+diff --git a/docs/architecture.md b/docs/architecture.md
+index a2d526a..2c4ca0b 100644
+--- a/docs/architecture.md
++++ b/docs/architecture.md
+@@ -57,7 +57,7 @@ Tools declare their safety level (`readonly` / `write` / `execute`).
+ The executor uses this to decide concurrency and confirmation requirements.
+ OpenAI-compatible **tool schemas** (registered tools plus `submit_*` pseudo-tools) are built in `src/orchestrator/tool_schemas.py` and passed into the inference layer by `AgentOrchestrator`.
+ 
+-FastAPI exposes a synchronous MVP+ API with `GET /health`, `POST /review`, and `POST /debug`. The HTTP layer reuses the same `ReviewRequest` / `DebugRequest` and `ReviewResponse` / `DebugResponse` Pydantic contracts as the CLI, and only handles request validation, stable JSON errors, and orchestrator dispatch.
++FastAPI exposes a synchronous MVP+ API with `GET /health`, `POST /review`, and `POST /debug`. The HTTP layer reuses the same `ReviewRequest` / `DebugRequest` and `ReviewResponse` / `DebugResponse` Pydantic contracts as the CLI, and only handles request validation, stable JSON errors, and orchestrator dispatch. Phase 2 adds `GET /runs/{run_id}/summary` as an independent observability helper so the core review/debug response schemas stay stable.
+ 
+ Execute-class tools (`run_command`, `run_tests`) use `src/security/exec_policy.py` for argv parsing and allowlists, `src/security/backends.py` for pluggable backends (default `subprocess`, optional `docker`), and `src/security/sandbox.py` as the dispatch entry. Debug-only registration and `EXECUTE_*` settings are documented in [execute_tools_design.md](./execute_tools_design.md) and [shared_contracts.md](./shared_contracts.md).
+ 
+@@ -85,6 +85,11 @@ the evidence but should not become the primary comment location.
+ CI remains the hard authority for mergeability.  MergeWarden's PR-facing role
+ is to produce review suggestions, soft checks, and evidence for risks that may
+ pass automated tests but still deserve human attention.
++The first GitHub publishing surface is GitHub Actions: `github-advisory publish`
++can create a neutral check run and advisory review comments using `GITHUB_TOKEN`
++with `checks:write` and `pull-requests:write`. Comment lifecycle uses stable
++issue fingerprints plus hidden MergeWarden metadata to update matching comments
++and mark stale findings without deleting or editing human comments.
+ 
+ ### Observability
+ 
+@@ -92,3 +97,7 @@ Every run logs a `run_id`, tool-call sequence, key intermediate results,
+ wall-clock time, and token usage, enabling post-hoc debugging of
+ false-positives or missed issues.
+ Across loop iterations, **tool results are fed back** into the next model call (`tool_feedback` in the inference engine) so multi-step tool use remains coherent.
++Runtime summaries live in `src/analyzer/run_summary.py` and are reused by CLI,
++FastAPI, and eval wrappers. A summary includes event-log status, models, token
++counts, tool-call counts, budget state, stop reasons, submit validation errors,
++artifact paths, and GitHub publish status.
+diff --git a/docs/shared_contracts.md b/docs/shared_contracts.md
+index afbd7e6..4a2907b 100644
+--- a/docs/shared_contracts.md
++++ b/docs/shared_contracts.md
+@@ -115,10 +115,15 @@
+ | `suggestion` | `str` | 修复或行动建议 |
+ | `confidence` | `float` | `0.0`–`1.0`，模型置信度 |
+ 
+-Review findings are advisory by contract. Downstream GitHub integrations may
+-publish them as comments, summaries, or soft checks, but hard merge blocking
+-remains the responsibility of GitHub CI / branch protection unless a future
+-product decision explicitly changes that boundary.
++Review findings are advisory by contract. Downstream GitHub integrations may
++publish them as comments, summaries, or soft checks, but hard merge blocking
++remains the responsibility of GitHub CI / branch protection unless a future
++product decision explicitly changes that boundary.
++
++Phase 2 GitHub publishing starts with GitHub Actions. `github-advisory publish`
++uses the existing `ReviewResponse` plus changed-line metadata to create a neutral
++check run and advisory inline comments. Inline comments remain restricted to
++changed lines; all other findings stay in the check summary.
+ 
+ ### 4.3 `ReviewReport`（单次 review 汇总）
+ 
+@@ -164,8 +169,11 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
+ | `MODEL_REQUEST_TIMEOUT_SECONDS` | 单次模型 provider 调用的硬超时 | 默认 `60`，对应 `Settings.model_request_timeout_seconds` |
+ | `MODEL_MAX_RETRIES` | 单次逻辑模型调用的最大尝试次数 | 默认 `1`，对应 `Settings.model_max_retries` |
+ | `AGENT_RUN_TIMEOUT_SECONDS` | 单次编排运行的总墙钟截止线 | 默认 `170`，对应 `Settings.agent_run_timeout_seconds` |
+-| `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.mergewarden/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
+-| `PERMISSION_MODE` | 权限模式（`default` \| `plan`） | 默认 `default`；`plan` 模式禁止执行工具，仅生成计划与结构化输出 |
++| `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.mergewarden/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
++| `GITHUB_TOKEN` / `GH_TOKEN` / `github_token` | GitHub API token | GitHub Actions publish mode needs `checks:write` and `pull-requests:write`; dry-run does not need a token |
++| `GITHUB_ADVISORY_DRY_RUN` | GitHub advisory default publish mode | Default `true`; CLI `--publish` can override and perform real GitHub writes |
++| `GITHUB_ADVISORY_COMMENT_MARKER` | MergeWarden comment marker | Default `<!-- mergewarden:comment -->`; used to update/mark only MergeWarden-owned comments |
++| `PERMISSION_MODE` | 权限模式（`default` \| `plan`） | 默认 `default`；`plan` 模式禁止执行工具，仅生成计划与结构化输出 |
+ | `CI` | 常见 CI 环境变量 | 设为 `true`/`1`/`yes` 时，编排层对 `write`/`execute` 工具默认拒绝（与 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md) §11 一致） |
+ | `EXECUTE_ENABLED` | execute 类工具全局开关 | 默认 `true`；置 `false` 时即便 Debug 模式也不注册 `run_command` / `run_tests` |
+ | `EXECUTE_BACKEND` | execute 工具后端实现 | `subprocess`（默认）/ `docker`（本地 `docker run` 后端，挂载统一 workspace root） |
+@@ -188,11 +196,13 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
+ 
+ | 项目 | 约定 |
+ |------|------|
+-| `run_id` | 每次 CLI/调用生成的唯一标识，写入日志与可选 artifact |
+-| 记录内容 | 工具调用序列、关键中间结果、耗时、token 用量 |
+-| 输入快照 | 是否落盘脱敏后的 prompt/输出以便复盘（路径与保留策略） |
+-
+-具体字段若在代码中以 `RunContext` 等模型出现，应在该类型旁或本文档交叉引用。
++| `run_id` | 每次 CLI/调用生成的唯一标识，写入日志与可选 artifact |
++| 记录内容 | 工具调用序列、关键中间结果、耗时、token 用量 |
++| 输入快照 | 是否落盘脱敏后的 prompt/输出以便复盘（路径与保留策略） |
++| `RunSummary` | Runtime summary in `src/analyzer/run_summary.py`; includes event-log status, model/token, tool counts, budget/stop state, submit validation errors, and publish status |
++| `RunArtifactSummary` | Artifact-facing CLI/API summary for response JSON, publish result JSON, event log, and related paths |
++
++具体字段若在代码中以 `RunContext` 等模型出现，应在该类型旁或本文档交叉引用。
+ 
+ ---
+ 
+diff --git a/eval/run_summary.py b/eval/run_summary.py
+index 0a8202a..87e7e3a 100644
+--- a/eval/run_summary.py
++++ b/eval/run_summary.py
+@@ -1,36 +1,13 @@
+-"""Summaries derived from analyzer event logs."""
++"""Eval-specific wrappers around runtime run-summary helpers."""
+ 
+ from __future__ import annotations
+ 
+-import json
+ from pathlib import Path
+-from typing import Any, Literal
+ 
+ from pydantic import BaseModel, Field
+ 
+ from eval.schemas import EvalReport
+-
+-
+-EventLogStatus = Literal["ok", "missing", "parse_error"]
+-
+-
+-class RunSummary(BaseModel):
+-    """Compact diagnostic view of one event log."""
+-
+-    run_id: str = ""
+-    event_log_path: str = ""
+-    event_log_status: EventLogStatus = "ok"
+-    parse_error: str = ""
+-    finish_reasons: list[str] = Field(default_factory=list)
+-    budget_state: str = "none"
+-    submit_review_seen: bool = False
+-    submit_debug_seen: bool = False
+-    submit_validation_errors: list[str] = Field(default_factory=list)
+-    placeholder_summary: bool = False
+-    issues_count: int = 0
+-    tool_call_count: int = 0
+-    model_names: list[str] = Field(default_factory=list)
+-    total_tokens: int = 0
++from src.analyzer.run_summary import RunSummary, summarize_event_log
+ 
+ 
+ class EvalRunSummaryReport(BaseModel):
+@@ -42,28 +19,6 @@ class EvalRunSummaryReport(BaseModel):
+     runs: list[RunSummary] = Field(default_factory=list)
+ 
+ 
+-def summarize_event_log(path: str | Path | None) -> RunSummary:
+-    """Read a JSONL event log and return a compact run summary."""
+-    if path is None:
+-        return RunSummary(event_log_status="missing")
+-    log_path = Path(path)
+-    summary = RunSummary(event_log_path=str(log_path))
+-    if not log_path.exists():
+-        summary.event_log_status = "missing"
+-        return summary
+-
+-    try:
+-        events = _load_events(log_path)
+-    except Exception as exc:  # noqa: BLE001
+-        summary.event_log_status = "parse_error"
+-        summary.parse_error = str(exc)
+-        return summary
+-
+-    for event in events:
+-        _update_summary(summary, event)
+-    return summary
+-
+-
+ def summarize_eval_report(
+     report: EvalReport,
+     *,
+@@ -76,72 +31,3 @@ def summarize_eval_report(
+         report_path=str(report_path or ""),
+         runs=[summarize_event_log(item.event_log_path) for item in report.results],
+     )
+-
+-
+-def _load_events(path: Path) -> list[dict[str, Any]]:
+-    events: list[dict[str, Any]] = []
+-    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+-        if not raw.strip():
+-            continue
+-        try:
+-            event = json.loads(raw)
+-        except json.JSONDecodeError as exc:
+-            raise ValueError(f"Invalid JSON on line {line_number}: {exc.msg}") from exc
+-        if isinstance(event, dict):
+-            events.append(event)
+-    return events
+-
+-
+-def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
+-    run_id = str(event.get("run_id", "") or "").strip()
+-    if run_id and not summary.run_id:
+-        summary.run_id = run_id
+-    payload = event.get("payload")
+-    if not isinstance(payload, dict):
+-        return
+-
+-    phase = str(event.get("phase", "") or "")
+-    event_type = str(event.get("event_type", "") or "")
+-    budget_state = str(payload.get("budget_state", "") or "")
+-    if budget_state and budget_state != "none":
+-        summary.budget_state = budget_state
+-    elif budget_state and summary.budget_state == "none":
+-        summary.budget_state = budget_state
+-
+-    total_tokens = payload.get("total_tokens")
+-    if isinstance(total_tokens, int):
+-        summary.total_tokens = max(summary.total_tokens, total_tokens)
+-
+-    if event_type == "model_response_detail":
+-        model = str(payload.get("model", "") or "").strip()
+-        if model and model not in summary.model_names:
+-            summary.model_names.append(model)
+-        usage = payload.get("usage")
+-        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+-            summary.total_tokens += int(usage["total_tokens"])
+-        tool_calls = payload.get("tool_call_summaries")
+-        if isinstance(tool_calls, list):
+-            summary.tool_call_count += len(tool_calls)
+-
+-    if event_type == "plan_parsed":
+-        summary.submit_review_seen = summary.submit_review_seen or bool(
+-            payload.get("submit_review_seen")
+-        )
+-        summary.submit_debug_seen = summary.submit_debug_seen or bool(
+-            payload.get("submit_debug_seen")
+-        )
+-        for key in ("submit_review_validation_error", "submit_debug_validation_error"):
+-            error = str(payload.get(key, "") or "").strip()
+-            if error and error not in summary.submit_validation_errors:
+-                summary.submit_validation_errors.append(error)
+-
+-    if event_type == "format_result":
+-        summary.placeholder_summary = bool(payload.get("used_placeholder_summary"))
+-        issues_count = payload.get("issues_count")
+-        if isinstance(issues_count, int):
+-            summary.issues_count = max(summary.issues_count, issues_count)
+-
+-    if event_type == "decision" and phase == "continue":
+-        reason = str(payload.get("reason", "") or "").strip()
+-        if reason and reason not in summary.finish_reasons:
+-            summary.finish_reasons.append(reason)
+diff --git a/scripts/github_changed_lines.py b/scripts/github_changed_lines.py
+new file mode 100644
+index 0000000..36a54b5
+--- /dev/null
++++ b/scripts/github_changed_lines.py
+@@ -0,0 +1,82 @@
++"""Generate changed-lines JSON for GitHub advisory publishing."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import subprocess
++import sys
++from pathlib import Path
++
++REPO_ROOT = Path(__file__).resolve().parents[1]
++if str(REPO_ROOT) not in sys.path:
++    sys.path.insert(0, str(REPO_ROOT))
++
++from src.analyzer.diff_lines import changed_new_lines_by_file  # noqa: E402
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(
++        description="Convert a unified PR diff into {path: [new-side changed lines]} JSON."
++    )
++    parser.add_argument(
++        "--diff-file",
++        help="Path to a unified diff file. Use '-' to read from stdin.",
++    )
++    parser.add_argument("--base", help="Base git ref for local diff generation.")
++    parser.add_argument("--head", help="Head git ref for local diff generation.")
++    parser.add_argument(
++        "--repo",
++        default=".",
++        help="Repository path used with --base/--head. Defaults to current directory.",
++    )
++    parser.add_argument(
++        "--output",
++        help="Output JSON path. Defaults to stdout.",
++    )
++    args = parser.parse_args(argv)
++
++    diff_text = _load_diff_text(parser, args)
++    payload = {
++        path: sorted(lines)
++        for path, lines in sorted(changed_new_lines_by_file(diff_text).items())
++        if lines
++    }
++    output = json.dumps(payload, indent=2, sort_keys=True) + "\n"
++    if args.output:
++        Path(args.output).write_text(output, encoding="utf-8")
++    else:
++        sys.stdout.write(output)
++    return 0
++
++
++def _load_diff_text(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
++    if args.diff_file and (args.base or args.head):
++        parser.error("--diff-file cannot be combined with --base/--head")
++    if args.diff_file:
++        if args.diff_file == "-":
++            return sys.stdin.read()
++        return Path(args.diff_file).read_text(encoding="utf-8")
++    if not args.base or not args.head:
++        parser.error("provide --diff-file or both --base and --head")
++    result = subprocess.run(
++        [
++            "git",
++            "-C",
++            args.repo,
++            "diff",
++            "--no-ext-diff",
++            args.base,
++            args.head,
++        ],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++    if result.returncode != 0:
++        raise SystemExit(result.stderr.strip() or "git diff failed")
++    return result.stdout
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/src/analyzer/diff_lines.py b/src/analyzer/diff_lines.py
+new file mode 100644
+index 0000000..fd00a92
+--- /dev/null
++++ b/src/analyzer/diff_lines.py
+@@ -0,0 +1,57 @@
++"""Unified diff helpers for new-side changed line numbers."""
++
++from __future__ import annotations
++
++import re
++import shlex
++
++_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
++
++
++def changed_new_lines_by_file(diff_text: str) -> dict[str, set[int]]:
++    """Return new-side added line numbers keyed by repo-relative file path."""
++    changed: dict[str, set[int]] = {}
++    current_path = ""
++    new_line: int | None = None
++
++    for line in diff_text.splitlines():
++        if line.startswith("diff --git "):
++            current_path = ""
++            new_line = None
++            continue
++        if line.startswith("+++ "):
++            current_path = normalize_diff_path(line[4:])
++            continue
++        if line.startswith("@@"):
++            match = _HUNK_RE.search(line)
++            new_line = int(match.group(1)) if match else None
++            continue
++        if line.startswith("\\") or not current_path or new_line is None:
++            continue
++        if line.startswith("+"):
++            if new_line > 0:
++                changed.setdefault(current_path, set()).add(new_line)
++            new_line += 1
++            continue
++        if line.startswith("-"):
++            continue
++        if line.startswith(" "):
++            new_line += 1
++
++    return changed
++
++
++def normalize_diff_path(path: str) -> str:
++    """Normalize a unified-diff file header path to a repo-relative path."""
++    raw = path.strip().split("\t", 1)[0].strip()
++    if not raw or raw == "/dev/null":
++        return ""
++    try:
++        parsed = shlex.split(raw)
++    except ValueError:
++        parsed = []
++    if parsed:
++        raw = parsed[0]
++    if raw.startswith(("a/", "b/")):
++        raw = raw[2:]
++    return raw.replace("\\", "/") if raw != "/dev/null" else ""
+diff --git a/src/analyzer/run_summary.py b/src/analyzer/run_summary.py
+new file mode 100644
+index 0000000..aa28735
+--- /dev/null
++++ b/src/analyzer/run_summary.py
+@@ -0,0 +1,172 @@
++"""Runtime run summaries derived from analyzer event logs and artifacts."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any, Literal
++
++from pydantic import BaseModel, Field
++
++EventLogStatus = Literal["ok", "missing", "parse_error"]
++PublishStatus = Literal["not_requested", "dry_run", "published", "failed"]
++
++
++class RunSummary(BaseModel):
++    """Compact diagnostic view of one event log."""
++
++    run_id: str = ""
++    event_log_path: str = ""
++    event_log_status: EventLogStatus = "ok"
++    parse_error: str = ""
++    finish_reasons: list[str] = Field(default_factory=list)
++    budget_state: str = "none"
++    submit_review_seen: bool = False
++    submit_debug_seen: bool = False
++    submit_validation_errors: list[str] = Field(default_factory=list)
++    placeholder_summary: bool = False
++    issues_count: int = 0
++    tool_call_count: int = 0
++    model_names: list[str] = Field(default_factory=list)
++    total_tokens: int = 0
++    publish_status: PublishStatus = "not_requested"
++
++
++class RunArtifactSummary(BaseModel):
++    """Compact summary of runtime artifacts produced for one run."""
++
++    run_id: str
++    event_log: RunSummary
++    artifact_paths: dict[str, str] = Field(default_factory=dict)
++    publish_status: PublishStatus = "not_requested"
++
++
++def summarize_event_log(
++    path: str | Path | None,
++    *,
++    run_id: str = "",
++    publish_status: PublishStatus = "not_requested",
++) -> RunSummary:
++    """Read a JSONL event log and return a compact run summary."""
++    if path is None:
++        return RunSummary(run_id=run_id, event_log_status="missing", publish_status=publish_status)
++    log_path = Path(path)
++    summary = RunSummary(
++        run_id=run_id,
++        event_log_path=str(log_path),
++        publish_status=publish_status,
++    )
++    if not log_path.exists():
++        summary.event_log_status = "missing"
++        return summary
++
++    try:
++        events = _load_events(log_path)
++    except Exception as exc:  # noqa: BLE001
++        summary.event_log_status = "parse_error"
++        summary.parse_error = str(exc)
++        return summary
++
++    for event in events:
++        _update_summary(summary, event)
++    return summary
++
++
++def summarize_run_artifacts(
++    *,
++    run_id: str,
++    event_log_path: str | Path | None = None,
++    response_json_path: str | Path | None = None,
++    advisory_json_path: str | Path | None = None,
++    publish_result_json_path: str | Path | None = None,
++    publish_status: PublishStatus = "not_requested",
++) -> RunArtifactSummary:
++    """Build a stable artifact summary for CLI/API output."""
++    paths: dict[str, str] = {}
++    if event_log_path is not None:
++        paths["event_log"] = str(event_log_path)
++    if response_json_path is not None:
++        paths["response_json"] = str(response_json_path)
++    if advisory_json_path is not None:
++        paths["advisory_json"] = str(advisory_json_path)
++    if publish_result_json_path is not None:
++        paths["publish_result_json"] = str(publish_result_json_path)
++    return RunArtifactSummary(
++        run_id=run_id,
++        event_log=summarize_event_log(
++            event_log_path,
++            run_id=run_id,
++            publish_status=publish_status,
++        ),
++        artifact_paths=paths,
++        publish_status=publish_status,
++    )
++
++
++def _load_events(path: Path) -> list[dict[str, Any]]:
++    events: list[dict[str, Any]] = []
++    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
++        if not raw.strip():
++            continue
++        try:
++            event = json.loads(raw)
++        except json.JSONDecodeError as exc:
++            raise ValueError(f"Invalid JSON on line {line_number}: {exc.msg}") from exc
++        if isinstance(event, dict):
++            events.append(event)
++    return events
++
++
++def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
++    run_id = str(event.get("run_id", "") or "").strip()
++    if run_id and not summary.run_id:
++        summary.run_id = run_id
++    payload = event.get("payload")
++    if not isinstance(payload, dict):
++        return
++
++    phase = str(event.get("phase", "") or "")
++    event_type = str(event.get("event_type", "") or "")
++    budget_state = str(payload.get("budget_state", "") or "")
++    if budget_state and budget_state != "none":
++        summary.budget_state = budget_state
++    elif budget_state and summary.budget_state == "none":
++        summary.budget_state = budget_state
++
++    total_tokens = payload.get("total_tokens")
++    if isinstance(total_tokens, int):
++        summary.total_tokens = max(summary.total_tokens, total_tokens)
++
++    if event_type == "model_response_detail":
++        model = str(payload.get("model", "") or "").strip()
++        if model and model not in summary.model_names:
++            summary.model_names.append(model)
++        usage = payload.get("usage")
++        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
++            summary.total_tokens += int(usage["total_tokens"])
++        tool_calls = payload.get("tool_call_summaries")
++        if isinstance(tool_calls, list):
++            summary.tool_call_count += len(tool_calls)
++
++    if event_type == "plan_parsed":
++        summary.submit_review_seen = summary.submit_review_seen or bool(
++            payload.get("submit_review_seen")
++        )
++        summary.submit_debug_seen = summary.submit_debug_seen or bool(
++            payload.get("submit_debug_seen")
++        )
++        for key in ("submit_review_validation_error", "submit_debug_validation_error"):
++            error = str(payload.get(key, "") or "").strip()
++            if error and error not in summary.submit_validation_errors:
++                summary.submit_validation_errors.append(error)
++
++    if event_type == "format_result":
++        summary.placeholder_summary = bool(payload.get("used_placeholder_summary"))
++        issues_count = payload.get("issues_count")
++        if isinstance(issues_count, int):
++            summary.issues_count = max(summary.issues_count, issues_count)
++
++    if event_type == "decision" and phase == "continue":
++        reason = str(payload.get("reason", "") or "").strip()
++        if reason and reason not in summary.finish_reasons:
++            summary.finish_reasons.append(reason)
+diff --git a/src/api/app.py b/src/api/app.py
+index ef0de8e..585f526 100644
+--- a/src/api/app.py
++++ b/src/api/app.py
+@@ -7,6 +7,7 @@ from typing import Any
+ from fastapi import FastAPI, HTTPException
+ 
+ from src import __version__
++from src.analyzer.run_summary import RunSummary, summarize_event_log
+ from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
+ from src.config import get_settings
+ from src.orchestrator.agent_loop import AgentOrchestrator
+@@ -49,6 +50,17 @@ async def debug(request: DebugRequest) -> DebugResponse:
+         raise _stable_error("debug failed") from exc
+ 
+ 
++@app.get("/runs/{run_id}/summary", response_model=RunSummary)
++def run_summary(run_id: str) -> RunSummary:
++    """Return a compact summary for a run event log without changing review/debug contracts."""
++    settings = get_settings()
++    return summarize_event_log(
++        _resolve_event_log_path(settings.event_log_dir, run_id),
++        run_id=run_id,
++        publish_status="not_requested",
++    )
++
++
+ def _stable_error(message: str) -> HTTPException:
+     return HTTPException(
+         status_code=500,
+@@ -56,6 +68,12 @@ def _stable_error(message: str) -> HTTPException:
+     )
+ 
+ 
++def _resolve_event_log_path(log_dir: str, run_id: str) -> str:
++    from pathlib import Path
++
++    return str(Path(log_dir) / f"{run_id}.jsonl")
++
++
+ @app.exception_handler(HTTPException)
+ async def http_exception_handler(request: Any, exc: HTTPException) -> Any:
+     from fastapi.responses import JSONResponse
+diff --git a/src/config.py b/src/config.py
+index 38d5ae2..8fae2ec 100644
+--- a/src/config.py
++++ b/src/config.py
+@@ -331,6 +331,18 @@ class Settings(BaseModel):
+         ge=0.0,
+         description="Optional Docker CPU quota; 0 disables the limit.",
+     )
++    github_advisory_dry_run: bool = Field(
++        default_factory=lambda: _parse_bool_env("GITHUB_ADVISORY_DRY_RUN", True),
++        description="Default GitHub advisory publish mode; true keeps CLI publishing in dry-run mode.",
++    )
++    github_advisory_comment_marker: str = Field(
++        default_factory=lambda: os.getenv(
++            "GITHUB_ADVISORY_COMMENT_MARKER",
++            "<!-- mergewarden:comment -->",
++        ),
++        min_length=1,
++        description="Hidden marker used to identify MergeWarden-owned GitHub review comments.",
++    )
+ 
+     @field_validator("openai_api_key", "model_name", mode="before")
+     @classmethod
+@@ -425,6 +437,14 @@ class Settings(BaseModel):
+         raw = str(value).strip()
+         return raw or "none"
+ 
++    @field_validator("github_advisory_comment_marker", mode="before")
++    @classmethod
++    def _validate_github_advisory_comment_marker(cls, value: object) -> str:
++        if value is None:
++            return "<!-- mergewarden:comment -->"
++        raw = str(value).strip()
++        return raw or "<!-- mergewarden:comment -->"
++
+     @field_validator("execute_docker_memory_mb", mode="before")
+     @classmethod
+     def _validate_execute_docker_memory_mb(cls, value: object) -> int:
+diff --git a/src/integrations/github_publisher.py b/src/integrations/github_publisher.py
+new file mode 100644
+index 0000000..a85e884
+--- /dev/null
++++ b/src/integrations/github_publisher.py
+@@ -0,0 +1,486 @@
++"""GitHub advisory publishing and comment lifecycle planning."""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import os
++from typing import Any, Protocol
++
++import httpx
++from pydantic import BaseModel, Field, model_validator
++
++from src.analyzer.schemas import ReviewResponse
++from src.integrations.github_adapter import (
++    GitHubAdvisoryPayload,
++    InlineCommentCandidate,
++    build_github_advisory_payload,
++)
++
++GITHUB_COMMENT_MARKER = (
++    os.getenv("GITHUB_ADVISORY_COMMENT_MARKER", "<!-- mergewarden:comment -->").strip()
++    or "<!-- mergewarden:comment -->"
++)
++_METADATA_PREFIX = "<!-- mergewarden:"
++_METADATA_SUFFIX = " -->"
++
++
++class GitHubPublishRequest(BaseModel):
++    """Inputs needed to publish a review advisory to one pull request."""
++
++    owner_repo: str
++    pr_number: int = Field(ge=1)
++    head_sha: str = Field(min_length=1)
++    response: ReviewResponse
++    changed_lines: dict[str, list[int]] = Field(default_factory=dict)
++    dry_run: bool = True
++
++
++class CommentMetadata(BaseModel):
++    """Hidden metadata embedded in MergeWarden-owned comments."""
++
++    tool: str = "mergewarden"
++    run_id: str = ""
++    fingerprint: str
++    head_sha: str = ""
++
++
++class PendingReviewComment(BaseModel):
++    """Review comment body ready for lifecycle planning or publication."""
++
++    path: str
++    line: int
++    body: str
++    fingerprint: str
++
++
++class CommentUpdate(BaseModel):
++    """Existing comment update operation."""
++
++    comment_id: int
++    fingerprint: str
++    body: str
++
++
++class PublishedCommentRecord(BaseModel):
++    """Published or updated GitHub review comment metadata."""
++
++    comment_id: int
++    fingerprint: str
++    path: str = ""
++    line: int | None = None
++    html_url: str = ""
++    action: str
++
++
++class CommentLifecyclePlan(BaseModel):
++    """Create/update/stale operations for MergeWarden-owned comments."""
++
++    create: list[PendingReviewComment] = Field(default_factory=list)
++    update: list[CommentUpdate] = Field(default_factory=list)
++    stale: list[CommentUpdate] = Field(default_factory=list)
++    unchanged: list[PublishedCommentRecord] = Field(default_factory=list)
++    summary_only_count: int = 0
++    foreign_comment_count: int = 0
++    create_count: int = 0
++    update_count: int = 0
++    stale_count: int = 0
++
++    @model_validator(mode="after")
++    def _set_counts(self) -> "CommentLifecyclePlan":
++        self.create_count = len(self.create)
++        self.update_count = len(self.update)
++        self.stale_count = len(self.stale)
++        return self
++
++
++class GitHubPublishResult(BaseModel):
++    """Result of a dry-run or real GitHub advisory publication."""
++
++    status: str
++    owner_repo: str
++    pr_number: int
++    head_sha: str
++    run_id: str
++    advisory_payload: GitHubAdvisoryPayload
++    lifecycle_plan: CommentLifecyclePlan
++    check_run: dict[str, Any] = Field(default_factory=dict)
++    inline_comment_records: list[PublishedCommentRecord] = Field(default_factory=list)
++    errors: list[str] = Field(default_factory=list)
++
++
++class GitHubPublisherClient(Protocol):
++    """Minimal GitHub client protocol used by the publisher."""
++
++    async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]: ...
++
++    async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]: ...
++
++    async def create_review_comment(
++        self,
++        owner_repo: str,
++        pr_number: int,
++        payload: dict[str, Any],
++    ) -> dict[str, Any]: ...
++
++    async def update_review_comment(
++        self,
++        owner_repo: str,
++        comment_id: int,
++        body: str,
++    ) -> dict[str, Any]: ...
++
++
++class GitHubApiClient:
++    """Small async GitHub REST client for GitHub Actions publishing."""
++
++    def __init__(
++        self,
++        token: str,
++        *,
++        base_url: str = "https://api.github.com",
++        timeout: float = 30.0,
++    ) -> None:
++        if not token.strip():
++            raise ValueError("GITHUB_TOKEN is required for publishing.")
++        self._client = httpx.AsyncClient(
++            base_url=base_url,
++            headers={
++                "Accept": "application/vnd.github+json",
++                "Authorization": f"Bearer {token.strip()}",
++                "X-GitHub-Api-Version": "2022-11-28",
++            },
++            timeout=timeout,
++            follow_redirects=True,
++        )
++
++    async def close(self) -> None:
++        await self._client.aclose()
++
++    async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]:
++        path = f"/repos/{owner_repo}/pulls/{pr_number}/comments"
++        resp = await self._client.get(path, params={"per_page": 100})
++        self._raise_api_error(resp, path)
++        payload = resp.json()
++        return payload if isinstance(payload, list) else []
++
++    async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
++        path = f"/repos/{owner_repo}/check-runs"
++        resp = await self._client.post(path, json=payload)
++        self._raise_api_error(resp, path)
++        data = resp.json()
++        return data if isinstance(data, dict) else {}
++
++    async def create_review_comment(
++        self,
++        owner_repo: str,
++        pr_number: int,
++        payload: dict[str, Any],
++    ) -> dict[str, Any]:
++        path = f"/repos/{owner_repo}/pulls/{pr_number}/comments"
++        resp = await self._client.post(path, json=payload)
++        self._raise_api_error(resp, path)
++        data = resp.json()
++        return data if isinstance(data, dict) else {}
++
++    async def update_review_comment(
++        self,
++        owner_repo: str,
++        comment_id: int,
++        body: str,
++    ) -> dict[str, Any]:
++        path = f"/repos/{owner_repo}/pulls/comments/{comment_id}"
++        resp = await self._client.patch(path, json={"body": body})
++        self._raise_api_error(resp, path)
++        data = resp.json()
++        return data if isinstance(data, dict) else {}
++
++    @staticmethod
++    def _raise_api_error(resp: httpx.Response, path: str) -> None:
++        try:
++            resp.raise_for_status()
++        except httpx.HTTPStatusError as exc:
++            preview = (resp.text or "")[:400].replace("\n", " ")
++            raise RuntimeError(
++                f"GitHub API {resp.status_code} for {path}. Body preview: {preview!r}"
++            ) from exc
++
++
++class GitHubPublisher:
++    """Publish MergeWarden advisory checks and comments."""
++
++    def __init__(self, client: GitHubPublisherClient) -> None:
++        self._client = client
++
++    def build_publish_plan(
++        self,
++        request: GitHubPublishRequest,
++        *,
++        existing_comments: list[dict[str, Any]] | None = None,
++    ) -> GitHubPublishResult:
++        advisory = build_github_advisory_payload(request.response, request.changed_lines)
++        candidates = [
++            _build_pending_comment(item, request.response.run_id, request.head_sha)
++            for item in advisory.inline_comments
++        ]
++        lifecycle = build_comment_lifecycle_plan(
++            candidates=candidates,
++            existing_comments=existing_comments or [],
++            run_id=request.response.run_id,
++            head_sha=request.head_sha,
++            summary_only_count=len(advisory.summary_only_issues),
++        )
++        return GitHubPublishResult(
++            status="dry_run" if request.dry_run else "planned",
++            owner_repo=request.owner_repo,
++            pr_number=request.pr_number,
++            head_sha=request.head_sha,
++            run_id=request.response.run_id,
++            advisory_payload=advisory,
++            lifecycle_plan=lifecycle,
++            check_run=_build_check_run_payload(request, advisory),
++        )
++
++    async def publish(self, request: GitHubPublishRequest) -> GitHubPublishResult:
++        """Publish or dry-run the advisory."""
++        if request.dry_run:
++            return self.build_publish_plan(request)
++        existing_comments = await self._client.list_review_comments(
++            request.owner_repo,
++            request.pr_number,
++        )
++        result = self.build_publish_plan(request, existing_comments=existing_comments)
++        check_run = await self._client.create_check_run(request.owner_repo, result.check_run)
++        records: list[PublishedCommentRecord] = []
++        for create_item in result.lifecycle_plan.create:
++            created = await self._client.create_review_comment(
++                request.owner_repo,
++                request.pr_number,
++                {
++                    "body": create_item.body,
++                    "path": create_item.path,
++                    "line": create_item.line,
++                    "side": "RIGHT",
++                },
++            )
++            records.append(
++                PublishedCommentRecord(
++                    comment_id=int(created.get("id", 0) or 0),
++                    fingerprint=create_item.fingerprint,
++                    path=create_item.path,
++                    line=create_item.line,
++                    html_url=str(created.get("html_url", "") or ""),
++                    action="created",
++                )
++            )
++        for update_item in result.lifecycle_plan.update:
++            updated = await self._client.update_review_comment(
++                request.owner_repo,
++                update_item.comment_id,
++                update_item.body,
++            )
++            records.append(
++                PublishedCommentRecord(
++                    comment_id=update_item.comment_id,
++                    fingerprint=update_item.fingerprint,
++                    html_url=str(updated.get("html_url", "") or ""),
++                    action="updated",
++                )
++            )
++        for stale_item in result.lifecycle_plan.stale:
++            updated = await self._client.update_review_comment(
++                request.owner_repo,
++                stale_item.comment_id,
++                stale_item.body,
++            )
++            records.append(
++                PublishedCommentRecord(
++                    comment_id=stale_item.comment_id,
++                    fingerprint=stale_item.fingerprint,
++                    html_url=str(updated.get("html_url", "") or ""),
++                    action="stale",
++                )
++            )
++        result.status = "published"
++        result.check_run = check_run
++        result.inline_comment_records = records
++        return result
++
++    def publish_sync(self, request: GitHubPublishRequest) -> GitHubPublishResult:
++        """Synchronous wrapper for Click tests and commands."""
++        return asyncio.run(self.publish(request))
++
++
++def build_comment_lifecycle_plan(
++    *,
++    candidates: list[PendingReviewComment],
++    existing_comments: list[dict[str, Any]],
++    run_id: str,
++    head_sha: str,
++    summary_only_count: int = 0,
++) -> CommentLifecyclePlan:
++    """Build create/update/stale operations from current candidates and comments."""
++    existing_by_fingerprint: dict[str, dict[str, Any]] = {}
++    foreign_count = 0
++    for raw in existing_comments:
++        body = str(raw.get("body", "") or "")
++        metadata = extract_comment_metadata(body)
++        if metadata is None:
++            foreign_count += 1
++            continue
++        existing_by_fingerprint[metadata.fingerprint] = raw
++
++    create: list[PendingReviewComment] = []
++    update: list[CommentUpdate] = []
++    unchanged: list[PublishedCommentRecord] = []
++    active_fingerprints = {candidate.fingerprint for candidate in candidates}
++    for candidate in candidates:
++        existing = existing_by_fingerprint.get(candidate.fingerprint)
++        if existing is None:
++            create.append(candidate)
++            continue
++        comment_id = int(existing.get("id", 0) or 0)
++        if str(existing.get("body", "") or "") == candidate.body:
++            unchanged.append(
++                PublishedCommentRecord(
++                    comment_id=comment_id,
++                    fingerprint=candidate.fingerprint,
++                    path=str(existing.get("path", "") or candidate.path),
++                    line=int(existing.get("line", candidate.line) or candidate.line),
++                    html_url=str(existing.get("html_url", "") or ""),
++                    action="unchanged",
++                )
++            )
++            continue
++        update.append(
++            CommentUpdate(
++                comment_id=comment_id,
++                fingerprint=candidate.fingerprint,
++                body=candidate.body,
++            )
++        )
++
++    stale: list[CommentUpdate] = []
++    for fingerprint, raw in existing_by_fingerprint.items():
++        if fingerprint in active_fingerprints:
++            continue
++        comment_id = int(raw.get("id", 0) or 0)
++        stale.append(
++            CommentUpdate(
++                comment_id=comment_id,
++                fingerprint=fingerprint,
++                body=_stale_body(str(raw.get("body", "") or ""), run_id, head_sha),
++            )
++        )
++
++    return CommentLifecyclePlan(
++        create=create,
++        update=update,
++        stale=stale,
++        unchanged=unchanged,
++        summary_only_count=summary_only_count,
++        foreign_comment_count=foreign_count,
++    )
++
++
++def extract_comment_metadata(body: str) -> CommentMetadata | None:
++    """Extract MergeWarden metadata from a review comment body."""
++    if GITHUB_COMMENT_MARKER not in body:
++        return None
++    start = body.rfind(_METADATA_PREFIX)
++    if start < 0:
++        return None
++    start += len(_METADATA_PREFIX)
++    end = body.find(_METADATA_SUFFIX, start)
++    if end < 0:
++        return None
++    try:
++        raw = json.loads(body[start:end])
++    except json.JSONDecodeError:
++        return None
++    if not isinstance(raw, dict) or not raw.get("fingerprint"):
++        return None
++    return CommentMetadata.model_validate(raw)
++
++
++def resolve_github_token(explicit: str | None = None) -> str:
++    """Resolve the GitHub token accepted by GitHub Actions and local runs."""
++    if explicit and explicit.strip():
++        return explicit.strip()
++    for key in ("GITHUB_TOKEN", "GH_TOKEN", "github_token"):
++        raw = os.getenv(key)
++        if raw and raw.strip():
++            return raw.strip()
++    return ""
++
++
++def _build_pending_comment(
++    candidate: InlineCommentCandidate,
++    run_id: str,
++    head_sha: str,
++) -> PendingReviewComment:
++    metadata = CommentMetadata(
++        run_id=run_id,
++        fingerprint=candidate.fingerprint,
++        head_sha=head_sha,
++    )
++    metadata_json = json.dumps(metadata.model_dump(), sort_keys=True, separators=(",", ":"))
++    body = "\n\n".join(
++        [
++            candidate.body,
++            GITHUB_COMMENT_MARKER,
++            f"<!-- mergewarden:{metadata_json} -->",
++        ]
++    )
++    return PendingReviewComment(
++        path=candidate.path,
++        line=candidate.line,
++        body=body,
++        fingerprint=candidate.fingerprint,
++    )
++
++
++def _stale_body(existing_body: str, run_id: str, head_sha: str) -> str:
++    existing_metadata = extract_comment_metadata(existing_body)
++    metadata = CommentMetadata(
++        run_id=run_id,
++        fingerprint=existing_metadata.fingerprint if existing_metadata else "unknown",
++        head_sha=head_sha,
++    )
++    metadata_json = json.dumps(metadata.model_dump(), sort_keys=True, separators=(",", ":"))
++    return "\n\n".join(
++        [
++            "Stale MergeWarden advisory: this finding was not reproduced in the latest run.",
++            GITHUB_COMMENT_MARKER,
++            f"<!-- mergewarden:{metadata_json} -->",
++        ]
++    )
++
++
++def _build_check_run_payload(
++    request: GitHubPublishRequest,
++    advisory: GitHubAdvisoryPayload,
++) -> dict[str, Any]:
++    return {
++        "name": "MergeWarden advisory",
++        "head_sha": request.head_sha,
++        "status": "completed",
++        "conclusion": "neutral",
++        "output": {
++            "title": "MergeWarden advisory",
++            "summary": advisory.check_summary,
++            "text": _build_check_text(advisory),
++        },
++    }
++
++
++def _build_check_text(advisory: GitHubAdvisoryPayload) -> str:
++    parts = [advisory.check_summary]
++    if advisory.summary_only_issues:
++        parts.append("")
++        parts.append("Summary-only findings:")
++        for item in advisory.summary_only_issues:
++            parts.append(
++                f"- {item.issue.severity.value} {item.issue.location}: {item.issue.suggestion}"
++            )
++    return "\n".join(parts)
+diff --git a/src/orchestrator/agent_loop.py b/src/orchestrator/agent_loop.py
+index 7a85d10..bac59dc 100644
+--- a/src/orchestrator/agent_loop.py
++++ b/src/orchestrator/agent_loop.py
+@@ -7,7 +7,6 @@ import hashlib
+ import inspect
+ import json as _json
+ import os
+-import re
+ from pathlib import Path
+ from time import perf_counter
+ from typing import Any, Literal
+@@ -15,6 +14,7 @@ from uuid import uuid4
+ 
+ from src.analyzer.context_builder import ContextBuilder
+ from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
++from src.analyzer.diff_lines import changed_new_lines_by_file
+ from src.analyzer.event_log import EventEntry, EventLog, EventType
+ from src.analyzer.inference_engine import InferenceEngine
+ from src.analyzer.output_formatter import ReviewReport
+@@ -943,36 +943,7 @@ class AgentOrchestrator:
+ 
+     @staticmethod
+     def _changed_new_lines_for_file(diff_text: str) -> dict[str, set[int]]:
+-        changed: dict[str, set[int]] = {}
+-        current_path = ""
+-        new_line: int | None = None
+-        for line in diff_text.splitlines():
+-            if line.startswith("diff --git "):
+-                current_path = ""
+-                new_line = None
+-                parts = line.split(" ")
+-                if len(parts) >= 4:
+-                    current_path = ContextBuilder._normalize_diff_path(parts[3].strip())  # noqa: SLF001
+-                continue
+-            if line.startswith("+++ "):
+-                current_path = ContextBuilder._normalize_diff_path(
+-                    line[4:].strip().split("\t", 1)[0].strip()
+-                )
+-                continue
+-            if line.startswith("@@"):
+-                match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+-                new_line = int(match.group(1)) if match else None
+-                continue
+-            if not current_path or new_line is None:
+-                continue
+-            if line.startswith("+") and not line.startswith("+++"):
+-                changed.setdefault(current_path, set()).add(new_line)
+-                new_line += 1
+-                continue
+-            if line.startswith("-") and not line.startswith("---"):
+-                continue
+-            new_line += 1
+-        return changed
++        return changed_new_lines_by_file(diff_text)
+ 
+     async def _execute_one_tool(
+         self,
+diff --git a/tests/test_api.py b/tests/test_api.py
+index 3d57e75..53236d3 100644
+--- a/tests/test_api.py
++++ b/tests/test_api.py
+@@ -96,3 +96,15 @@ def test_review_endpoint_returns_stable_error_without_raw_exception(monkeypatch)
+     assert response.status_code == 500
+     assert response.json() == {"message": "review failed", "run_id": ""}
+     assert "secret-token-leaked" not in response.text
++
++
++def test_run_summary_endpoint_returns_stable_missing_summary() -> None:
++    from src.api import app as api_app
++
++    response = TestClient(api_app.app).get("/runs/missing-run/summary")
++
++    assert response.status_code == 200
++    payload = response.json()
++    assert payload["run_id"] == "missing-run"
++    assert payload["event_log_status"] == "missing"
++    assert payload["publish_status"] == "not_requested"
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+index 1dce530..4122b4a 100644
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -165,6 +165,140 @@ def test_advisory_export_writes_payload(cli_runner: CliRunner, tmp_path: Path) -
+     assert payload["summary_only_issues"] == []
+ 
+ 
++def test_github_advisory_publish_dry_run_outputs_publish_summary(
++    cli_runner: CliRunner,
++    tmp_path: Path,
++) -> None:
++    response_path = tmp_path / "response.json"
++    changed_lines_path = tmp_path / "changed.json"
++    output_path = tmp_path / "publish.json"
++    response = ReviewResponse(
++        run_id="run-publish",
++        report=ReviewReport(
++            summary="summary",
++            issues=[
++                ReviewIssue(
++                    severity=Severity.WARNING,
++                    location="src/app.py:10",
++                    evidence="+ risky_call()",
++                    suggestion="Guard the call.",
++                    confidence=0.9,
++                )
++            ],
++        ),
++        context=ContextState(),
++    )
++    response_path.write_text(response.model_dump_json(), encoding="utf-8")
++    changed_lines_path.write_text(json.dumps({"src/app.py": [10]}), encoding="utf-8")
++
++    result = cli_runner.invoke(
++        main,
++        [
++            "github-advisory",
++            "publish",
++            "--repo",
++            "owner/repo",
++            "--pr-number",
++            "7",
++            "--head-sha",
++            "abc123",
++            "--response-json",
++            str(response_path),
++            "--changed-lines-json",
++            str(changed_lines_path),
++            "--dry-run",
++            "--output-json",
++            str(output_path),
++        ],
++    )
++
++    assert result.exit_code == 0
++    payload = json.loads(output_path.read_text(encoding="utf-8"))
++    assert payload["status"] == "dry_run"
++    assert payload["owner_repo"] == "owner/repo"
++    assert payload["pr_number"] == 7
++    assert payload["lifecycle_plan"]["create_count"] == 1
++    assert payload["check_run"]["conclusion"] == "neutral"
++
++
++def test_github_advisory_publish_requires_token_when_not_dry_run(
++    cli_runner: CliRunner,
++    tmp_path: Path,
++    monkeypatch,
++) -> None:
++    response_path = tmp_path / "response.json"
++    changed_lines_path = tmp_path / "changed.json"
++    response = ReviewResponse(
++        run_id="run-publish",
++        report=ReviewReport(summary="summary"),
++        context=ContextState(),
++    )
++    response_path.write_text(response.model_dump_json(), encoding="utf-8")
++    changed_lines_path.write_text(json.dumps({}), encoding="utf-8")
++    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
++    monkeypatch.delenv("GH_TOKEN", raising=False)
++    monkeypatch.delenv("github_token", raising=False)
++
++    result = cli_runner.invoke(
++        main,
++        [
++            "github-advisory",
++            "publish",
++            "--repo",
++            "owner/repo",
++            "--pr-number",
++            "7",
++            "--head-sha",
++            "abc123",
++            "--response-json",
++            str(response_path),
++            "--changed-lines-json",
++            str(changed_lines_path),
++            "--publish",
++        ],
++    )
++
++    assert result.exit_code != 0
++    assert "GITHUB_TOKEN is required" in result.output
++    assert "ghp_" not in result.output
++
++
++def test_review_command_can_export_response_and_run_summary(
++    cli_runner: CliRunner,
++    tmp_path: Path,
++    monkeypatch,
++) -> None:
++    response_path = tmp_path / "review.json"
++    summary_path = tmp_path / "summary.json"
++
++    async def _run_review(self, request):  # type: ignore[no-untyped-def]
++        return ReviewResponse(
++            run_id="run-export",
++            report=ReviewReport(summary="summary"),
++            context=ContextState(current_files=[request.repo_path]),
++        )
++
++    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
++
++    result = cli_runner.invoke(
++        main,
++        [
++            "review",
++            ".",
++            "--output-json",
++            str(response_path),
++            "--summary-json",
++            str(summary_path),
++        ],
++    )
++
++    assert result.exit_code == 0
++    assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-export"
++    summary = json.loads(summary_path.read_text(encoding="utf-8"))
++    assert summary["run_id"] == "run-export"
++    assert summary["publish_status"] == "not_requested"
++
++
+ def test_review_command_renders_triaged_sections(cli_runner: CliRunner, monkeypatch) -> None:
+     async def _run_review(self, request):  # type: ignore[no-untyped-def]
+         must_fix = ReviewIssue(
+diff --git a/tests/test_config.py b/tests/test_config.py
+index 812ada3..52de80e 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -91,3 +91,13 @@ def test_token_hard_budget_is_not_below_soft_budget(monkeypatch) -> None:
+ 
+     assert settings.token_budget == 12_000
+     assert settings.token_hard_budget == 12_000
++
++
++def test_github_advisory_publish_defaults_are_safe(monkeypatch) -> None:
++    monkeypatch.delenv("GITHUB_ADVISORY_DRY_RUN", raising=False)
++    monkeypatch.delenv("GITHUB_ADVISORY_COMMENT_MARKER", raising=False)
++
++    settings = get_settings()
++
++    assert settings.github_advisory_dry_run is True
++    assert settings.github_advisory_comment_marker == "<!-- mergewarden:comment -->"
+diff --git a/tests/test_github_advisory_workflow.py b/tests/test_github_advisory_workflow.py
+new file mode 100644
+index 0000000..00cf003
+--- /dev/null
++++ b/tests/test_github_advisory_workflow.py
+@@ -0,0 +1,18 @@
++"""Static contract checks for the GitHub advisory workflow."""
++
++from pathlib import Path
++
++
++def test_github_advisory_workflow_wires_phase2_publish_loop() -> None:
++    workflow = Path(".github/workflows/github-advisory.yml").read_text(encoding="utf-8")
++
++    assert "pull_request:" in workflow
++    assert "contents: read" in workflow
++    assert "checks: write" in workflow
++    assert "pull-requests: write" in workflow
++    assert "scripts/github_changed_lines.py" in workflow
++    assert "python cli.py review . --diff" in workflow
++    assert "github-advisory publish" in workflow
++    assert "--dry-run" in workflow
++    assert "--publish" in workflow
++    assert "actions/upload-artifact@v4" in workflow
+diff --git a/tests/test_github_changed_lines.py b/tests/test_github_changed_lines.py
+new file mode 100644
+index 0000000..bce51e6
+--- /dev/null
++++ b/tests/test_github_changed_lines.py
+@@ -0,0 +1,79 @@
++"""Tests for GitHub PR changed-line extraction."""
++
++from __future__ import annotations
++
++import json
++import subprocess
++import sys
++from pathlib import Path
++
++from src.analyzer.diff_lines import changed_new_lines_by_file
++
++
++PR_DIFF = """diff --git a/src/app.py b/src/app.py
++index 1111111..2222222 100644
++--- a/src/app.py
+++++ b/src/app.py
++@@ -1,4 +1,5 @@
++ context
++-old_call()
+++new_call()
+++guard()
++ context
++@@ -10,2 +11,3 @@
++ second_context
+++tail_call()
++diff --git a/src/new.py b/src/new.py
++new file mode 100644
++index 0000000..3333333
++--- /dev/null
+++++ b/src/new.py
++@@ -0,0 +1,2 @@
+++first()
+++second()
++diff --git a/src/deleted.py b/src/deleted.py
++deleted file mode 100644
++index 4444444..0000000
++--- a/src/deleted.py
+++++ /dev/null
++@@ -1,2 +0,0 @@
++-old
++-lines
++"""
++
++
++def test_changed_new_lines_by_file_parses_pr_diff_new_side_lines() -> None:
++    changed = changed_new_lines_by_file(PR_DIFF)
++
++    assert changed == {
++        "src/app.py": {2, 3, 12},
++        "src/new.py": {1, 2},
++    }
++
++
++def test_github_changed_lines_script_writes_stable_json(tmp_path: Path) -> None:
++    diff_path = tmp_path / "pr.diff"
++    output_path = tmp_path / "changed_lines.json"
++    diff_path.write_text(PR_DIFF, encoding="utf-8")
++    repo_root = Path(__file__).resolve().parents[1]
++
++    result = subprocess.run(
++        [
++            sys.executable,
++            "scripts/github_changed_lines.py",
++            "--diff-file",
++            str(diff_path),
++            "--output",
++            str(output_path),
++        ],
++        cwd=repo_root,
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++    assert result.returncode == 0, result.stderr
++    assert json.loads(output_path.read_text(encoding="utf-8")) == {
++        "src/app.py": [2, 3, 12],
++        "src/new.py": [1, 2],
++    }
+diff --git a/tests/test_github_publisher.py b/tests/test_github_publisher.py
+new file mode 100644
+index 0000000..2b7aaa7
+--- /dev/null
++++ b/tests/test_github_publisher.py
+@@ -0,0 +1,182 @@
++"""Tests for GitHub advisory publishing and comment lifecycle planning."""
++
++from __future__ import annotations
++
++import json
++from typing import Any
++
++from src.analyzer.context_state import ContextState
++from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
++from src.analyzer.schemas import ReviewResponse
++from src.integrations.github_publisher import (
++    GITHUB_COMMENT_MARKER,
++    GitHubPublishRequest,
++    GitHubPublisher,
++    PublishedCommentRecord,
++    build_comment_lifecycle_plan,
++    extract_comment_metadata,
++)
++
++
++class RecordingGitHubClient:
++    def __init__(self, existing_comments: list[dict[str, Any]] | None = None) -> None:
++        self.existing_comments = existing_comments or []
++        self.created_check_runs: list[dict[str, Any]] = []
++        self.created_review_comments: list[dict[str, Any]] = []
++        self.updated_review_comments: list[dict[str, Any]] = []
++
++    async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]:
++        assert owner_repo == "owner/repo"
++        assert pr_number == 7
++        return self.existing_comments
++
++    async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
++        self.created_check_runs.append({"owner_repo": owner_repo, "payload": payload})
++        return {"id": 101, "html_url": "https://github.example/check/101"}
++
++    async def create_review_comment(
++        self,
++        owner_repo: str,
++        pr_number: int,
++        payload: dict[str, Any],
++    ) -> dict[str, Any]:
++        self.created_review_comments.append(
++            {"owner_repo": owner_repo, "pr_number": pr_number, "payload": payload}
++        )
++        return {"id": 201, "html_url": "https://github.example/comment/201"}
++
++    async def update_review_comment(
++        self,
++        owner_repo: str,
++        comment_id: int,
++        body: str,
++    ) -> dict[str, Any]:
++        self.updated_review_comments.append(
++            {"owner_repo": owner_repo, "comment_id": comment_id, "body": body}
++        )
++        return {"id": comment_id, "html_url": f"https://github.example/comment/{comment_id}"}
++
++
++def _response() -> ReviewResponse:
++    return ReviewResponse(
++        run_id="run-gh",
++        report=ReviewReport(
++            summary="review summary",
++            issues=[
++                ReviewIssue(
++                    severity=Severity.WARNING,
++                    location="src/app.py:10",
++                    evidence="+ risky_call()",
++                    suggestion="Guard the call.",
++                    confidence=0.9,
++                ),
++                ReviewIssue(
++                    severity=Severity.CRITICAL,
++                    location="src/other.py:5",
++                    evidence="+ allow_all = True",
++                    suggestion="Restore authorization.",
++                    confidence=0.95,
++                ),
++            ],
++        ),
++        context=ContextState(),
++    )
++
++
++def _request() -> GitHubPublishRequest:
++    return GitHubPublishRequest(
++        owner_repo="owner/repo",
++        pr_number=7,
++        head_sha="abc123",
++        response=_response(),
++        changed_lines={"src/app.py": [10]},
++        dry_run=True,
++    )
++
++
++def test_publisher_dry_run_builds_complete_plan_without_network_calls() -> None:
++    client = RecordingGitHubClient()
++    publisher = GitHubPublisher(client=client)
++
++    result = publisher.publish_sync(_request())
++
++    assert result.status == "dry_run"
++    assert result.check_run["conclusion"] == "neutral"
++    assert result.lifecycle_plan.create_count == 1
++    assert result.lifecycle_plan.summary_only_count == 1
++    assert result.inline_comment_records == []
++    assert client.created_check_runs == []
++    assert client.created_review_comments == []
++    assert GITHUB_COMMENT_MARKER in result.lifecycle_plan.create[0].body
++    assert "fingerprint" in result.lifecycle_plan.create[0].body
++
++
++def test_comment_lifecycle_updates_existing_and_stales_missing_mergewarden_comments() -> None:
++    first = _request()
++    fresh = GitHubPublisher(client=RecordingGitHubClient()).build_publish_plan(first)
++    active = fresh.lifecycle_plan.create[0]
++    existing_active_body = active.body.replace("run-gh", "older-run")
++    stale_body = "\n".join(
++        [
++            "Old body",
++            GITHUB_COMMENT_MARKER,
++            "<!-- mergewarden:{\"run_id\":\"older\",\"fingerprint\":\"stale-fp\",\"head_sha\":\"old\"} -->",
++        ]
++    )
++    foreign = {"id": 99, "body": "manual reviewer comment"}
++
++    plan = build_comment_lifecycle_plan(
++        candidates=[active],
++        existing_comments=[
++            {"id": 11, "body": existing_active_body, "path": "src/app.py", "line": 10},
++            {"id": 12, "body": stale_body, "path": "src/app.py", "line": 12},
++            foreign,
++        ],
++        run_id="run-gh",
++        head_sha="abc123",
++    )
++
++    assert plan.create == []
++    assert [item.comment_id for item in plan.update] == [11]
++    assert [item.comment_id for item in plan.stale] == [12]
++    assert plan.foreign_comment_count == 1
++
++
++def test_real_publish_uses_fake_client_for_check_comments_and_stale_updates() -> None:
++    existing_stale = {
++        "id": 12,
++        "body": "\n".join(
++            [
++                "Old body",
++                GITHUB_COMMENT_MARKER,
++                "<!-- mergewarden:{\"run_id\":\"older\",\"fingerprint\":\"stale-fp\",\"head_sha\":\"old\"} -->",
++            ]
++        ),
++        "path": "src/app.py",
++        "line": 12,
++    }
++    client = RecordingGitHubClient(existing_comments=[existing_stale])
++    publisher = GitHubPublisher(client=client)
++    request = _request().model_copy(update={"dry_run": False})
++
++    result = publisher.publish_sync(request)
++
++    assert result.status == "published"
++    assert result.check_run["id"] == 101
++    assert len(client.created_check_runs) == 1
++    assert len(client.created_review_comments) == 1
++    assert client.created_review_comments[0]["payload"]["path"] == "src/app.py"
++    assert len(client.updated_review_comments) == 1
++    assert "Stale MergeWarden advisory" in client.updated_review_comments[0]["body"]
++    assert result.inline_comment_records[0].comment_id == 201
++    assert isinstance(result.inline_comment_records[0], PublishedCommentRecord)
++
++
++def test_extract_comment_metadata_ignores_foreign_and_invalid_comments() -> None:
++    assert extract_comment_metadata("manual reviewer comment") is None
++    assert extract_comment_metadata(f"{GITHUB_COMMENT_MARKER}\n<!-- mergewarden:not-json -->") is None
++    parsed = extract_comment_metadata(
++        f"{GITHUB_COMMENT_MARKER}\n<!-- mergewarden:{json.dumps({'fingerprint': 'fp'})} -->"
++    )
++    assert parsed is not None
++    assert parsed.fingerprint == "fp"
+diff --git a/tests/test_runtime_run_summary.py b/tests/test_runtime_run_summary.py
+new file mode 100644
+index 0000000..567fcdb
+--- /dev/null
++++ b/tests/test_runtime_run_summary.py
+@@ -0,0 +1,74 @@
++"""Tests for runtime run-summary helpers."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++from src.analyzer.run_summary import (
++    RunArtifactSummary,
++    summarize_event_log,
++    summarize_run_artifacts,
++)
++
++
++def test_runtime_run_summary_collects_publish_status_and_event_metrics(tmp_path: Path) -> None:
++    log = tmp_path / "run-1.jsonl"
++    events = [
++        {
++            "run_id": "run-1",
++            "event_type": "model_response_detail",
++            "phase": "analyze",
++            "payload": {
++                "model": "model-a",
++                "usage": {"total_tokens": 31},
++                "tool_call_summaries": [{"name": "read_file"}],
++            },
++        },
++        {
++            "run_id": "run-1",
++            "event_type": "plan_parsed",
++            "phase": "analyze",
++            "payload": {
++                "submit_review_seen": True,
++                "submit_review_validation_error": "Invalid JSON arguments",
++            },
++        },
++        {
++            "run_id": "run-1",
++            "event_type": "decision",
++            "phase": "continue",
++            "payload": {"reason": "completed", "budget_state": "none"},
++        },
++    ]
++    log.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
++
++    summary = summarize_event_log(log, publish_status="dry_run")
++
++    assert summary.run_id == "run-1"
++    assert summary.event_log_status == "ok"
++    assert summary.publish_status == "dry_run"
++    assert summary.model_names == ["model-a"]
++    assert summary.total_tokens == 31
++    assert summary.tool_call_count == 1
++    assert summary.submit_validation_errors == ["Invalid JSON arguments"]
++
++
++def test_summarize_run_artifacts_includes_artifact_paths(tmp_path: Path) -> None:
++    event_log = tmp_path / "run-2.jsonl"
++    response_json = tmp_path / "response.json"
++    publish_json = tmp_path / "publish.json"
++
++    artifact_summary = summarize_run_artifacts(
++        run_id="run-2",
++        event_log_path=event_log,
++        response_json_path=response_json,
++        publish_result_json_path=publish_json,
++        publish_status="published",
++    )
++
++    assert isinstance(artifact_summary, RunArtifactSummary)
++    assert artifact_summary.run_id == "run-2"
++    assert artifact_summary.publish_status == "published"
++    assert artifact_summary.artifact_paths["response_json"] == str(response_json)
++    assert artifact_summary.artifact_paths["publish_result_json"] == str(publish_json)
