@@ -12,9 +12,19 @@ from typing import Any, TypeVar
 import click
 
 from src.analyzer.output_formatter import ReviewIssue, triage_review_report
+from src.analyzer.run_summary import summarize_run_artifacts
 from src import __version__
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
+from src.config import get_settings
 from src.integrations.github_adapter import build_github_advisory_payload
+from src.integrations.github_publisher import (
+    GitHubApiClient,
+    GitHubPublishRequest,
+    GitHubPublishResult,
+    GitHubPublisher,
+    GitHubPublisherClient,
+    resolve_github_token,
+)
 from src.orchestrator.agent_loop import AgentOrchestrator
 
 T = TypeVar("T")
@@ -111,13 +121,44 @@ def _run_async_command(
         raise click.ClickException(f"{command_name} failed: {exc}") from exc
 
 
+async def _publish_and_close_client(
+    publisher: GitHubPublisher,
+    request: GitHubPublishRequest,
+    client: GitHubPublisherClient,
+) -> GitHubPublishResult:
+    try:
+        return await publisher.publish(request)
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            await close()
+
+
 @main.command()
 @click.argument("path", default=".", type=click.Path(exists=True))
 @click.option(
     "--diff", is_flag=True, help="Analyse staged git diff instead of full files."
 )
+@click.option(
+    "--output-json",
+    default=None,
+    type=click.Path(exists=False),
+    help="Optional path to write the ReviewResponse JSON.",
+)
+@click.option(
+    "--summary-json",
+    default=None,
+    type=click.Path(exists=False),
+    help="Optional path to write a compact run artifact summary JSON.",
+)
 @click.pass_context
-def review(ctx: click.Context, path: str, diff: bool) -> None:
+def review(
+    ctx: click.Context,
+    path: str,
+    diff: bool,
+    output_json: str | None,
+    summary_json: str | None,
+) -> None:
     """Run a structured code review on the target path or diff."""
     request = ReviewRequest(
         repo_path=path,
@@ -127,6 +168,19 @@ def review(ctx: click.Context, path: str, diff: bool) -> None:
     )
     orchestrator = AgentOrchestrator(permission_mode=ctx.obj["permission_mode"])
     response = _run_async_command(orchestrator.run_review(request), "review")
+    if output_json:
+        Path(output_json).write_text(response.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        click.echo(f"Review response saved to: {Path(output_json).as_posix()}")
+    if summary_json:
+        event_log_path = _resolve_event_log_path(path, response.run_id)
+        summary = summarize_run_artifacts(
+            run_id=response.run_id,
+            event_log_path=event_log_path,
+            response_json_path=output_json,
+            publish_status="not_requested",
+        )
+        Path(summary_json).write_text(summary.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        click.echo(f"Run summary saved to: {Path(summary_json).as_posix()}")
     _render_review_response(response, ctx.obj["verbose"])
 
 
@@ -204,6 +258,136 @@ def _load_changed_lines(path: Path) -> dict[str, set[int]]:
                 "changed-lines JSON values must contain only line numbers."
             ) from exc
     return changed
+
+
+@main.group("github-advisory")
+def github_advisory() -> None:
+    """Publish MergeWarden advisory checks and PR comments."""
+
+
+@github_advisory.command("publish")
+@click.option(
+    "--repo",
+    "owner_repo",
+    required=True,
+    help="GitHub repository in owner/name form.",
+)
+@click.option(
+    "--pr-number",
+    required=True,
+    type=int,
+    help="Pull request number.",
+)
+@click.option(
+    "--head-sha",
+    required=True,
+    help="Pull request head SHA used for the check run and metadata.",
+)
+@click.option(
+    "--response-json",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to a ReviewResponse JSON file.",
+)
+@click.option(
+    "--changed-lines-json",
+    required=True,
+    type=click.Path(exists=True),
+    help="JSON object mapping repo-relative paths to changed line numbers.",
+)
+@click.option(
+    "--dry-run/--publish",
+    default=None,
+    help="Dry-run by default; pass --publish to write to GitHub.",
+)
+@click.option(
+    "--token",
+    default=None,
+    help="GitHub token override. Defaults to GITHUB_TOKEN/GH_TOKEN.",
+)
+@click.option(
+    "--output-json",
+    default=None,
+    type=click.Path(exists=False),
+    help="Optional output path. Defaults to stdout.",
+)
+def github_advisory_publish(
+    owner_repo: str,
+    pr_number: int,
+    head_sha: str,
+    response_json: str,
+    changed_lines_json: str,
+    dry_run: bool,
+    token: str | None,
+    output_json: str | None,
+) -> None:
+    """Publish a GitHub soft check and advisory comments for a review response."""
+    response = ReviewResponse.model_validate_json(
+        Path(response_json).read_text(encoding="utf-8")
+    )
+    changed_lines = _load_changed_lines(Path(changed_lines_json))
+    effective_dry_run = get_settings().github_advisory_dry_run if dry_run is None else dry_run
+    request = GitHubPublishRequest(
+        owner_repo=owner_repo,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        response=response,
+        changed_lines={key: sorted(value) for key, value in changed_lines.items()},
+        dry_run=effective_dry_run,
+    )
+    client: GitHubPublisherClient
+    if effective_dry_run:
+        client = _DryRunGithubClient()
+    else:
+        resolved_token = resolve_github_token(token)
+        if not resolved_token:
+            raise click.ClickException("GITHUB_TOKEN is required when using --publish.")
+        client = GitHubApiClient(resolved_token)
+    publisher = GitHubPublisher(client)
+    result = _run_async_command(
+        _publish_and_close_client(publisher, request, client),
+        "github-advisory publish",
+    )
+    output = result.model_dump_json(indent=2)
+    if output_json:
+        Path(output_json).write_text(output + "\n", encoding="utf-8")
+        click.echo(f"GitHub advisory publish result saved to: {Path(output_json).as_posix()}")
+        return
+    click.echo(output)
+
+
+class _DryRunGithubClient:
+    """Client placeholder; dry-runs never call network methods."""
+
+    async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]:
+        raise RuntimeError("dry-run should not list GitHub comments")
+
+    async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("dry-run should not create GitHub check runs")
+
+    async def create_review_comment(
+        self,
+        owner_repo: str,
+        pr_number: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        raise RuntimeError("dry-run should not create GitHub comments")
+
+    async def update_review_comment(
+        self,
+        owner_repo: str,
+        comment_id: int,
+        body: str,
+    ) -> dict[str, Any]:
+        raise RuntimeError("dry-run should not update GitHub comments")
+
+
+def _resolve_event_log_path(repo_path: str, run_id: str) -> Path:
+    settings = get_settings()
+    raw = Path(settings.event_log_dir)
+    if raw.is_absolute():
+        return raw / f"{run_id}.jsonl"
+    return Path(repo_path) / raw / f"{run_id}.jsonl"
 
 
 if __name__ == "__main__":

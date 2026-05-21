@@ -1,0 +1,18 @@
+"""Static contract checks for the GitHub advisory workflow."""
+
+from pathlib import Path
+
+
+def test_github_advisory_workflow_wires_phase2_publish_loop() -> None:
+    workflow = Path(".github/workflows/github-advisory.yml").read_text(encoding="utf-8")
+
+    assert "pull_request:" in workflow
+    assert "contents: read" in workflow
+    assert "checks: write" in workflow
+    assert "pull-requests: write" in workflow
+    assert "scripts/github_changed_lines.py" in workflow
+    assert "python cli.py review . --diff" in workflow
+    assert "github-advisory publish" in workflow
+    assert "--dry-run" in workflow
+    assert "--publish" in workflow
+    assert "actions/upload-artifact@v4" in workflow

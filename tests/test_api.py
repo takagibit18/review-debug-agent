@@ -96,3 +96,15 @@ def test_review_endpoint_returns_stable_error_without_raw_exception(monkeypatch)
     assert response.status_code == 500
     assert response.json() == {"message": "review failed", "run_id": ""}
     assert "secret-token-leaked" not in response.text
+
+
+def test_run_summary_endpoint_returns_stable_missing_summary() -> None:
+    from src.api import app as api_app
+
+    response = TestClient(api_app.app).get("/runs/missing-run/summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == "missing-run"
+    assert payload["event_log_status"] == "missing"
+    assert payload["publish_status"] == "not_requested"
