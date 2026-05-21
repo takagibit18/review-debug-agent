@@ -252,46 +252,51 @@ class GitHubPublisher:
         result = self.build_publish_plan(request, existing_comments=existing_comments)
         check_run = await self._client.create_check_run(request.owner_repo, result.check_run)
         records: list[PublishedCommentRecord] = []
-        for item in result.lifecycle_plan.create:
+        for create_item in result.lifecycle_plan.create:
             created = await self._client.create_review_comment(
                 request.owner_repo,
                 request.pr_number,
-                {"body": item.body, "path": item.path, "line": item.line, "side": "RIGHT"},
+                {
+                    "body": create_item.body,
+                    "path": create_item.path,
+                    "line": create_item.line,
+                    "side": "RIGHT",
+                },
             )
             records.append(
                 PublishedCommentRecord(
                     comment_id=int(created.get("id", 0) or 0),
-                    fingerprint=item.fingerprint,
-                    path=item.path,
-                    line=item.line,
+                    fingerprint=create_item.fingerprint,
+                    path=create_item.path,
+                    line=create_item.line,
                     html_url=str(created.get("html_url", "") or ""),
                     action="created",
                 )
             )
-        for item in result.lifecycle_plan.update:
+        for update_item in result.lifecycle_plan.update:
             updated = await self._client.update_review_comment(
                 request.owner_repo,
-                item.comment_id,
-                item.body,
+                update_item.comment_id,
+                update_item.body,
             )
             records.append(
                 PublishedCommentRecord(
-                    comment_id=item.comment_id,
-                    fingerprint=item.fingerprint,
+                    comment_id=update_item.comment_id,
+                    fingerprint=update_item.fingerprint,
                     html_url=str(updated.get("html_url", "") or ""),
                     action="updated",
                 )
             )
-        for item in result.lifecycle_plan.stale:
+        for stale_item in result.lifecycle_plan.stale:
             updated = await self._client.update_review_comment(
                 request.owner_repo,
-                item.comment_id,
-                item.body,
+                stale_item.comment_id,
+                stale_item.body,
             )
             records.append(
                 PublishedCommentRecord(
-                    comment_id=item.comment_id,
-                    fingerprint=item.fingerprint,
+                    comment_id=stale_item.comment_id,
+                    fingerprint=stale_item.fingerprint,
                     html_url=str(updated.get("html_url", "") or ""),
                     action="stale",
                 )
