@@ -106,10 +106,18 @@ hard merge authority. Dry-run is the default.
 ```bash
 python -m eval.run diagnose --input eval/outputs/20260518_151719_report.json
 python -m eval.run trend --inputs "eval/outputs/*_report.json"
+python scripts/github_changed_lines.py --diff-file pr.diff --output changed_lines.json
 python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
 python cli.py review . --diff --output-json review_response.json --summary-json run_summary.json
 python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
 ```
+
+The repository includes `.github/workflows/github-advisory.yml` for the PR
+loop: it builds the PR diff, writes `changed_lines.json`, runs
+`review --diff --output-json --summary-json`, dry-runs advisory publishing,
+then publishes on same-repository PRs where `GITHUB_TOKEN` has write
+permissions. It uploads the response, run summary, changed-lines map, PR diff,
+publish result, and event JSONL logs as workflow artifacts.
 
 To publish from GitHub Actions, grant `checks: write` and `pull-requests: write`
 to `GITHUB_TOKEN`, then pass `--publish`. Inline comments are limited to changed

@@ -7,7 +7,6 @@ import hashlib
 import inspect
 import json as _json
 import os
-import re
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal
@@ -15,6 +14,7 @@ from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
+from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.output_formatter import ReviewReport
@@ -943,36 +943,7 @@ class AgentOrchestrator:
 
     @staticmethod
     def _changed_new_lines_for_file(diff_text: str) -> dict[str, set[int]]:
-        changed: dict[str, set[int]] = {}
-        current_path = ""
-        new_line: int | None = None
-        for line in diff_text.splitlines():
-            if line.startswith("diff --git "):
-                current_path = ""
-                new_line = None
-                parts = line.split(" ")
-                if len(parts) >= 4:
-                    current_path = ContextBuilder._normalize_diff_path(parts[3].strip())  # noqa: SLF001
-                continue
-            if line.startswith("+++ "):
-                current_path = ContextBuilder._normalize_diff_path(
-                    line[4:].strip().split("\t", 1)[0].strip()
-                )
-                continue
-            if line.startswith("@@"):
-                match = re.search(r"\+(\d+)(?:,(\d+))?", line)
-                new_line = int(match.group(1)) if match else None
-                continue
-            if not current_path or new_line is None:
-                continue
-            if line.startswith("+") and not line.startswith("+++"):
-                changed.setdefault(current_path, set()).add(new_line)
-                new_line += 1
-                continue
-            if line.startswith("-") and not line.startswith("---"):
-                continue
-            new_line += 1
-        return changed
+        return changed_new_lines_by_file(diff_text)
 
     async def _execute_one_tool(
         self,

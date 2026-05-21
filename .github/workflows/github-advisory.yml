@@ -1,0 +1,136 @@
+name: GitHub Advisory
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  advisory:
+    name: MergeWarden advisory
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !github.event.pull_request.draft }}
+
+    env:
+      ARTIFACT_DIR: artifacts/github-advisory
+      REVIEW_RESPONSE_JSON: artifacts/github-advisory/review_response.json
+      RUN_SUMMARY_JSON: artifacts/github-advisory/run_summary.json
+      CHANGED_LINES_JSON: artifacts/github-advisory/changed_lines.json
+      PUBLISH_DRY_RUN_JSON: artifacts/github-advisory/publish_dry_run.json
+      PUBLISH_RESULT_JSON: artifacts/github-advisory/publish_result.json
+      PR_DIFF_PATH: artifacts/github-advisory/pr.diff
+      OWNER_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_REF_NAME: ${{ github.event.pull_request.base.ref }}
+
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Prepare PR diff and changed-lines map
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          git fetch --no-tags origin "+refs/heads/$BASE_REF_NAME:refs/remotes/origin/$BASE_REF_NAME"
+          MERGE_BASE="$(git merge-base "origin/$BASE_REF_NAME" "$HEAD_SHA")"
+          echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
+          git diff --no-ext-diff "$MERGE_BASE" "$HEAD_SHA" > "$PR_DIFF_PATH"
+          python scripts/github_changed_lines.py --diff-file "$PR_DIFF_PATH" --output "$CHANGED_LINES_JSON"
+          git reset --soft "$MERGE_BASE"
+
+      - name: Check review credentials
+        id: review-credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
+        run: |
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::OPENAI_API_KEY is not configured; skipping MergeWarden review and publish."
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run MergeWarden review
+        if: steps.review-credentials.outputs.has_key == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
+          EVENT_LOG_DIR: .mergewarden/logs
+          REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '4' }}
+          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '88000' }}
+          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '88000' }}
+        run: |
+          python cli.py review . --diff --output-json "$REVIEW_RESPONSE_JSON" --summary-json "$RUN_SUMMARY_JSON"
+
+      - name: Dry-run GitHub advisory publish
+        if: steps.review-credentials.outputs.has_key == 'true'
+        run: |
+          python cli.py github-advisory publish \
+            --repo "$OWNER_REPO" \
+            --pr-number "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --response-json "$REVIEW_RESPONSE_JSON" \
+            --changed-lines-json "$CHANGED_LINES_JSON" \
+            --dry-run \
+            --output-json "$PUBLISH_DRY_RUN_JSON"
+
+      - name: Publish GitHub advisory
+        if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python cli.py github-advisory publish \
+            --repo "$OWNER_REPO" \
+            --pr-number "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --response-json "$REVIEW_RESPONSE_JSON" \
+            --changed-lines-json "$CHANGED_LINES_JSON" \
+            --publish \
+            --output-json "$PUBLISH_RESULT_JSON"
+
+      - name: Preserve dry-run result for non-writable PRs
+        if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          cp "$PUBLISH_DRY_RUN_JSON" "$PUBLISH_RESULT_JSON"
+
+      - name: Write skipped publish result
+        if: steps.review-credentials.outputs.has_key != 'true'
+        run: |
+          printf '{"status":"skipped","reason":"OPENAI_API_KEY is not configured"}\n' > "$PUBLISH_RESULT_JSON"
+
+      - name: Upload GitHub advisory artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-advisory-${{ github.event.pull_request.number }}
+          if-no-files-found: ignore
+          path: |
+            artifacts/github-advisory/review_response.json
+            artifacts/github-advisory/run_summary.json
+            artifacts/github-advisory/changed_lines.json
+            artifacts/github-advisory/pr.diff
+            artifacts/github-advisory/publish_dry_run.json
+            artifacts/github-advisory/publish_result.json
+            .mergewarden/logs/*.jsonl
