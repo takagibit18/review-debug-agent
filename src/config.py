@@ -331,6 +331,18 @@ class Settings(BaseModel):
         ge=0.0,
         description="Optional Docker CPU quota; 0 disables the limit.",
     )
+    github_advisory_dry_run: bool = Field(
+        default_factory=lambda: _parse_bool_env("GITHUB_ADVISORY_DRY_RUN", True),
+        description="Default GitHub advisory publish mode; true keeps CLI publishing in dry-run mode.",
+    )
+    github_advisory_comment_marker: str = Field(
+        default_factory=lambda: os.getenv(
+            "GITHUB_ADVISORY_COMMENT_MARKER",
+            "<!-- mergewarden:comment -->",
+        ),
+        min_length=1,
+        description="Hidden marker used to identify MergeWarden-owned GitHub review comments.",
+    )
 
     @field_validator("openai_api_key", "model_name", mode="before")
     @classmethod
@@ -424,6 +436,14 @@ class Settings(BaseModel):
             return "none"
         raw = str(value).strip()
         return raw or "none"
+
+    @field_validator("github_advisory_comment_marker", mode="before")
+    @classmethod
+    def _validate_github_advisory_comment_marker(cls, value: object) -> str:
+        if value is None:
+            return "<!-- mergewarden:comment -->"
+        raw = str(value).strip()
+        return raw or "<!-- mergewarden:comment -->"
 
     @field_validator("execute_docker_memory_mb", mode="before")
     @classmethod

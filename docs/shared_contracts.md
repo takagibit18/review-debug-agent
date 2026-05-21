@@ -120,6 +120,11 @@ publish them as comments, summaries, or soft checks, but hard merge blocking
 remains the responsibility of GitHub CI / branch protection unless a future
 product decision explicitly changes that boundary.
 
+Phase 2 GitHub publishing starts with GitHub Actions. `github-advisory publish`
+uses the existing `ReviewResponse` plus changed-line metadata to create a neutral
+check run and advisory inline comments. Inline comments remain restricted to
+changed lines; all other findings stay in the check summary.
+
 ### 4.3 `ReviewReport`（单次 review 汇总）
 
 | 字段 | 类型 | 说明 |
@@ -165,6 +170,9 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | `MODEL_MAX_RETRIES` | 单次逻辑模型调用的最大尝试次数 | 默认 `1`，对应 `Settings.model_max_retries` |
 | `AGENT_RUN_TIMEOUT_SECONDS` | 单次编排运行的总墙钟截止线 | 默认 `170`，对应 `Settings.agent_run_timeout_seconds` |
 | `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.mergewarden/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
+| `GITHUB_TOKEN` / `GH_TOKEN` / `github_token` | GitHub API token | GitHub Actions publish mode needs `checks:write` and `pull-requests:write`; dry-run does not need a token |
+| `GITHUB_ADVISORY_DRY_RUN` | GitHub advisory default publish mode | Default `true`; CLI `--publish` can override and perform real GitHub writes |
+| `GITHUB_ADVISORY_COMMENT_MARKER` | MergeWarden comment marker | Default `<!-- mergewarden:comment -->`; used to update/mark only MergeWarden-owned comments |
 | `PERMISSION_MODE` | 权限模式（`default` \| `plan`） | 默认 `default`；`plan` 模式禁止执行工具，仅生成计划与结构化输出 |
 | `CI` | 常见 CI 环境变量 | 设为 `true`/`1`/`yes` 时，编排层对 `write`/`execute` 工具默认拒绝（与 [cli_tools_orchestrator_contract.md](./cli_tools_orchestrator_contract.md) §11 一致） |
 | `EXECUTE_ENABLED` | execute 类工具全局开关 | 默认 `true`；置 `false` 时即便 Debug 模式也不注册 `run_command` / `run_tests` |
@@ -191,6 +199,8 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | `run_id` | 每次 CLI/调用生成的唯一标识，写入日志与可选 artifact |
 | 记录内容 | 工具调用序列、关键中间结果、耗时、token 用量 |
 | 输入快照 | 是否落盘脱敏后的 prompt/输出以便复盘（路径与保留策略） |
+| `RunSummary` | Runtime summary in `src/analyzer/run_summary.py`; includes event-log status, model/token, tool counts, budget/stop state, submit validation errors, and publish status |
+| `RunArtifactSummary` | Artifact-facing CLI/API summary for response JSON, publish result JSON, event log, and related paths |
 
 具体字段若在代码中以 `RunContext` 等模型出现，应在该类型旁或本文档交叉引用。
 

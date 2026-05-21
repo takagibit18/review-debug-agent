@@ -165,6 +165,140 @@ def test_advisory_export_writes_payload(cli_runner: CliRunner, tmp_path: Path) -
     assert payload["summary_only_issues"] == []
 
 
+def test_github_advisory_publish_dry_run_outputs_publish_summary(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    response_path = tmp_path / "response.json"
+    changed_lines_path = tmp_path / "changed.json"
+    output_path = tmp_path / "publish.json"
+    response = ReviewResponse(
+        run_id="run-publish",
+        report=ReviewReport(
+            summary="summary",
+            issues=[
+                ReviewIssue(
+                    severity=Severity.WARNING,
+                    location="src/app.py:10",
+                    evidence="+ risky_call()",
+                    suggestion="Guard the call.",
+                    confidence=0.9,
+                )
+            ],
+        ),
+        context=ContextState(),
+    )
+    response_path.write_text(response.model_dump_json(), encoding="utf-8")
+    changed_lines_path.write_text(json.dumps({"src/app.py": [10]}), encoding="utf-8")
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "github-advisory",
+            "publish",
+            "--repo",
+            "owner/repo",
+            "--pr-number",
+            "7",
+            "--head-sha",
+            "abc123",
+            "--response-json",
+            str(response_path),
+            "--changed-lines-json",
+            str(changed_lines_path),
+            "--dry-run",
+            "--output-json",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "dry_run"
+    assert payload["owner_repo"] == "owner/repo"
+    assert payload["pr_number"] == 7
+    assert payload["lifecycle_plan"]["create_count"] == 1
+    assert payload["check_run"]["conclusion"] == "neutral"
+
+
+def test_github_advisory_publish_requires_token_when_not_dry_run(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "response.json"
+    changed_lines_path = tmp_path / "changed.json"
+    response = ReviewResponse(
+        run_id="run-publish",
+        report=ReviewReport(summary="summary"),
+        context=ContextState(),
+    )
+    response_path.write_text(response.model_dump_json(), encoding="utf-8")
+    changed_lines_path.write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("github_token", raising=False)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "github-advisory",
+            "publish",
+            "--repo",
+            "owner/repo",
+            "--pr-number",
+            "7",
+            "--head-sha",
+            "abc123",
+            "--response-json",
+            str(response_path),
+            "--changed-lines-json",
+            str(changed_lines_path),
+            "--publish",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "GITHUB_TOKEN is required" in result.output
+    assert "ghp_" not in result.output
+
+
+def test_review_command_can_export_response_and_run_summary(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "review.json"
+    summary_path = tmp_path / "summary.json"
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-export",
+            report=ReviewReport(summary="summary"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "review",
+            ".",
+            "--output-json",
+            str(response_path),
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-export"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["run_id"] == "run-export"
+    assert summary["publish_status"] == "not_requested"
+
+
 def test_review_command_renders_triaged_sections(cli_runner: CliRunner, monkeypatch) -> None:
     async def _run_review(self, request):  # type: ignore[no-untyped-def]
         must_fix = ReviewIssue(

@@ -86,6 +86,7 @@ Available endpoints:
 - `GET /health`
 - `POST /review`
 - `POST /debug`
+- `GET /runs/{run_id}/summary`
 
 ### MVP+ status
 
@@ -97,14 +98,24 @@ stable eval gate are in place. The current golden baseline is
 `hit_rate >= 0.6` target. Details are recorded in
 [docs/mvp_plus_eval_closure.md](docs/mvp_plus_eval_closure.md).
 
-Phase 2 readiness adds local diagnostics and advisory export commands without
-publishing GitHub comments:
+Phase 2 adds productized run summaries and GitHub Actions-friendly advisory
+publishing. Publishing is advisory-only: MergeWarden writes a neutral soft check
+and optional review comments, while GitHub CI / branch protection remains the
+hard merge authority. Dry-run is the default.
 
 ```bash
 python -m eval.run diagnose --input eval/outputs/20260518_151719_report.json
 python -m eval.run trend --inputs "eval/outputs/*_report.json"
 python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
+python cli.py review . --diff --output-json review_response.json --summary-json run_summary.json
+python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
 ```
+
+To publish from GitHub Actions, grant `checks: write` and `pull-requests: write`
+to `GITHUB_TOKEN`, then pass `--publish`. Inline comments are limited to changed
+lines; findings outside changed lines stay in the soft-check summary. MergeWarden
+comments include hidden fingerprints so later runs can update matching comments
+and mark stale findings without touching human comments.
 
 ## 项目结构
 

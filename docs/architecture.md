@@ -57,7 +57,7 @@ Tools declare their safety level (`readonly` / `write` / `execute`).
 The executor uses this to decide concurrency and confirmation requirements.
 OpenAI-compatible **tool schemas** (registered tools plus `submit_*` pseudo-tools) are built in `src/orchestrator/tool_schemas.py` and passed into the inference layer by `AgentOrchestrator`.
 
-FastAPI exposes a synchronous MVP+ API with `GET /health`, `POST /review`, and `POST /debug`. The HTTP layer reuses the same `ReviewRequest` / `DebugRequest` and `ReviewResponse` / `DebugResponse` Pydantic contracts as the CLI, and only handles request validation, stable JSON errors, and orchestrator dispatch.
+FastAPI exposes a synchronous MVP+ API with `GET /health`, `POST /review`, and `POST /debug`. The HTTP layer reuses the same `ReviewRequest` / `DebugRequest` and `ReviewResponse` / `DebugResponse` Pydantic contracts as the CLI, and only handles request validation, stable JSON errors, and orchestrator dispatch. Phase 2 adds `GET /runs/{run_id}/summary` as an independent observability helper so the core review/debug response schemas stay stable.
 
 Execute-class tools (`run_command`, `run_tests`) use `src/security/exec_policy.py` for argv parsing and allowlists, `src/security/backends.py` for pluggable backends (default `subprocess`, optional `docker`), and `src/security/sandbox.py` as the dispatch entry. Debug-only registration and `EXECUTE_*` settings are documented in [execute_tools_design.md](./execute_tools_design.md) and [shared_contracts.md](./shared_contracts.md).
 
@@ -85,6 +85,11 @@ the evidence but should not become the primary comment location.
 CI remains the hard authority for mergeability.  MergeWarden's PR-facing role
 is to produce review suggestions, soft checks, and evidence for risks that may
 pass automated tests but still deserve human attention.
+The first GitHub publishing surface is GitHub Actions: `github-advisory publish`
+can create a neutral check run and advisory review comments using `GITHUB_TOKEN`
+with `checks:write` and `pull-requests:write`. Comment lifecycle uses stable
+issue fingerprints plus hidden MergeWarden metadata to update matching comments
+and mark stale findings without deleting or editing human comments.
 
 ### Observability
 
@@ -92,3 +97,7 @@ Every run logs a `run_id`, tool-call sequence, key intermediate results,
 wall-clock time, and token usage, enabling post-hoc debugging of
 false-positives or missed issues.
 Across loop iterations, **tool results are fed back** into the next model call (`tool_feedback` in the inference engine) so multi-step tool use remains coherent.
+Runtime summaries live in `src/analyzer/run_summary.py` and are reused by CLI,
+FastAPI, and eval wrappers. A summary includes event-log status, models, token
+counts, tool-call counts, budget state, stop reasons, submit validation errors,
+artifact paths, and GitHub publish status.

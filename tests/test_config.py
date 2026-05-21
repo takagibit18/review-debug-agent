@@ -91,3 +91,13 @@ def test_token_hard_budget_is_not_below_soft_budget(monkeypatch) -> None:
 
     assert settings.token_budget == 12_000
     assert settings.token_hard_budget == 12_000
+
+
+def test_github_advisory_publish_defaults_are_safe(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_ADVISORY_DRY_RUN", raising=False)
+    monkeypatch.delenv("GITHUB_ADVISORY_COMMENT_MARKER", raising=False)
+
+    settings = get_settings()
+
+    assert settings.github_advisory_dry_run is True
+    assert settings.github_advisory_comment_marker == "<!-- mergewarden:comment -->"
