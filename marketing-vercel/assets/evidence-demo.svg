@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 680" role="img" aria-label="Evidence demo">
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#ffffff"/>
+      <stop offset=".65" stop-color="#f6f7f8"/>
+      <stop offset="1" stop-color="#eee9f6"/>
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#15161d" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="960" height="680" fill="#f7f8f8"/>
+  <path d="M0 126h960M0 252h960M0 378h960M0 504h960M160 0v680M320 0v680M480 0v680M640 0v680M800 0v680" stroke="#101014" stroke-opacity=".055"/>
+  <text x="54" y="70" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="30" font-weight="800">证据缺口如何被补齐</text>
+  <text x="54" y="108" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="17" font-weight="650">diff、测试日志、运行摘要进入同一条 advisory finding</text>
+  <g filter="url(#shadow)">
+    <rect x="54" y="150" width="248" height="174" rx="12" fill="#fff" stroke="#101014" stroke-opacity=".14"/>
+    <rect x="54" y="150" width="248" height="42" rx="12" fill="#101014"/>
+    <text x="78" y="178" fill="#fff" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="800">1. PR diff</text>
+    <rect x="78" y="218" width="178" height="12" rx="6" fill="#101014" opacity=".14"/>
+    <rect x="78" y="248" width="198" height="18" rx="6" fill="#c8ff62" opacity=".8"/>
+    <rect x="78" y="284" width="158" height="18" rx="6" fill="#ff765a" opacity=".36"/>
+    <text x="246" y="264" fill="#101014" font-family="Consolas,monospace" font-size="13" font-weight="700">added</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="54" y="370" width="248" height="174" rx="12" fill="#fff" stroke="#101014" stroke-opacity=".14"/>
+    <rect x="54" y="370" width="248" height="42" rx="12" fill="#ddd5e9"/>
+    <text x="78" y="398" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="800">2. 测试失败日志</text>
+    <rect x="78" y="438" width="180" height="12" rx="6" fill="#101014" opacity=".14"/>
+    <rect x="78" y="468" width="150" height="12" rx="6" fill="#ff765a" opacity=".78"/>
+    <rect x="78" y="498" width="196" height="12" rx="6" fill="#101014" opacity=".1"/>
+    <text x="78" y="528" fill="#676b74" font-family="Consolas,monospace" font-size="13" font-weight="700">pytest: auth fallback</text>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="358" y="244" width="244" height="224" rx="12" fill="#101014"/>
+    <text x="386" y="284" fill="#fff" font-family="Inter,Arial,sans-serif" font-size="17" font-weight="850">证据归并</text>
+    <text x="386" y="320" fill="#c8ff62" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="800">changed-line candidate</text>
+    <rect x="386" y="348" width="154" height="14" rx="7" fill="#fff" opacity=".22"/>
+    <rect x="386" y="380" width="188" height="14" rx="7" fill="#fff" opacity=".16"/>
+    <rect x="386" y="412" width="128" height="14" rx="7" fill="#ff765a" opacity=".82"/>
+    <path d="M532 286l32 32-32 32" fill="none" stroke="#c8ff62" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="660" y="188" width="246" height="300" rx="12" fill="url(#surface)" stroke="#101014" stroke-opacity=".14"/>
+    <rect x="686" y="218" width="72" height="28" rx="7" fill="#ffcc8a"/>
+    <text x="698" y="237" fill="#2f190e" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="850">风险</text>
+    <text x="686" y="284" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="850">授权默认值改变</text>
+    <text x="686" y="326" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="650">证据: diff line 46</text>
+    <text x="686" y="356" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="650">日志: auth fallback fail</text>
+    <text x="686" y="386" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="15" font-weight="650">建议: reviewer 验证角色源</text>
+    <rect x="686" y="424" width="142" height="34" rx="8" fill="#c8ff62"/>
+    <text x="704" y="446" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="850">写入 PR summary</text>
+  </g>
+  <path d="M304 238C340 238 340 300 360 300" fill="none" stroke="#2736ee" stroke-width="8" stroke-linecap="round"/>
+  <path d="M304 456C340 456 340 388 360 388" fill="none" stroke="#2736ee" stroke-width="8" stroke-linecap="round"/>
+  <path d="M604 356C630 356 630 338 658 338" fill="none" stroke="#2736ee" stroke-width="8" stroke-linecap="round"/>
+  <path d="M338 280l24 20-26 18M338 408l24-20-24-18M634 320l25 18-25 19" fill="none" stroke="#2736ee" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

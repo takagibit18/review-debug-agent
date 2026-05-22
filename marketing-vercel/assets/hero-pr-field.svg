@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 640" role="img" aria-label="PR review evidence field">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#ffffff"/>
+      <stop offset="0.58" stop-color="#eee9f6"/>
+      <stop offset="1" stop-color="#f4f7ef"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#e8ffb5"/>
+      <stop offset="1" stop-color="#c8ff62"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#15161d" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect x="44" y="32" width="752" height="560" rx="28" fill="url(#bg)" stroke="#101014" stroke-opacity="0.14"/>
+  <path d="M92 102h656M92 170h656M92 238h656M92 306h656M92 374h656M92 442h656M92 510h656" stroke="#101014" stroke-opacity="0.06"/>
+  <path d="M158 72v486M268 72v486M378 72v486M488 72v486M598 72v486M708 72v486" stroke="#101014" stroke-opacity="0.045"/>
+  <g filter="url(#shadow)">
+    <rect x="116" y="110" width="374" height="302" rx="12" fill="#fff" stroke="#101014" stroke-opacity="0.14"/>
+    <rect x="116" y="110" width="374" height="54" rx="12" fill="#f6f7f8"/>
+    <circle cx="146" cy="137" r="7" fill="#ff765a"/>
+    <circle cx="168" cy="137" r="7" fill="#ffc145"/>
+    <circle cx="190" cy="137" r="7" fill="#c8ff62"/>
+    <rect x="146" y="196" width="294" height="18" rx="9" fill="#101014" opacity="0.12"/>
+    <rect x="146" y="236" width="254" height="18" rx="9" fill="#c8ff62"/>
+    <rect x="146" y="276" width="300" height="18" rx="9" fill="#ff765a" opacity="0.42"/>
+    <rect x="146" y="316" width="220" height="18" rx="9" fill="#2736ee" opacity="0.22"/>
+    <rect x="146" y="356" width="270" height="18" rx="9" fill="#101014" opacity="0.1"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="428" y="214" width="286" height="254" rx="12" fill="#101014"/>
+    <path d="M456 272h186M456 315h224M456 358h168M456 401h204" stroke="#fff" stroke-opacity="0.22" stroke-width="16" stroke-linecap="round"/>
+    <path d="M456 315h130" stroke="#c8ff62" stroke-width="16" stroke-linecap="round"/>
+    <path d="M456 358h98" stroke="#ff765a" stroke-opacity="0.78" stroke-width="16" stroke-linecap="round"/>
+    <rect x="456" y="238" width="86" height="18" rx="9" fill="#ddd5e9"/>
+    <rect x="608" y="238" width="78" height="18" rx="9" fill="#c8ff62"/>
+  </g>
+  <path d="M240 486c78-62 156-62 234 0s156 62 234 0" fill="none" stroke="url(#green)" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="242" cy="486" r="18" fill="#c8ff62" stroke="#101014" stroke-opacity="0.18"/>
+  <circle cx="474" cy="486" r="18" fill="#ddd5e9" stroke="#101014" stroke-opacity="0.18"/>
+  <circle cx="708" cy="486" r="18" fill="#ff765a" stroke="#101014" stroke-opacity="0.18"/>
+</svg>

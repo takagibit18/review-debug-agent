@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="MergeWarden 是面向 GitHub PR 的 advisory AI 审查层，把 diff、仓库上下文、测试输出和运行证据转成可复盘的软检查信号。"
+    />
+    <title>MergeWarden - 给 PR 合并前补一层证据软检查</title>
+    <link rel="icon" href="assets/mergewarden-logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css?v=20260522-p0p1" />
+  </head>
+  <body>
+    <div class="scroll-progress" aria-hidden="true"></div>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <div class="page-shell">
+      <header class="site-header" aria-label="主导航">
+        <a class="brand" href="#top" aria-label="MergeWarden 首页">
+          <img class="brand-mark" src="assets/mergewarden-logo.svg" alt="" width="32" height="32" />
+          <span>MergeWarden</span>
+        </a>
+        <nav class="nav" aria-label="页面区块">
+          <a href="#gap">证据缺口</a>
+          <a href="#workflow">工作流</a>
+          <a href="#github">GitHub</a>
+          <a href="#proof">能力证据</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+        <div class="header-actions">
+          <a
+            class="button button-secondary github-link"
+            href="https://github.com/%3Corg%3E/mergewarden"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="在新标签页打开 MergeWarden GitHub 仓库"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M12 2C6.48 2 2 6.58 2 12.24c0 4.52 2.86 8.35 6.83 9.71.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.73-2.78.62-3.37-1.37-3.37-1.37-.45-1.19-1.11-1.51-1.11-1.51-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.9 1.56 2.35 1.11 2.92.85.09-.66.35-1.11.63-1.36-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.29 9.29 0 0 1 12 6.96c.85 0 1.71.12 2.51.34 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.05.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.8 0 .27.18.59.69.49A10.19 10.19 0 0 0 22 12.24C22 6.58 17.52 2 12 2Z"
+              />
+            </svg>
+            <span>GitHub</span>
+          </a>
+          <a class="button button-secondary" href="#proof">查看证据</a>
+          <a class="button button-primary" href="#github">查看接入</a>
+        </div>
+      </header>
+
+      <main id="main">
+        <section class="hero" id="top" aria-labelledby="hero-title">
+          <div class="hero-plate" aria-hidden="true">
+            <img class="hero-asset parallax-layer" src="assets/hero-pr-field.svg" alt="" data-depth="0.035" fetchpriority="high" />
+
+            <div class="floating-panel review-panel parallax-layer" data-depth="0.055">
+              <div class="panel-chrome">
+                <span class="traffic"><i></i><i></i><i></i></span>
+                <span>advisory run</span>
+              </div>
+              <div class="review-status">
+                <span class="status-mark" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M20 7 10.2 17 5 11.8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>软检查完成</strong>
+                  <span>3 条发现，2 条可落在 changed line</span>
+                </div>
+              </div>
+              <div class="finding-stack">
+                <article>
+                  <span class="tag risk">风险</span>
+                  <div>
+                    <strong>缓存回退改变了授权默认值</strong>
+                    <p>证据来自 diff、路由契约和测试输出。</p>
+                  </div>
+                </article>
+                <article>
+                  <span class="tag trace">证据</span>
+                  <div>
+                    <strong>未改动文件只作为上下文</strong>
+                    <p>inline comment 只写回 changed hunk。</p>
+                  </div>
+                </article>
+                <article>
+                  <span class="tag neutral">边界</span>
+                  <div>
+                    <strong>结论保持 neutral</strong>
+                    <p>CI 与 branch protection 仍然决定能否合并。</p>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <div class="floating-panel diff-panel parallax-layer" data-depth="0.08">
+              <div class="diff-head">
+                <span>src/auth/session.ts</span>
+                <span>changed hunk</span>
+              </div>
+              <div class="diff-scan" aria-hidden="true"></div>
+              <div class="diff-lines">
+                <div><span>44</span><code>if (!session) return redirect()</code><b>context</b></div>
+                <div class="added"><span>45</span><code>const role = await cache.get(user.id)</code><b>added</b></div>
+                <div class="warn"><span>46</span><code>return role || "member"</code><b>review</b></div>
+                <div><span>47</span><code>audit.log("session:checked")</code><b>trace</b></div>
+              </div>
+            </div>
+
+            <div class="floating-panel note-panel parallax-layer" data-depth="0.11">
+              <strong>Advisory comment</strong>
+              <p>请确认角色来源；这条建议不替代 reviewer 与 CI 的最终判断。</p>
+            </div>
+          </div>
+
+          <div class="hero-inner">
+            <div class="hero-copy reveal">
+              <h1 id="hero-title">MergeWarden</h1>
+              <p class="hero-lede">给 PR 合并前补一层证据软检查。</p>
+              <p class="hero-text">
+                它把 diff、仓库上下文、测试输出与运行摘要整理成 GitHub 可读的 advisory 信号，
+                帮 reviewer 看见 CI 很难解释的风险，同时把合并 authority 留给现有分支保护。
+              </p>
+              <div class="hero-actions">
+                <a class="button button-primary" href="#github">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  接入 GitHub Actions
+                </a>
+                <a class="button button-secondary" href="#workflow">查看工作流</a>
+              </div>
+              <div class="hero-note" aria-label="产品边界">
+                <span>仅软检查</span>
+                <span>只评论变更行</span>
+                <span>CLI/API 兼容</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section gap-section" id="gap" aria-labelledby="gap-title">
+          <div class="section-inner">
+            <div class="section-heading reveal">
+              <div>
+                <p class="section-kicker">证据缺口</p>
+                <h2 id="gap-title">PR 变得更快，但风险证据经常跟不上。</h2>
+              </div>
+              <p>
+                测试证明已知契约，reviewer 还要处理变更假设、缺失上下文、危险默认值与失败日志。
+                MergeWarden 的定位不是更吵的 bot，而是把这些判断整理成可复盘证据。
+              </p>
+            </div>
+
+            <div class="split-layout">
+              <article class="story-panel reveal">
+                <span class="panel-index">01</span>
+                <h3>把“可能有问题”变成“这里需要验证”。</h3>
+                <p>
+                  每条 finding 都要带位置、证据、建议与信心边界。可评论的结果必须落回 changed line，
+                  不能精准定位的发现留在 check summary。
+                </p>
+                <div class="signal-meter" aria-label="风险信号覆盖示意">
+                  <span style="--level: 42%">静态检查</span>
+                  <span style="--level: 67%">人工上下文</span>
+                  <span style="--level: 88%">证据 advisory</span>
+                </div>
+              </article>
+              <figure class="image-card reveal">
+                <img
+                  src="assets/evidence-demo.svg"
+                  alt="具象演示图：PR diff、测试失败日志和运行摘要汇聚成一条带证据的 advisory finding"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </figure>
+            </div>
+          </div>
+        </section>
+
+        <section class="section workflow-section" id="workflow" aria-labelledby="workflow-title">
+          <div class="section-inner">
+            <div class="section-heading reveal">
+              <div>
+                <p class="section-kicker">四步工作流</p>
+                <h2 id="workflow-title">从 changed lines 到可发布的 review 建议。</h2>
+              </div>
+              <p>
+                运行边界跟仓库保持一致：CLI 和 FastAPI 产出结构化结果，GitHub Actions
+                只把它转换成 neutral check 与必要的 review comments。
+              </p>
+            </div>
+
+            <div class="workflow-stage">
+              <figure class="workflow-visual reveal">
+                <img
+                  src="assets/workflow-demo.svg"
+                  alt="具象演示图：PR diff 经过证据收集、结构化 finding、GitHub soft check 四步流转"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </figure>
+              <div class="step-rail reveal" data-step-rail>
+                <button class="step is-active" type="button" data-step="0" aria-pressed="true">
+                  <span>01</span>
+                  <strong>读取 PR diff</strong>
+                  <em>以 changed lines 为审查目标，仓库快照只做上下文。</em>
+                </button>
+                <button class="step" type="button" data-step="1" aria-pressed="false">
+                  <span>02</span>
+                  <strong>按需收集证据</strong>
+                  <em>只读工具查看相邻代码、契约、日志和测试输出。</em>
+                </button>
+                <button class="step" type="button" data-step="2" aria-pressed="false">
+                  <span>03</span>
+                  <strong>格式化 finding</strong>
+                  <em>输出 severity、location、evidence、suggestion 与 confidence。</em>
+                </button>
+                <button class="step" type="button" data-step="3" aria-pressed="false">
+                  <span>04</span>
+                  <strong>发布 soft check</strong>
+                  <em>GitHub 收到 neutral check；inline comment 限定在 changed line。</em>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section github-section" id="github" aria-labelledby="github-title">
+          <div class="section-inner">
+            <div class="section-heading reveal">
+              <div>
+                <p class="section-kicker">GitHub Actions first</p>
+                <h2 id="github-title">第一产品入口，就在团队已经 review 的地方。</h2>
+              </div>
+              <p>
+                首版不是新 dashboard，而是一段可复制的 workflow：生成 PR diff、运行 review、
+                上传运行摘要，并在有权限时发布 advisory 反馈。
+              </p>
+            </div>
+
+            <div class="surface-grid">
+              <figure class="pr-scene reveal">
+                <img
+                  src="assets/github-advisory.svg"
+                  alt="GitHub PR advisory soft check 界面演示"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <figcaption>
+                  <strong>neutral check</strong>
+                  <span>不抢 CI 的 hard gate 权限，只把风险证据带回 PR。</span>
+                </figcaption>
+              </figure>
+
+              <div class="code-panel reveal">
+                <div class="code-head">
+                  <span>.github/workflows/github-advisory.yml</span>
+                  <button class="copy-button" type="button" data-copy="#workflow-code" aria-live="polite">复制</button>
+                </div>
+                <pre id="workflow-code"><code>name: MergeWarden advisory
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  advisory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build PR diff
+        run: python scripts/github_changed_lines.py --output changed_lines.json
+      - name: Review diff
+        run: >
+          python cli.py review .
+          --diff
+          --output-json review_response.json
+          --summary-json run_summary.json
+      - name: Publish advisory
+        run: >
+          python cli.py github-advisory publish
+          --repo "$GITHUB_REPOSITORY"
+          --pr-number "${{ github.event.pull_request.number }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}"
+          --response-json review_response.json
+          --changed-lines-json changed_lines.json
+          --dry-run</code></pre>
+                <p>默认 dry-run；团队准备好后再切换发布模式。</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section proof-section" id="proof" aria-labelledby="proof-title">
+          <div class="section-inner">
+            <div class="section-heading reveal">
+              <div>
+                <p class="section-kicker">能力证据</p>
+                <h2 id="proof-title">价值来自边界清楚，而不是权限更大。</h2>
+              </div>
+              <p>
+                MergeWarden 把重复的证据整理交给工具链，把合并判断留给 reviewer、CI 与团队策略。
+              </p>
+            </div>
+
+            <div class="proof-grid">
+              <article class="proof-card reveal">
+                <span class="proof-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
+                  </svg>
+                </span>
+                <h3>Diff-first</h3>
+                <p>inline feedback 必须指回 changed line 或 changed hunk，避免对未改动文件制造噪音。</p>
+              </article>
+              <article class="proof-card reveal">
+                <span class="proof-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M12 3v18M4 8h16M6 16h12" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
+                  </svg>
+                </span>
+                <h3>Run summary</h3>
+                <p>每次运行都能暴露状态、工具调用、停止原因、发布状态和证据摘要。</p>
+              </article>
+              <article class="proof-card reveal">
+                <span class="proof-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M6 12.5 10 16l8-9M4 4h16v16H4z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <h3>Soft by contract</h3>
+                <p>输出建议、证据和 soft check；不自动 approve，不替代 branch protection。</p>
+              </article>
+            </div>
+
+            <figure class="map-strip reveal">
+              <img
+                src="assets/proof-demo.svg"
+                alt="具象演示图：changed-line comment、run summary artifact 和 neutral check 三类能力证据"
+                loading="lazy"
+                decoding="async"
+              />
+            </figure>
+          </div>
+        </section>
+
+        <section class="section integration-section" aria-labelledby="integration-title">
+          <div class="section-inner">
+            <div class="section-heading reveal">
+              <div>
+                <p class="section-kicker">集成入口</p>
+                <h2 id="integration-title">先把证据回路跑稳，再扩展更多入口。</h2>
+              </div>
+              <p>
+                当前宣传站独立于 runtime；产品本身继续围绕 CLI、HTTP contracts、CI artifacts 与 GitHub PR。
+              </p>
+            </div>
+
+            <div class="integration-strip">
+              <article class="integration reveal">
+                <strong>CLI</strong>
+                <span>本地 review/debug 命令，方便复现与演示。</span>
+              </article>
+              <article class="integration reveal">
+                <strong>FastAPI</strong>
+                <span>薄 HTTP 层复用同一组 Pydantic contract。</span>
+              </article>
+              <article class="integration reveal">
+                <strong>Actions</strong>
+                <span>PR diff review、dry-run publishing 与 artifact 上传。</span>
+              </article>
+              <article class="integration reveal">
+                <strong>Later</strong>
+                <span>comment lifecycle、webhook/auth、async execution 和 durable storage。</span>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section faq-section" id="faq" aria-labelledby="faq-title">
+          <div class="section-inner">
+            <div class="section-heading reveal">
+              <div>
+                <p class="section-kicker">常见问题</p>
+                <h2 id="faq-title">它接近合并权限，所以边界必须写清楚。</h2>
+              </div>
+              <p>保守的产品叙事是功能的一部分：建议可以自动化，合并判断不能越权。</p>
+            </div>
+
+            <div class="faq-list reveal">
+              <details open>
+                <summary>MergeWarden 会替代 CI 吗？</summary>
+                <p>不会。CI 和 branch protection 仍然是 hard authority；MergeWarden 只提供 advisory findings、运行摘要和 review 证据。</p>
+              </details>
+              <details>
+                <summary>为什么不先做完整 dashboard？</summary>
+                <p>最短闭环在 GitHub PR review 内。dashboard 可以后续承载组织级历史，但第一步应该把 PR 反馈跑稳。</p>
+              </details>
+              <details>
+                <summary>它能评论未改动文件吗？</summary>
+                <p>未改动文件可以作为证据来源；inline comments 应限制在 changed lines，不适合定位的发现留在 summary。</p>
+              </details>
+              <details>
+                <summary>接下来最自然的产品化方向是什么？</summary>
+                <p>comment lifecycle、webhook/auth、async execution、durable storage 和更完整的运行观测。</p>
+              </details>
+            </div>
+
+            <div class="cta-box reveal">
+              <div>
+                <h2>把更安全的 review 证据放回每个 PR。</h2>
+                <p>先用 dry-run 看输出，再把 advisory publishing 接进团队的 GitHub Actions。</p>
+              </div>
+              <div class="cta-actions">
+                <a class="button button-primary" href="#github">查看 workflow</a>
+                <a class="button button-secondary" href="#top">回到顶部</a>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <span>MergeWarden - AI PR Gatekeeper for Safer Merges</span>
+        <a href="#top">Back to top</a>
+      </footer>
+    </div>
+
+    <script src="app.js?v=20260522-p0p1" defer></script>
+  </body>
+</html>
