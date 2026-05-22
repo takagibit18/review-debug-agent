@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 680" role="img" aria-label="Workflow demo">
+  <defs>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#15161d" flood-opacity=".14"/>
+    </filter>
+  </defs>
+  <rect width="960" height="680" fill="#f9faf9"/>
+  <path d="M0 136h960M0 272h960M0 408h960M0 544h960M120 0v680M240 0v680M360 0v680M480 0v680M600 0v680M720 0v680M840 0v680" stroke="#101014" stroke-opacity=".055"/>
+  <text x="58" y="72" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="30" font-weight="850">四步 advisory 发布链路</text>
+  <text x="58" y="110" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="17" font-weight="650">从 PR diff 到 GitHub neutral check，路径和责任边界清晰可见</text>
+  <g filter="url(#shadow)">
+    <rect x="58" y="168" width="178" height="248" rx="12" fill="#fff" stroke="#101014" stroke-opacity=".14"/>
+    <circle cx="96" cy="208" r="22" fill="#c8ff62"/>
+    <text x="89" y="216" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="850">1</text>
+    <text x="58" y="454" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="19" font-weight="850">读取 PR diff</text>
+    <text x="58" y="484" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="650">changed_lines.json</text>
+    <rect x="84" y="250" width="112" height="12" rx="6" fill="#101014" opacity=".14"/>
+    <rect x="84" y="284" width="126" height="16" rx="6" fill="#c8ff62"/>
+    <rect x="84" y="322" width="96" height="16" rx="6" fill="#ff765a" opacity=".42"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="286" y="168" width="178" height="248" rx="12" fill="#101014"/>
+    <circle cx="324" cy="208" r="22" fill="#ddd5e9"/>
+    <text x="317" y="216" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="850">2</text>
+    <text x="286" y="454" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="19" font-weight="850">收集证据</text>
+    <text x="286" y="484" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="650">read-only tools</text>
+    <path d="M326 274h88M326 314h70M326 354h104" stroke="#fff" stroke-opacity=".24" stroke-width="15" stroke-linecap="round"/>
+    <path d="M326 314h52" stroke="#c8ff62" stroke-width="15" stroke-linecap="round"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="514" y="168" width="178" height="248" rx="12" fill="#fff" stroke="#101014" stroke-opacity=".14"/>
+    <circle cx="552" cy="208" r="22" fill="#ff765a"/>
+    <text x="545" y="216" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="850">3</text>
+    <text x="514" y="454" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="19" font-weight="850">结构化 finding</text>
+    <text x="514" y="484" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="650">severity / evidence</text>
+    <rect x="542" y="258" width="86" height="24" rx="8" fill="#ffcc8a"/>
+    <rect x="542" y="306" width="112" height="13" rx="7" fill="#101014" opacity=".14"/>
+    <rect x="542" y="340" width="92" height="13" rx="7" fill="#101014" opacity=".1"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="742" y="168" width="178" height="248" rx="12" fill="#fff" stroke="#101014" stroke-opacity=".14"/>
+    <circle cx="780" cy="208" r="22" fill="#c8ff62"/>
+    <text x="773" y="216" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="850">4</text>
+    <text x="742" y="454" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="19" font-weight="850">发布 soft check</text>
+    <text x="742" y="484" fill="#676b74" font-family="Inter,Arial,sans-serif" font-size="14" font-weight="650">neutral conclusion</text>
+    <circle cx="782" cy="308" r="26" fill="#c8ff62"/>
+    <path d="M770 308l10 10 22-30" fill="none" stroke="#101014" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="822" y="282" width="62" height="14" rx="7" fill="#101014" opacity=".16"/>
+    <rect x="822" y="322" width="76" height="14" rx="7" fill="#101014" opacity=".11"/>
+  </g>
+  <path d="M238 292h44M466 292h44M694 292h44" stroke="#2736ee" stroke-width="9" stroke-linecap="round"/>
+  <path d="M264 270l22 22-22 22M492 270l22 22-22 22M720 270l22 22-22 22" fill="none" stroke="#2736ee" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="300" y="548" width="360" height="54" rx="12" fill="#eee9f6" stroke="#101014" stroke-opacity=".12"/>
+  <text x="328" y="582" fill="#101014" font-family="Inter,Arial,sans-serif" font-size="16" font-weight="850">边界: GitHub CI 仍是 hard gate，MergeWarden 只发布 advisory</text>
+</svg>
