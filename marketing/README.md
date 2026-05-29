@@ -1,19 +1,24 @@
 # MergeWarden Marketing Page
 
-This directory contains a standalone static product page for MergeWarden. It is
-intentionally separate from the Python runtime, CLI, FastAPI app, and GitHub
-Actions workflow code.
+This directory mirrors the static marketing site from `marketing-vercel/` so it
+can be previewed or deployed independently from the runtime code.
 
 ## Preview
 
-Open `index.html` directly in a browser.
+```powershell
+python -m http.server 4174 -d E:\PycharmProjects\Debug\marketing
+```
 
-## Deployment
-
-The page has no build step. It can be deployed as a static site through GitHub
-Pages, Vercel, Netlify, or any static file host by serving this directory.
+Open `http://localhost:4174`.
 
 ## Product Boundary
 
-The page presents MergeWarden as an advisory AI PR gatekeeper. It should not
-claim to replace CI, approve merges, or act as a hard merge gate.
+MergeWarden is presented as an advisory AI PR gatekeeper: neutral soft checks,
+structured evidence, changed-line comments, and run summary artifacts. It does
+not replace CI, auto-approve pull requests, or take over branch protection.
+
+## Design Source
+
+Figma concept: https://www.figma.com/design/rgAm606tvflaRqlkhsuSK7
+
+Asset details are documented in `../docs/marketing/figma-asset-spec.md`.
