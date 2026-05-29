@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 900" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Evidence demo mobile">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fafbfc"/>
+      <stop offset="0.5" stop-color="#f3f4f6"/>
+      <stop offset="1" stop-color="#eee9f6"/>
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#fafbfc"/>
+    </linearGradient>
+    <linearGradient id="darkCard" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1b24"/>
+      <stop offset="1" stop-color="#101014"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-6%" y="-10%" width="112%" height="126%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#15161d" flood-opacity="0.08"/>
+    </filter>
+    <filter id="cardShadowStrong" x="-6%" y="-10%" width="112%" height="126%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#15161d" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrowD" markerWidth="10" markerHeight="10" refX="5" refY="8" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#2736ee"/>
+    </marker>
+    <pattern id="dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#101014" opacity="0.05"/>
+    </pattern>
+  </defs>
+
+  <rect width="720" height="900" fill="url(#bgGrad)"/>
+  <rect width="720" height="900" fill="url(#dots)"/>
+
+  <ellipse cx="560" cy="120" rx="150" ry="90" fill="#c8ff62" opacity="0.07"/>
+  <ellipse cx="120" cy="780" rx="180" ry="80" fill="#ddd5e9" opacity="0.1"/>
+
+  <text x="42" y="54" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="26" font-weight="860">证据缺口如何被补齐</text>
+  <text x="42" y="84" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="14" font-weight="600">三类输入汇聚成一条可复盘 finding。</text>
+
+  <!-- Input Card 1: diff -->
+  <g filter="url(#cardShadow)">
+    <rect x="42" y="120" width="636" height="82" rx="14" fill="url(#cardGrad)" stroke="#101014" stroke-opacity="0.1"/>
+    <rect x="42" y="120" width="636" height="44" rx="14" fill="#101014"/>
+    <rect x="42" y="150" width="636" height="14" fill="#101014"/>
+  </g>
+  <text x="66" y="148" fill="#fff" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="14" font-weight="800">01 diff</text>
+  <text x="170" y="134" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="16" font-weight="800">auth.py 第 46 行改动</text>
+  <rect x="170" y="148" width="248" height="20" rx="5" fill="#c8ff62" opacity="0.4"/>
+  <text x="180" y="163" fill="#101014" font-family="'SFMono-Regular',Consolas,monospace" font-size="10" font-weight="700">+ default_role changed</text>
+
+  <!-- Down arrow 1 -->
+  <line x1="360" y1="206" x2="360" y2="232" stroke="#2736ee" stroke-width="2" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 206v20" fill="none" stroke="#2736ee" stroke-width="1.5" stroke-linecap="round" marker-end="url(#arrowD)"/>
+
+  <!-- Input Card 2: log -->
+  <g filter="url(#cardShadow)">
+    <rect x="42" y="236" width="636" height="82" rx="14" fill="url(#cardGrad)" stroke="#101014" stroke-opacity="0.1"/>
+    <rect x="42" y="236" width="636" height="44" rx="14" fill="#ddd5e9"/>
+    <rect x="42" y="266" width="636" height="14" fill="#ddd5e9"/>
+  </g>
+  <text x="66" y="264" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="14" font-weight="800">02 log</text>
+  <text x="170" y="250" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="16" font-weight="800">pytest 失败日志</text>
+  <rect x="170" y="264" width="196" height="20" rx="5" fill="#ff765a" opacity="0.2"/>
+  <text x="180" y="279" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="13" font-weight="700">guest role bypass</text>
+
+  <!-- Down arrow 2 -->
+  <line x1="360" y1="322" x2="360" y2="348" stroke="#2736ee" stroke-width="2" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 322v20" fill="none" stroke="#2736ee" stroke-width="1.5" stroke-linecap="round" marker-end="url(#arrowD)"/>
+
+  <!-- Input Card 3: summary -->
+  <g filter="url(#cardShadow)">
+    <rect x="42" y="352" width="636" height="82" rx="14" fill="url(#cardGrad)" stroke="#101014" stroke-opacity="0.1"/>
+    <rect x="42" y="352" width="636" height="44" rx="14" fill="#ffcc8a"/>
+    <rect x="42" y="382" width="636" height="14" fill="#ffcc8a"/>
+  </g>
+  <text x="66" y="380" fill="#2f190e" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="14" font-weight="800">03 summary</text>
+  <text x="194" y="366" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="16" font-weight="800">工具调用与停止原因</text>
+  <rect x="194" y="382" width="104" height="22" rx="6" fill="#c8ff62"/>
+  <text x="206" y="398" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="11" font-weight="800">evidence ✓</text>
+  <rect x="308" y="382" width="80" height="22" rx="6" fill="#eee9f6"/>
+  <text x="320" y="398" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="11" font-weight="800">soft only</text>
+
+  <!-- Down arrow 3 -->
+  <line x1="360" y1="438" x2="360" y2="470" stroke="#2736ee" stroke-width="2" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 438v26" fill="none" stroke="#2736ee" stroke-width="1.5" stroke-linecap="round" marker-end="url(#arrowD)"/>
+
+  <!-- Router Card -->
+  <g filter="url(#cardShadowStrong)">
+    <rect x="68" y="478" width="584" height="148" rx="16" fill="url(#darkCard)"/>
+    <rect x="68" y="478" width="584" height="3" rx="1.5" fill="#c8ff62" opacity="0.5"/>
+  </g>
+  <rect x="98" y="506" width="34" height="34" rx="9" fill="#c8ff62"/>
+  <text x="106" y="530" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="18" font-weight="900">M</text>
+  <text x="144" y="530" fill="#fff" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="20" font-weight="860">MergeWarden 证据路由器</text>
+
+  <rect x="98" y="554" width="170" height="30" rx="8" fill="#fff" opacity="0.08"/>
+  <circle cx="114" cy="569" r="4" fill="#c8ff62"/>
+  <text x="126" y="574" fill="#fff" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="700">changed line 匹配</text>
+
+  <rect x="282" y="554" width="156" height="30" rx="8" fill="#fff" opacity="0.08"/>
+  <circle cx="298" cy="569" r="4" fill="#c8ff62"/>
+  <text x="310" y="574" fill="#fff" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="700">diff + log 互证</text>
+
+  <rect x="452" y="554" width="172" height="30" rx="8" fill="#c8ff62" opacity="0.15"/>
+  <circle cx="468" cy="569" r="4" fill="#c8ff62"/>
+  <text x="480" y="574" fill="#c8ff62" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="800">边界确认</text>
+
+  <!-- Down arrow 4 -->
+  <line x1="360" y1="630" x2="360" y2="660" stroke="#2736ee" stroke-width="2" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 630v24" fill="none" stroke="#2736ee" stroke-width="1.5" stroke-linecap="round" marker-end="url(#arrowD)"/>
+
+  <!-- Output Finding Card -->
+  <g filter="url(#cardShadowStrong)">
+    <rect x="68" y="668" width="584" height="150" rx="16" fill="#fff" stroke="#101014" stroke-opacity="0.1"/>
+  </g>
+  <rect x="100" y="696" width="60" height="26" rx="7" fill="#ffcc8a"/>
+  <text x="112" y="714" fill="#2f190e" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="850">⚠ 风险</text>
+  <text x="174" y="714" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="18" font-weight="860">授权默认值改变</text>
+
+  <text x="100" y="746" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="13" font-weight="600">📍 src/auth.py:46 — reviewer 需验证角色来源</text>
+
+  <!-- Evidence tags -->
+  <rect x="100" y="766" width="36" height="22" rx="6" fill="#c8ff62"/>
+  <text x="112" y="782" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="11" font-weight="900">A</text>
+  <text x="144" y="780" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="600">diff 证据</text>
+
+  <rect x="230" y="766" width="36" height="22" rx="6" fill="#ff765a" opacity="0.3"/>
+  <text x="242" y="782" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="11" font-weight="900">B</text>
+  <text x="274" y="780" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="600">日志证据</text>
+
+  <rect x="500" y="766" width="124" height="24" rx="7" fill="#c8ff62"/>
+  <text x="516" y="783" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="11" font-weight="800">写入 PR summary</text>
+
+  <rect x="42" y="856" width="636" height="1" rx="0.5" fill="#101014" opacity="0.06"/>
+</svg>

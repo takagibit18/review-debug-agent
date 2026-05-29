@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 900" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Workflow demo mobile">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fafbfc"/>
+      <stop offset="0.5" stop-color="#f3f4f6"/>
+      <stop offset="1" stop-color="#eee9f6"/>
+    </linearGradient>
+    <linearGradient id="lightCard" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f9fafb"/>
+    </linearGradient>
+    <linearGradient id="darkCard" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1b24"/>
+      <stop offset="1" stop-color="#101014"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-6%" y="-8%" width="112%" height="122%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#15161d" flood-opacity="0.08"/>
+    </filter>
+    <filter id="cardShadowDark" x="-6%" y="-8%" width="112%" height="122%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#15161d" flood-opacity="0.2"/>
+    </filter>
+    <marker id="arrowD" markerWidth="10" markerHeight="10" refX="5" refY="8" orient="auto">
+      <path d="M0 0 10 5 0 10Z" fill="#2736ee"/>
+    </marker>
+    <pattern id="dots" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#101014" opacity="0.05"/>
+    </pattern>
+  </defs>
+
+  <rect width="720" height="900" fill="url(#bgGrad)"/>
+  <rect width="720" height="900" fill="url(#dots)"/>
+
+  <ellipse cx="560" cy="100" rx="160" ry="90" fill="#c8ff62" opacity="0.06"/>
+  <ellipse cx="120" cy="800" rx="150" ry="70" fill="#ddd5e9" opacity="0.1"/>
+
+  <text x="42" y="54" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="26" font-weight="860">四步 advisory 发布链路</text>
+  <text x="42" y="84" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="14" font-weight="600">移动端改成竖向流程，避免宽图被压扁。</text>
+
+  <!-- Step 1 -->
+  <g filter="url(#cardShadow)">
+    <rect x="42" y="120" width="636" height="108" rx="16" fill="url(#lightCard)" stroke="#101014" stroke-opacity="0.1"/>
+  </g>
+  <circle cx="78" cy="160" r="18" fill="#c8ff62"/>
+  <text x="70" y="167" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="16" font-weight="900">1</text>
+  <text x="110" y="152" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="18" font-weight="860">读取 PR diff</text>
+  <text x="110" y="176" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="13" font-weight="600">changed_lines.json — 仅锁定变更行</text>
+  <rect x="110" y="194" width="198" height="20" rx="5" fill="#c8ff62" opacity="0.35"/>
+  <text x="120" y="208" fill="#101014" font-family="'SFMono-Regular',Consolas,monospace" font-size="10" font-weight="700">+ src/auth.py line 46</text>
+
+  <!-- Arrow 1→2 -->
+  <line x1="360" y1="232" x2="360" y2="256" stroke="#2736ee" stroke-width="1.5" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 232v18" fill="none" stroke="#2736ee" stroke-width="1.5" marker-end="url(#arrowD)"/>
+
+  <!-- Step 2 -->
+  <g filter="url(#cardShadowDark)">
+    <rect x="42" y="264" width="636" height="108" rx="16" fill="url(#darkCard)"/>
+    <rect x="42" y="264" width="636" height="3" rx="1.5" fill="#c8ff62" opacity="0.3"/>
+  </g>
+  <circle cx="78" cy="304" r="18" fill="#ddd5e9"/>
+  <text x="70" y="311" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="16" font-weight="900">2</text>
+  <text x="110" y="296" fill="#fff" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="18" font-weight="860">按需收集证据</text>
+  <text x="110" y="320" fill="#c8ff62" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="800">read-only 工具链</text>
+  <rect x="110" y="338" width="170" height="22" rx="7" fill="#fff" opacity="0.08"/>
+  <circle cx="126" cy="349" r="3" fill="#c8ff62" opacity="0.5"/>
+  <text x="138" y="354" fill="#fff" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="12" font-weight="700">代码 / 测试 / 日志</text>
+
+  <!-- Arrow 2→3 -->
+  <line x1="360" y1="376" x2="360" y2="400" stroke="#2736ee" stroke-width="1.5" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 376v18" fill="none" stroke="#2736ee" stroke-width="1.5" marker-end="url(#arrowD)"/>
+
+  <!-- Step 3 -->
+  <g filter="url(#cardShadow)">
+    <rect x="42" y="408" width="636" height="108" rx="16" fill="url(#lightCard)" stroke="#101014" stroke-opacity="0.1"/>
+  </g>
+  <circle cx="78" cy="448" r="18" fill="#ff765a"/>
+  <text x="70" y="455" fill="#fff" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="16" font-weight="900">3</text>
+  <text x="110" y="440" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="18" font-weight="860">结构化 finding</text>
+  <text x="110" y="464" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="13" font-weight="600">severity / evidence / suggestion</text>
+  <rect x="110" y="480" width="70" height="24" rx="6" fill="#ffcc8a"/>
+  <text x="120" y="497" fill="#2f190e" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="11" font-weight="800">medium</text>
+  <rect x="192" y="480" width="78" height="24" rx="6" fill="#c8ff62"/>
+  <text x="202" y="497" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="11" font-weight="800">可定位 ✓</text>
+
+  <!-- Arrow 3→4 -->
+  <line x1="360" y1="520" x2="360" y2="544" stroke="#2736ee" stroke-width="1.5" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 520v18" fill="none" stroke="#2736ee" stroke-width="1.5" marker-end="url(#arrowD)"/>
+
+  <!-- Step 4 -->
+  <g filter="url(#cardShadow)">
+    <rect x="42" y="552" width="636" height="108" rx="16" fill="#f0faf0" stroke="#101014" stroke-opacity="0.1"/>
+  </g>
+  <circle cx="78" cy="592" r="18" fill="#c8ff62"/>
+  <text x="70" y="599" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="16" font-weight="900">4</text>
+  <text x="110" y="584" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="18" font-weight="860">发布 GitHub soft check</text>
+  <text x="110" y="608" fill="#676b74" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="13" font-weight="600">neutral conclusion，不接管合并</text>
+  <rect x="110" y="624" width="120" height="22" rx="7" fill="#ddd5e9"/>
+  <text x="122" y="639" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="10" font-weight="800">not a hard gate</text>
+
+  <!-- Arrow to boundary -->
+  <line x1="360" y1="664" x2="360" y2="690" stroke="#2736ee" stroke-width="1.5" stroke-dasharray="5 4" opacity="0.4"/>
+  <path d="M360 664v20" fill="none" stroke="#2736ee" stroke-width="1.5" marker-end="url(#arrowD)"/>
+
+  <!-- Bottom boundary -->
+  <g filter="url(#cardShadow)">
+    <rect x="68" y="698" width="584" height="52" rx="14" fill="#fff" stroke="#101014" stroke-opacity="0.08"/>
+  </g>
+  <text x="100" y="730" fill="#101014" font-family="Inter,ui-sans-serif,system-ui,'Microsoft YaHei',sans-serif" font-size="14" font-weight="860">责任边界：CI / branch protection 仍是 hard gate</text>
+
+  <rect x="42" y="796" width="636" height="1" rx="0.5" fill="#101014" opacity="0.06"/>
+</svg>

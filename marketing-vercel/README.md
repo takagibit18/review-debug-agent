@@ -1,19 +1,30 @@
 # MergeWarden Vercel Marketing Site
 
-这是一个独立静态宣传站，入口是 `index.html`。它不依赖 npm、不修改 Python runtime、CLI、FastAPI 或 GitHub Actions 代码。
+This is the deployable static marketing surface for MergeWarden. It is separate
+from the Python runtime, CLI, FastAPI app, and GitHub Actions implementation.
 
-## 本地预览
+## Preview
 
 ```powershell
 python -m http.server 4173 -d E:\PycharmProjects\Debug\marketing-vercel
 ```
 
-打开 `http://localhost:4173`。
+Open `http://localhost:4173`.
 
-## 部署
+## Deployment
 
-在 Vercel 中把项目根目录设置为 `marketing-vercel`。无需 build command，输出目录保持默认静态根目录。
+Use `marketing-vercel` as the Vercel project root. No build command is required;
+the directory is served as a static site.
 
-## 产品边界
+## Product Boundary
 
-页面只宣传 MergeWarden 作为 advisory AI PR gatekeeper：它提供 soft check、结构化证据与 changed-line comments，不声称替代 CI、自动 approve 或接管 branch protection。
+The page presents MergeWarden as an advisory AI PR gatekeeper. It provides
+neutral soft checks, structured evidence, changed-line comments, and run
+summary artifacts. It must not claim to replace CI, auto-approve pull requests,
+or take over branch protection.
+
+## Design Source
+
+Figma concept: https://www.figma.com/design/rgAm606tvflaRqlkhsuSK7
+
+Asset details are documented in `../docs/marketing/figma-asset-spec.md`.

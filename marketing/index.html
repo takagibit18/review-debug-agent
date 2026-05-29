@@ -5,2146 +5,331 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="MergeWarden is an advisory AI PR gatekeeper that turns diffs, repository context, and runtime evidence into safer GitHub review signals."
+      content="MergeWarden first-viewport marketing slice using the project design-system tokens."
     />
-    <title>MergeWarden - AI PR Gatekeeper for Safer Merges</title>
-    <style>
-      :root {
-        color-scheme: light;
-        --ink: #101014;
-        --ink-2: #272832;
-        --muted: #666a73;
-        --paper: #f6f7f8;
-        --white: #ffffff;
-        --lavender: #ddd5e9;
-        --lavender-2: #eee9f6;
-        --green: #c8ff62;
-        --green-2: #e8ffb5;
-        --blue: #2736ee;
-        --coral: #ff765a;
-        --border: rgba(16, 16, 20, 0.14);
-        --shadow: 0 24px 70px rgba(21, 22, 29, 0.16);
-        --shadow-soft: 0 14px 44px rgba(21, 22, 29, 0.1);
-        --radius: 8px;
-        --section: clamp(72px, 9vw, 132px);
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-          "Segoe UI", sans-serif;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      html {
-        scroll-behavior: smooth;
-      }
-
-      body {
-        margin: 0;
-        color: var(--ink);
-        background:
-          linear-gradient(180deg, #f7f8f8 0%, #f1f3f0 42%, #ffffff 100%);
-        overflow-x: hidden;
-      }
-
-      a {
-        color: inherit;
-        text-decoration: none;
-      }
-
-      button,
-      input,
-      textarea {
-        font: inherit;
-      }
-
-      .page {
-        min-height: 100vh;
-      }
-
-      .site-header {
-        position: fixed;
-        inset: 18px 20px auto;
-        z-index: 30;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 20px;
-        padding: 10px 12px 10px 14px;
-        border: 1px solid rgba(16, 16, 20, 0.11);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.82);
-        box-shadow: 0 12px 36px rgba(16, 16, 20, 0.08);
-        backdrop-filter: blur(18px);
-      }
-
-      .brand {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        min-width: 0;
-        font-weight: 760;
-        letter-spacing: 0;
-      }
-
-      .brand-mark {
-        position: relative;
-        width: 28px;
-        height: 28px;
-        flex: 0 0 28px;
-        border: 1px solid rgba(16, 16, 20, 0.24);
-        border-radius: 7px;
-        background:
-          linear-gradient(135deg, var(--ink) 0 46%, transparent 46%),
-          linear-gradient(135deg, var(--green) 0 100%);
-        box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.44);
-      }
-
-      .brand-mark::after {
-        content: "";
-        position: absolute;
-        right: 5px;
-        bottom: 5px;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--coral);
-        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.84);
-      }
-
-      .brand span {
-        white-space: nowrap;
-      }
-
-      .nav {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-      }
-
-      .nav a {
-        display: inline-flex;
-        min-height: 36px;
-        align-items: center;
-        border-radius: 8px;
-        padding: 0 12px;
-        color: var(--ink-2);
-        font-size: 13px;
-        font-weight: 650;
-      }
-
-      .nav a:hover,
-      .nav a:focus-visible {
-        background: rgba(39, 54, 238, 0.08);
-        outline: none;
-      }
-
-      .header-actions {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .button {
-        display: inline-flex;
-        min-height: 42px;
-        align-items: center;
-        justify-content: center;
-        gap: 9px;
-        border: 1px solid transparent;
-        border-radius: 8px;
-        padding: 0 18px;
-        font-size: 14px;
-        font-weight: 750;
-        line-height: 1;
-        cursor: pointer;
-        transition:
-          transform 180ms ease,
-          box-shadow 180ms ease,
-          background 180ms ease,
-          border-color 180ms ease;
-      }
-
-      .button svg {
-        width: 16px;
-        height: 16px;
-        flex: 0 0 auto;
-      }
-
-      .button:hover {
-        transform: translateY(-1px);
-      }
-
-      .button:focus-visible {
-        outline: 3px solid rgba(39, 54, 238, 0.24);
-        outline-offset: 2px;
-      }
-
-      .button-primary {
-        color: var(--white);
-        background: var(--ink);
-        box-shadow: 0 12px 30px rgba(16, 16, 20, 0.2);
-      }
-
-      .button-primary:hover {
-        box-shadow: 0 16px 38px rgba(16, 16, 20, 0.26);
-      }
-
-      .button-secondary {
-        color: var(--ink);
-        border-color: rgba(16, 16, 20, 0.18);
-        background: rgba(255, 255, 255, 0.72);
-      }
-
-      .button-secondary:hover {
-        border-color: rgba(16, 16, 20, 0.3);
-        background: var(--white);
-      }
-
-      .hero {
-        position: relative;
-        min-height: min(900px, 88svh);
-        display: grid;
-        align-items: center;
-        padding: 116px 20px 62px;
-        overflow: hidden;
-        background:
-          radial-gradient(circle at 79% 22%, rgba(200, 255, 98, 0.8), transparent 22%),
-          radial-gradient(circle at 18% 12%, rgba(221, 213, 233, 0.9), transparent 24%),
-          linear-gradient(140deg, #f7f8f8 0%, #ece6f5 48%, #f4f7ef 100%);
-      }
-
-      .hero::before {
-        content: "";
-        position: absolute;
-        inset: auto -18vw -24vw auto;
-        width: min(760px, 68vw);
-        aspect-ratio: 1;
-        border-radius: 50%;
-        border: 1px solid rgba(16, 16, 20, 0.08);
-        background:
-          linear-gradient(135deg, rgba(255, 255, 255, 0.76), rgba(221, 213, 233, 0.34)),
-          repeating-linear-gradient(
-            90deg,
-            rgba(16, 16, 20, 0.07) 0 1px,
-            transparent 1px 38px
-          );
-        mask-image: linear-gradient(130deg, transparent 0%, #000 32%, #000 78%, transparent 100%);
-        pointer-events: none;
-      }
-
-      .hero-inner {
-        position: relative;
-        z-index: 2;
-        width: min(1180px, 100%);
-        margin: 0 auto;
-      }
-
-      .hero-copy {
-        width: min(750px, 100%);
-      }
-
-      h1,
-      h2,
-      h3,
-      p {
-        margin: 0;
-      }
-
-      h1 {
-        max-width: 760px;
-        font-size: clamp(68px, 12vw, 156px);
-        line-height: 0.86;
-        font-weight: 860;
-        letter-spacing: 0;
-      }
-
-      .hero-lede {
-        max-width: 650px;
-        margin-top: 28px;
-        color: #30323b;
-        font-size: clamp(20px, 3vw, 31px);
-        font-weight: 690;
-        line-height: 1.12;
-      }
-
-      .hero-text {
-        max-width: 620px;
-        margin-top: 18px;
-        color: var(--muted);
-        font-size: clamp(16px, 1.5vw, 19px);
-        line-height: 1.62;
-      }
-
-      .hero-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 32px;
-      }
-
-      .hero-note {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px 18px;
-        margin-top: 22px;
-        color: rgba(16, 16, 20, 0.67);
-        font-size: 13px;
-        font-weight: 700;
-      }
-
-      .hero-note span {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-      }
-
-      .hero-note span::before {
-        content: "";
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--green);
-        box-shadow: 0 0 0 1px rgba(16, 16, 20, 0.2);
-      }
-
-      .hero-stage {
-        position: absolute;
-        inset: 0;
-        z-index: 1;
-        pointer-events: none;
-      }
-
-      .floating-panel {
-        position: absolute;
-        border: 1px solid rgba(16, 16, 20, 0.13);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.78);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(18px);
-      }
-
-      .pr-panel {
-        right: max(22px, calc((100vw - 1180px) / 2));
-        top: 150px;
-        width: min(470px, 38vw);
-        min-height: 420px;
-        transform: rotate(-2deg);
-      }
-
-      .panel-top {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        min-height: 54px;
-        border-bottom: 1px solid rgba(16, 16, 20, 0.09);
-        padding: 0 16px;
-      }
-
-      .traffic {
-        display: inline-flex;
-        gap: 6px;
-      }
-
-      .traffic i {
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        background: #cdd1d6;
-      }
-
-      .traffic i:nth-child(1) {
-        background: var(--coral);
-      }
-
-      .traffic i:nth-child(2) {
-        background: #ffc145;
-      }
-
-      .traffic i:nth-child(3) {
-        background: var(--green);
-      }
-
-      .panel-title {
-        color: rgba(16, 16, 20, 0.74);
-        font-size: 12px;
-        font-weight: 800;
-        letter-spacing: 0.02em;
-        text-transform: uppercase;
-      }
-
-      .check-run {
-        padding: 18px;
-      }
-
-      .check-status {
-        display: grid;
-        grid-template-columns: 42px 1fr;
-        gap: 13px;
-        align-items: center;
-        padding: 14px;
-        border: 1px solid rgba(16, 16, 20, 0.12);
-        border-radius: 8px;
-        background: #fbfcfb;
-      }
-
-      .status-icon {
-        display: grid;
-        width: 42px;
-        height: 42px;
-        place-items: center;
-        border-radius: 8px;
-        color: var(--ink);
-        background: var(--green);
-        box-shadow: inset 0 0 0 1px rgba(16, 16, 20, 0.14);
-      }
-
-      .status-icon svg {
-        width: 22px;
-        height: 22px;
-      }
-
-      .check-status strong {
-        display: block;
-        font-size: 15px;
-        line-height: 1.2;
-      }
-
-      .check-status span {
-        display: block;
-        margin-top: 4px;
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 650;
-      }
-
-      .finding-list {
-        display: grid;
-        gap: 10px;
-        margin-top: 16px;
-      }
-
-      .finding {
-        display: grid;
-        grid-template-columns: 74px 1fr;
-        gap: 12px;
-        align-items: start;
-        border: 1px solid rgba(16, 16, 20, 0.09);
-        border-radius: 8px;
-        padding: 12px;
-        background: rgba(255, 255, 255, 0.78);
-      }
-
-      .severity {
-        display: inline-flex;
-        min-height: 26px;
-        align-items: center;
-        justify-content: center;
-        border-radius: 6px;
-        padding: 0 8px;
-        color: #2f190e;
-        background: #ffcc8a;
-        font-size: 11px;
-        font-weight: 850;
-        letter-spacing: 0.02em;
-        text-transform: uppercase;
-      }
-
-      .severity.low {
-        color: #263216;
-        background: var(--green-2);
-      }
-
-      .severity.info {
-        color: #121b84;
-        background: #dce1ff;
-      }
-
-      .finding strong {
-        display: block;
-        font-size: 13px;
-        line-height: 1.3;
-      }
-
-      .finding span {
-        display: block;
-        margin-top: 5px;
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 620;
-        line-height: 1.4;
-      }
-
-      .diff-panel {
-        right: max(280px, calc((100vw - 1120px) / 2 + 260px));
-        bottom: 48px;
-        width: min(510px, 43vw);
-        padding: 16px;
-        transform: rotate(1.5deg);
-      }
-
-      .diff-head {
-        display: flex;
-        justify-content: space-between;
-        gap: 16px;
-        border-bottom: 1px solid rgba(16, 16, 20, 0.1);
-        padding-bottom: 12px;
-        font-size: 12px;
-        font-weight: 780;
-      }
-
-      .diff-body {
-        display: grid;
-        gap: 7px;
-        margin-top: 14px;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 12px;
-        line-height: 1.35;
-      }
-
-      .diff-line {
-        display: grid;
-        grid-template-columns: 38px 1fr 88px;
-        gap: 10px;
-        align-items: center;
-        border-radius: 6px;
-        padding: 7px 8px;
-        background: rgba(16, 16, 20, 0.035);
-      }
-
-      .diff-line.added {
-        background: rgba(200, 255, 98, 0.28);
-      }
-
-      .diff-line.warn {
-        background: rgba(255, 118, 90, 0.16);
-      }
-
-      .diff-line span:first-child {
-        color: rgba(16, 16, 20, 0.45);
-      }
-
-      .line-tag {
-        justify-self: end;
-        border-radius: 6px;
-        padding: 4px 7px;
-        color: var(--ink);
-        background: rgba(255, 255, 255, 0.72);
-        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-        font-size: 10px;
-        font-weight: 850;
-        text-transform: uppercase;
-      }
-
-      .comment-card {
-        left: max(20px, calc((100vw - 1180px) / 2 + 18px));
-        bottom: 56px;
-        width: min(328px, 26vw);
-        padding: 14px;
-        transform: rotate(-1.4deg);
-      }
-
-      .comment-card strong {
-        display: block;
-        font-size: 13px;
-      }
-
-      .comment-card p {
-        margin-top: 8px;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.5;
-      }
-
-      .section {
-        padding: var(--section) 20px;
-      }
-
-      .section-inner {
-        width: min(1180px, 100%);
-        margin: 0 auto;
-      }
-
-      .section-heading {
-        display: grid;
-        grid-template-columns: minmax(0, 0.95fr) minmax(280px, 0.55fr);
-        gap: clamp(28px, 5vw, 82px);
-        align-items: end;
-        margin-bottom: clamp(32px, 6vw, 72px);
-      }
-
-      .section-kicker {
-        color: var(--blue);
-        font-size: 13px;
-        font-weight: 850;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      h2 {
-        margin-top: 10px;
-        font-size: clamp(42px, 7vw, 88px);
-        line-height: 0.95;
-        font-weight: 850;
-        letter-spacing: 0;
-      }
-
-      .section-heading p {
-        color: var(--muted);
-        font-size: clamp(16px, 1.5vw, 19px);
-        line-height: 1.64;
-      }
-
-      .gap-section {
-        background: var(--white);
-      }
-
-      .gap-grid {
-        display: grid;
-        grid-template-columns: 0.85fr 1.15fr;
-        gap: 22px;
-      }
-
-      .story-block {
-        display: grid;
-        align-content: space-between;
-        min-height: 480px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: clamp(24px, 4vw, 44px);
-        background: #f8f9f9;
-        box-shadow: var(--shadow-soft);
-      }
-
-      .story-block h3 {
-        max-width: 450px;
-        font-size: clamp(30px, 4vw, 54px);
-        line-height: 1;
-        font-weight: 840;
-      }
-
-      .story-block p {
-        max-width: 470px;
-        color: var(--muted);
-        font-size: 17px;
-        line-height: 1.62;
-      }
-
-      .signal-board {
-        position: relative;
-        min-height: 480px;
-        border: 1px solid rgba(16, 16, 20, 0.13);
-        border-radius: 8px;
-        overflow: hidden;
-        background:
-          linear-gradient(180deg, rgba(221, 213, 233, 0.64), rgba(255, 255, 255, 0.9)),
-          repeating-linear-gradient(
-            0deg,
-            rgba(16, 16, 20, 0.06) 0 1px,
-            transparent 1px 42px
-          );
-        box-shadow: var(--shadow-soft);
-      }
-
-      .signal-title {
-        position: absolute;
-        left: 24px;
-        top: 22px;
-        z-index: 2;
-        color: rgba(16, 16, 20, 0.62);
-        font-size: 12px;
-        font-weight: 850;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      .signal-chart {
-        position: absolute;
-        inset: 72px 32px 98px 32px;
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 18px;
-        align-items: end;
-      }
-
-      .signal-bar {
-        position: relative;
-        display: grid;
-        align-content: end;
-        min-width: 0;
-        border-radius: 8px 8px 0 0;
-        background: rgba(255, 255, 255, 0.62);
-        box-shadow: inset 0 0 0 1px rgba(16, 16, 20, 0.08);
-      }
-
-      .signal-bar::before {
-        content: "";
-        display: block;
-        height: var(--height);
-        border-radius: 8px 8px 0 0;
-        background: var(--fill);
-        box-shadow: inset 0 0 0 1px rgba(16, 16, 20, 0.11);
-      }
-
-      .signal-bar span {
-        position: absolute;
-        left: 10px;
-        right: 10px;
-        bottom: -54px;
-        color: var(--ink-2);
-        font-size: 12px;
-        font-weight: 790;
-        line-height: 1.25;
-      }
-
-      .signal-caption {
-        position: absolute;
-        left: 24px;
-        right: 24px;
-        bottom: 20px;
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: space-between;
-        gap: 12px;
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 700;
-      }
-
-      .workflow {
-        background:
-          linear-gradient(180deg, #f6f7f8 0%, #eff2eb 100%);
-      }
-
-      .workflow-rail {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 12px;
-      }
-
-      .step {
-        position: relative;
-        min-height: 360px;
-        border: 1px solid rgba(16, 16, 20, 0.13);
-        border-radius: 8px;
-        padding: 20px;
-        background: rgba(255, 255, 255, 0.72);
-        box-shadow: var(--shadow-soft);
-        transition:
-          transform 220ms ease,
-          background 220ms ease,
-          border-color 220ms ease;
-      }
-
-      .step.is-active {
-        border-color: rgba(16, 16, 20, 0.28);
-        background: #ffffff;
-        transform: translateY(-8px);
-      }
-
-      .step-number {
-        display: grid;
-        width: 44px;
-        height: 44px;
-        place-items: center;
-        border: 1px solid rgba(16, 16, 20, 0.18);
-        border-radius: 8px;
-        background: var(--lavender);
-        font-weight: 850;
-      }
-
-      .step.is-active .step-number {
-        background: var(--green);
-      }
-
-      .step h3 {
-        margin-top: 28px;
-        font-size: 25px;
-        line-height: 1.05;
-        font-weight: 820;
-      }
-
-      .step p {
-        margin-top: 14px;
-        color: var(--muted);
-        font-size: 15px;
-        line-height: 1.58;
-      }
-
-      .step-code {
-        position: absolute;
-        left: 20px;
-        right: 20px;
-        bottom: 20px;
-        min-height: 88px;
-        border: 1px solid rgba(16, 16, 20, 0.09);
-        border-radius: 8px;
-        padding: 12px;
-        color: rgba(16, 16, 20, 0.72);
-        background: rgba(246, 247, 248, 0.84);
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 11px;
-        line-height: 1.45;
-      }
-
-      .surface {
-        background: var(--ink);
-        color: var(--white);
-      }
-
-      .surface .section-heading p,
-      .surface .section-kicker {
-        color: rgba(255, 255, 255, 0.7);
-      }
-
-      .surface h2 {
-        color: var(--white);
-      }
-
-      .surface-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
-        gap: 20px;
-        align-items: stretch;
-      }
-
-      .check-preview {
-        display: grid;
-        align-content: start;
-        gap: 14px;
-        min-height: 560px;
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 8px;
-        padding: clamp(20px, 3vw, 32px);
-        background:
-          linear-gradient(135deg, rgba(221, 213, 233, 0.12), transparent 42%),
-          #181920;
-      }
-
-      .github-row {
-        display: grid;
-        grid-template-columns: 42px 1fr auto;
-        gap: 14px;
-        align-items: center;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 8px;
-        padding: 14px;
-        background: rgba(255, 255, 255, 0.05);
-      }
-
-      .github-row-icon {
-        display: grid;
-        width: 42px;
-        height: 42px;
-        place-items: center;
-        border-radius: 8px;
-        color: var(--ink);
-        background: var(--green);
-      }
-
-      .github-row h3 {
-        font-size: 16px;
-      }
-
-      .github-row p {
-        margin-top: 5px;
-        color: rgba(255, 255, 255, 0.63);
-        font-size: 13px;
-      }
-
-      .github-state {
-        border-radius: 6px;
-        padding: 7px 9px;
-        color: var(--ink);
-        background: var(--lavender);
-        font-size: 11px;
-        font-weight: 850;
-        text-transform: uppercase;
-      }
-
-      .comment-thread {
-        display: grid;
-        gap: 12px;
-        margin-top: 12px;
-      }
-
-      .thread-item {
-        border: 1px solid rgba(255, 255, 255, 0.11);
-        border-radius: 8px;
-        padding: 14px;
-        background: rgba(255, 255, 255, 0.045);
-      }
-
-      .thread-item strong {
-        display: block;
-        color: var(--white);
-        font-size: 14px;
-      }
-
-      .thread-item p {
-        margin-top: 8px;
-        color: rgba(255, 255, 255, 0.64);
-        font-size: 13px;
-        line-height: 1.52;
-      }
-
-      .thread-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 12px;
-      }
-
-      .thread-meta span {
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        padding: 6px 8px;
-        color: rgba(255, 255, 255, 0.68);
-        font-size: 11px;
-        font-weight: 790;
-      }
-
-      .code-card {
-        display: grid;
-        grid-template-rows: auto 1fr auto;
-        min-height: 560px;
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 8px;
-        overflow: hidden;
-        background: #111218;
-      }
-
-      .code-card-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        min-height: 58px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        padding: 0 16px;
-      }
-
-      .code-card-head span {
-        color: rgba(255, 255, 255, 0.72);
-        font-size: 12px;
-        font-weight: 850;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      .copy-button {
-        min-height: 34px;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 8px;
-        padding: 0 12px;
-        color: var(--white);
-        background: rgba(255, 255, 255, 0.08);
-        font-size: 12px;
-        font-weight: 790;
-        cursor: pointer;
-      }
-
-      .copy-button:hover,
-      .copy-button:focus-visible {
-        background: rgba(255, 255, 255, 0.14);
-        outline: none;
-      }
-
-      pre {
-        margin: 0;
-        overflow: auto;
-        padding: 18px;
-        color: #e9edf1;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 12px;
-        line-height: 1.62;
-      }
-
-      .code-note {
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
-        padding: 16px;
-        color: rgba(255, 255, 255, 0.64);
-        font-size: 13px;
-        line-height: 1.5;
-      }
-
-      .proof {
-        background: #ffffff;
-      }
-
-      .proof-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 14px;
-      }
-
-      .proof-card {
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: clamp(20px, 3vw, 30px);
-        background: #f8f9f9;
-        box-shadow: var(--shadow-soft);
-      }
-
-      .proof-icon {
-        display: grid;
-        width: 46px;
-        height: 46px;
-        place-items: center;
-        border: 1px solid rgba(16, 16, 20, 0.13);
-        border-radius: 8px;
-        background: var(--lavender-2);
-      }
-
-      .proof-icon svg {
-        width: 22px;
-        height: 22px;
-      }
-
-      .proof-card h3 {
-        margin-top: 28px;
-        font-size: 25px;
-        line-height: 1.05;
-      }
-
-      .proof-card p {
-        margin-top: 13px;
-        color: var(--muted);
-        font-size: 15px;
-        line-height: 1.6;
-      }
-
-      .matrix {
-        background:
-          linear-gradient(180deg, #eff2eb 0%, #ffffff 100%);
-      }
-
-      .comparison {
-        overflow: hidden;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.86);
-        box-shadow: var(--shadow-soft);
-      }
-
-      .comparison-row {
-        display: grid;
-        grid-template-columns: 1.05fr repeat(3, 1fr);
-      }
-
-      .comparison-row + .comparison-row {
-        border-top: 1px solid rgba(16, 16, 20, 0.09);
-      }
-
-      .comparison-cell {
-        min-height: 84px;
-        border-left: 1px solid rgba(16, 16, 20, 0.08);
-        padding: 18px;
-        color: var(--muted);
-        font-size: 14px;
-        line-height: 1.45;
-      }
-
-      .comparison-cell:first-child {
-        border-left: 0;
-        color: var(--ink);
-        font-weight: 820;
-      }
-
-      .comparison-head .comparison-cell {
-        min-height: 66px;
-        color: var(--ink);
-        background: var(--lavender-2);
-        font-size: 12px;
-        font-weight: 850;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      .comparison-row .comparison-cell:last-child {
-        background: rgba(200, 255, 98, 0.18);
-      }
-
-      .integrations {
-        background: var(--white);
-      }
-
-      .integration-strip {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 12px;
-      }
-
-      .integration {
-        display: grid;
-        gap: 20px;
-        min-height: 176px;
-        border: 1px solid rgba(16, 16, 20, 0.12);
-        border-radius: 8px;
-        padding: 20px;
-        background: #f8f9f9;
-      }
-
-      .integration svg {
-        width: 26px;
-        height: 26px;
-      }
-
-      .integration strong {
-        display: block;
-        font-size: 20px;
-      }
-
-      .integration span {
-        display: block;
-        margin-top: 7px;
-        color: var(--muted);
-        font-size: 13px;
-        line-height: 1.45;
-      }
-
-      .faq {
-        background:
-          linear-gradient(180deg, #ffffff 0%, #f6f7f8 100%);
-      }
-
-      .faq-list {
-        display: grid;
-        gap: 10px;
-      }
-
-      details {
-        border: 1px solid rgba(16, 16, 20, 0.13);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.8);
-        box-shadow: 0 10px 26px rgba(16, 16, 20, 0.05);
-      }
-
-      summary {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        min-height: 72px;
-        gap: 20px;
-        padding: 0 22px;
-        color: var(--ink);
-        font-size: clamp(17px, 2vw, 22px);
-        font-weight: 800;
-        cursor: pointer;
-      }
-
-      summary::-webkit-details-marker {
-        display: none;
-      }
-
-      summary::after {
-        content: "+";
-        display: grid;
-        width: 30px;
-        height: 30px;
-        place-items: center;
-        border: 1px solid rgba(16, 16, 20, 0.16);
-        border-radius: 8px;
-        font-size: 20px;
-        font-weight: 700;
-      }
-
-      details[open] summary::after {
-        content: "-";
-      }
-
-      details p {
-        max-width: 760px;
-        padding: 0 22px 22px;
-        color: var(--muted);
-        font-size: 16px;
-        line-height: 1.62;
-      }
-
-      .cta {
-        padding: var(--section) 20px 34px;
-        color: var(--white);
-        background:
-          radial-gradient(circle at 82% 18%, rgba(200, 255, 98, 0.28), transparent 24%),
-          linear-gradient(145deg, #101014 0%, #1d1f25 100%);
-      }
-
-      .cta-box {
-        display: grid;
-        grid-template-columns: minmax(0, 0.95fr) minmax(320px, 0.72fr);
-        gap: 32px;
-        align-items: end;
-        width: min(1180px, 100%);
-        margin: 0 auto;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 8px;
-        padding: clamp(28px, 5vw, 54px);
-        background: rgba(255, 255, 255, 0.045);
-      }
-
-      .cta h2 {
-        color: var(--white);
-      }
-
-      .cta p {
-        max-width: 650px;
-        margin-top: 20px;
-        color: rgba(255, 255, 255, 0.68);
-        font-size: 18px;
-        line-height: 1.62;
-      }
-
-      .terminal {
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 8px;
-        overflow: hidden;
-        background: #0b0c10;
-        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
-      }
-
-      .terminal-title {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-height: 44px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.11);
-        padding: 0 14px;
-        color: rgba(255, 255, 255, 0.66);
-        font-size: 12px;
-        font-weight: 780;
-      }
-
-      .terminal code {
-        display: block;
-        padding: 16px;
-        color: #e9edf1;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 12px;
-        line-height: 1.7;
-        white-space: pre-wrap;
-      }
-
-      footer {
-        width: min(1180px, 100%);
-        margin: 34px auto 0;
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: space-between;
-        gap: 20px;
-        color: rgba(255, 255, 255, 0.58);
-        font-size: 13px;
-      }
-
-      footer a {
-        color: rgba(255, 255, 255, 0.82);
-        font-weight: 720;
-      }
-
-      .reveal {
-        opacity: 0;
-        transform: translateY(24px);
-        transition:
-          opacity 620ms ease,
-          transform 620ms ease;
-      }
-
-      .reveal.is-visible {
-        opacity: 1;
-        transform: translateY(0);
-      }
-
-      @media (max-width: 1080px) {
-        .site-header {
-          inset: 12px 12px auto;
-        }
-
-        .nav {
-          display: none;
-        }
-
-        .hero {
-          min-height: 860px;
-          align-items: start;
-        }
-
-        .hero-copy {
-          padding-top: 40px;
-        }
-
-        .pr-panel {
-          top: auto;
-          right: 20px;
-          bottom: 200px;
-          width: min(500px, 56vw);
-        }
-
-        .diff-panel {
-          right: 26px;
-          bottom: 36px;
-          width: min(640px, calc(100vw - 52px));
-        }
-
-        .comment-card {
-          display: none;
-        }
-
-        .section-heading,
-        .gap-grid,
-        .surface-grid,
-        .cta-box {
-          grid-template-columns: 1fr;
-        }
-
-        .workflow-rail {
-          grid-template-columns: repeat(2, 1fr);
-        }
-
-        .proof-grid,
-        .integration-strip {
-          grid-template-columns: repeat(2, 1fr);
-        }
-
-        .comparison-row {
-          grid-template-columns: 0.82fr repeat(3, 1fr);
-        }
-      }
-
-      @media (max-width: 720px) {
-        .site-header {
-          padding: 9px;
-        }
-
-        .brand span {
-          max-width: 148px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .header-actions .button-secondary {
-          display: none;
-        }
-
-        .button {
-          min-height: 40px;
-          padding: 0 13px;
-          font-size: 13px;
-        }
-
-        .hero {
-          min-height: 812px;
-          padding: 96px 16px 46px;
-        }
-
-        h1 {
-          font-size: clamp(58px, 18vw, 94px);
-        }
-
-        .hero-lede {
-          margin-top: 22px;
-          font-size: 22px;
-        }
-
-        .hero-text {
-          font-size: 15px;
-        }
-
-        .hero-actions {
-          align-items: stretch;
-          flex-direction: column;
-          width: min(360px, 100%);
-        }
-
-        .hero-actions .button {
-          width: 100%;
-        }
-
-        .pr-panel {
-          left: 16px;
-          right: 16px;
-          bottom: 200px;
-          width: auto;
-          min-height: 326px;
-          transform: rotate(-1deg);
-        }
-
-        .finding-list .finding:nth-child(3) {
-          display: none;
-        }
-
-        .diff-panel {
-          left: 16px;
-          right: 16px;
-          bottom: 28px;
-          width: auto;
-        }
-
-        .diff-line {
-          grid-template-columns: 30px 1fr;
-        }
-
-        .line-tag {
-          display: none;
-        }
-
-        .section {
-          padding: 72px 16px;
-        }
-
-        .section-heading {
-          margin-bottom: 30px;
-        }
-
-        h2 {
-          font-size: clamp(38px, 13vw, 58px);
-        }
-
-        .story-block,
-        .signal-board,
-        .check-preview,
-        .code-card {
-          min-height: auto;
-        }
-
-        .signal-board {
-          min-height: 420px;
-        }
-
-        .workflow-rail,
-        .proof-grid,
-        .integration-strip {
-          grid-template-columns: 1fr;
-        }
-
-        .step {
-          min-height: 310px;
-        }
-
-        .surface-grid {
-          gap: 14px;
-        }
-
-        .github-row {
-          grid-template-columns: 38px 1fr;
-        }
-
-        .github-state {
-          grid-column: 2;
-          justify-self: start;
-        }
-
-        .comparison {
-          border: 0;
-          background: transparent;
-          box-shadow: none;
-        }
-
-        .comparison-row,
-        .comparison-row.comparison-head {
-          display: block;
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          margin-bottom: 12px;
-          overflow: hidden;
-          background: rgba(255, 255, 255, 0.86);
-        }
-
-        .comparison-head {
-          display: none !important;
-        }
-
-        .comparison-cell {
-          border-left: 0;
-          border-top: 1px solid rgba(16, 16, 20, 0.08);
-          min-height: auto;
-        }
-
-        .comparison-cell:first-child {
-          border-top: 0;
-          background: var(--lavender-2);
-        }
-
-        .comparison-cell:nth-child(2)::before {
-          content: "Manual review";
-        }
-
-        .comparison-cell:nth-child(3)::before {
-          content: "Lint and tests";
-        }
-
-        .comparison-cell:nth-child(4)::before {
-          content: "MergeWarden";
-        }
-
-        .comparison-cell:not(:first-child)::before {
-          display: block;
-          margin-bottom: 8px;
-          color: var(--ink);
-          font-size: 11px;
-          font-weight: 850;
-          letter-spacing: 0.04em;
-          text-transform: uppercase;
-        }
-
-        .cta {
-          padding: 72px 16px 28px;
-        }
-
-        .cta-box {
-          padding: 24px;
-        }
-
-        footer {
-          align-items: flex-start;
-          flex-direction: column;
-        }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        *,
-        *::before,
-        *::after {
-          scroll-behavior: auto !important;
-          transition-duration: 0.01ms !important;
-          animation-duration: 0.01ms !important;
-          animation-iteration-count: 1 !important;
-        }
-      }
-    </style>
+    <title>MergeWarden - Real-Time Linguistic Anomaly Detection for AI</title>
+    <link rel="stylesheet" href="styles.css?v=20260526-solution-diagram-r10" />
   </head>
   <body>
-    <div class="page">
-      <header class="site-header" aria-label="Primary navigation">
-        <a class="brand" href="#top" aria-label="MergeWarden home">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <span>MergeWarden</span>
-        </a>
-        <nav class="nav" aria-label="Sections">
-          <a href="#problem">Problem</a>
-          <a href="#workflow">Workflow</a>
-          <a href="#github">GitHub</a>
-          <a href="#proof">Proof</a>
-          <a href="#faq">FAQ</a>
-        </nav>
-        <div class="header-actions">
-          <a class="button button-secondary" href="#proof">See proof</a>
-          <a class="button button-primary" href="#github">Get action</a>
-        </div>
-      </header>
-
-      <main id="top">
-        <section class="hero" aria-labelledby="hero-title">
-          <div class="hero-stage" aria-hidden="true">
-            <div class="floating-panel pr-panel">
-              <div class="panel-top">
-                <span class="traffic"><i></i><i></i><i></i></span>
-                <span class="panel-title">MergeWarden check</span>
-              </div>
-              <div class="check-run">
-                <div class="check-status">
-                  <span class="status-icon">
-                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <path d="M20 7 10.2 17 5 11.8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                  </span>
-                  <div>
-                    <strong>Neutral advisory complete</strong>
-                    <span>3 findings, 2 inline candidates, no hard block</span>
-                  </div>
-                </div>
-                <div class="finding-list">
-                  <div class="finding">
-                    <span class="severity">Risk</span>
-                    <div>
-                      <strong>Cache bypass changes auth behavior</strong>
-                      <span>Evidence from diff, route contract, and test output.</span>
-                    </div>
-                  </div>
-                  <div class="finding">
-                    <span class="severity low">Patch</span>
-                    <div>
-                      <strong>Inline comment restricted to changed line</strong>
-                      <span>Unchanged files stay evidence, not comment targets.</span>
-                    </div>
-                  </div>
-                  <div class="finding">
-                    <span class="severity info">Trace</span>
-                    <div>
-                      <strong>Run summary attached as artifact</strong>
-                      <span>Model, tool calls, budget state, and stop reason included.</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="floating-panel diff-panel">
-              <div class="diff-head">
-                <span>src/auth/session.ts</span>
-                <span>changed hunk</span>
-              </div>
-              <div class="diff-body">
-                <div class="diff-line"><span>44</span><code>if (!session) return redirect()</code><span class="line-tag">context</span></div>
-                <div class="diff-line added"><span>45</span><code>const role = await cache.get(user.id)</code><span class="line-tag">added</span></div>
-                <div class="diff-line warn"><span>46</span><code>return role || "member"</code><span class="line-tag">review</span></div>
-                <div class="diff-line"><span>47</span><code>audit.log("session:checked")</code><span class="line-tag">evidence</span></div>
-              </div>
-            </div>
-
-            <div class="floating-panel comment-card">
-              <strong>Advisory comment</strong>
-              <p>
-                This fallback changes the authorization default. Keep GitHub CI as the
-                hard gate, but ask a reviewer to verify the role source before merge.
-              </p>
-            </div>
-          </div>
-
-          <div class="hero-inner">
-            <div class="hero-copy reveal">
-              <h1 id="hero-title">MergeWarden</h1>
-              <p class="hero-lede">AI PR Gatekeeper for Safer Merges.</p>
-              <p class="hero-text">
-                Turn diffs, repository context, test output, and run artifacts into
-                GitHub-ready advisory signals. MergeWarden helps reviewers see the
-                risk CI cannot explain while leaving merge authority with your branch
-                protection.
-              </p>
-              <div class="hero-actions">
-                <a class="button button-primary" href="#github">
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                  Add to GitHub Actions
-                </a>
-                <a class="button button-secondary" href="#workflow">
-                  See workflow
-                </a>
-              </div>
-              <div class="hero-note">
-                <span>Advisory-only checks</span>
-                <span>Changed-line comments</span>
-                <span>CLI/API compatible</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="section gap-section" id="problem" aria-labelledby="problem-title">
-          <div class="section-inner">
-            <div class="section-heading reveal">
-              <div>
-                <div class="section-kicker">Review signal gap</div>
-                <h2 id="problem-title">Your PRs move faster than the evidence around them.</h2>
-              </div>
-              <p>
-                Tests are essential, but they usually prove a known contract. Human
-                reviewers still own the gaps: changed assumptions, missing context,
-                risky defaults, and failures that need a precise next step.
-              </p>
-            </div>
-
-            <div class="gap-grid">
-              <article class="story-block reveal">
-                <h3>Soft checks for risks that should not become silent.</h3>
-                <p>
-                  MergeWarden does not replace CI. It adds a structured review layer
-                  that explains why a PR may need attention, where the evidence came
-                  from, and what a reviewer should verify before merge.
-                </p>
-              </article>
-
-              <div class="signal-board reveal" aria-label="Review signal board">
-                <div class="signal-title">Risk visibility over a PR lifecycle</div>
-                <div class="signal-chart">
-                  <div class="signal-bar" style="--height: 46%; --fill: #ddd5e9">
-                    <span>Static checks catch style and known contracts</span>
-                  </div>
-                  <div class="signal-bar" style="--height: 68%; --fill: #c8ff62">
-                    <span>Review context catches changed behavior</span>
-                  </div>
-                  <div class="signal-bar" style="--height: 86%; --fill: #ff765a">
-                    <span>Evidence-backed advisory keeps the risk visible</span>
-                  </div>
-                </div>
-                <div class="signal-caption">
-                  <span>Diff-first</span>
-                  <span>Workspace-aware</span>
-                  <span>Reviewer-owned</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="section workflow" id="workflow" aria-labelledby="workflow-title">
-          <div class="section-inner">
-            <div class="section-heading reveal">
-              <div>
-                <div class="section-kicker">How it works</div>
-                <h2 id="workflow-title">From changed lines to review-ready advice.</h2>
-              </div>
-              <p>
-                The runtime follows the same product boundary as the core repo:
-                CLI and FastAPI produce stable structured output, while GitHub
-                Actions turns that output into a neutral advisory surface.
-              </p>
-            </div>
-
-            <div class="workflow-rail" data-step-rail>
-              <article class="step is-active reveal">
-                <div class="step-number">01</div>
-                <h3>Start with the PR diff.</h3>
-                <p>
-                  MergeWarden treats the submitted diff as the target and uses the
-                  repository snapshot only for context reads.
-                </p>
-                <div class="step-code">review --diff<br />changed_lines.json<br />workspace snapshot</div>
-              </article>
-              <article class="step reveal">
-                <div class="step-number">02</div>
-                <h3>Gather evidence on demand.</h3>
-                <p>
-                  Read-only tools inspect adjacent files, contracts, logs, and tests
-                  when the model needs more than the patch.
-                </p>
-                <div class="step-code">grep<br />read_file<br />run_tests<br />event logs</div>
-              </article>
-              <article class="step reveal">
-                <div class="step-number">03</div>
-                <h3>Format structured findings.</h3>
-                <p>
-                  Output stays machine-consumable: severity, location, evidence,
-                  suggestion, confidence, and run summary artifacts.
-                </p>
-                <div class="step-code">ReviewResponse<br />RunArtifactSummary<br />JSONL trace</div>
-              </article>
-              <article class="step reveal">
-                <div class="step-number">04</div>
-                <h3>Publish advisory feedback.</h3>
-                <p>
-                  GitHub receives a neutral check and optional inline comments
-                  limited to changed lines.
-                </p>
-                <div class="step-code">github-advisory publish<br />dry-run first<br />fingerprints</div>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <section class="section surface" id="github" aria-labelledby="github-title">
-          <div class="section-inner">
-            <div class="section-heading reveal">
-              <div>
-                <div class="section-kicker">GitHub Actions first</div>
-                <h2 id="github-title">A product surface where your team already reviews.</h2>
-              </div>
-              <p>
-                The first distribution path is not a web dashboard. It is a GitHub
-                workflow that writes review evidence back into the pull request.
-              </p>
-            </div>
-
-            <div class="surface-grid">
-              <div class="check-preview reveal">
-                <div class="github-row">
-                  <span class="github-row-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none">
-                      <path d="M20 7 10.2 17 5 11.8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                  </span>
-                  <div>
-                    <h3>MergeWarden advisory</h3>
-                    <p>Completed with neutral conclusion. CI remains the hard merge gate.</p>
-                  </div>
-                  <span class="github-state">Neutral</span>
-                </div>
-
-                <div class="comment-thread">
-                  <article class="thread-item">
-                    <strong>Inline finding on changed line</strong>
-                    <p>
-                      The new cache fallback can turn an unknown role into a valid
-                      member role. Please confirm the authorization default before merge.
-                    </p>
-                    <div class="thread-meta">
-                      <span>severity: risk</span>
-                      <span>confidence: medium</span>
-                      <span>line: changed</span>
-                    </div>
-                  </article>
-                  <article class="thread-item">
-                    <strong>Summary-only finding</strong>
-                    <p>
-                      Related test coverage is missing, but the best evidence location
-                      is outside the patch. Keep this in the check body instead of
-                      writing a noisy inline comment.
-                    </p>
-                    <div class="thread-meta">
-                      <span>summary only</span>
-                      <span>artifact linked</span>
-                      <span>reviewer-owned</span>
-                    </div>
-                  </article>
-                  <article class="thread-item">
-                    <strong>Lifecycle metadata</strong>
-                    <p>
-                      Hidden fingerprints let later runs update matching findings and
-                      mark stale comments without editing human feedback.
-                    </p>
-                    <div class="thread-meta">
-                      <span>mergewarden:comment</span>
-                      <span>dedupe</span>
-                      <span>stale state</span>
-                    </div>
-                  </article>
-                </div>
-              </div>
-
-              <div class="code-card reveal">
-                <div class="code-card-head">
-                  <span>.github/workflows/github-advisory.yml</span>
-                  <button class="copy-button" type="button" data-copy="#workflow-code">Copy</button>
-                </div>
-                <pre id="workflow-code">name: MergeWarden advisory
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-permissions:
-  contents: read
-  checks: write
-  pull-requests: write
-
-jobs:
-  advisory:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build PR diff
-        run: python scripts/github_changed_lines.py --output changed_lines.json
-      - name: Review diff
-        run: >
-          python cli.py review .
-          --diff
-          --output-json review_response.json
-          --summary-json run_summary.json
-      - name: Publish advisory
-        run: >
-          python cli.py github-advisory publish
-          --repo "$GITHUB_REPOSITORY"
-          --pr-number "${{ github.event.pull_request.number }}"
-          --head-sha "${{ github.event.pull_request.head.sha }}"
-          --response-json review_response.json
-          --changed-lines-json changed_lines.json
-          --dry-run</pre>
-                <div class="code-note">
-                  Dry-run is the default planning surface. Use publish mode only when
-                  the token has write permissions and the team is ready for PR feedback.
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="section proof" id="proof" aria-labelledby="proof-title">
-          <div class="section-inner">
-            <div class="section-heading reveal">
-              <div>
-                <div class="section-kicker">What makes it useful</div>
-                <h2 id="proof-title">Evidence beats another ungrounded opinion.</h2>
-              </div>
-              <p>
-                The product value is not a louder bot. It is a review signal that
-                carries location discipline, runtime traceability, and a clear boundary
-                between advice and authority.
-              </p>
-            </div>
-
-            <div class="proof-grid">
-              <article class="proof-card reveal">
-                <div class="proof-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none">
-                    <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
-                  </svg>
-                </div>
-                <h3>Diff-first review</h3>
-                <p>
-                  Review findings intended for inline feedback must point back to a
-                  changed line or changed hunk. Context remains evidence.
-                </p>
-              </article>
-
-              <article class="proof-card reveal">
-                <div class="proof-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none">
-                    <path d="M12 3v18M4 8h16M6 16h12" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
-                  </svg>
-                </div>
-                <h3>Run summaries</h3>
-                <p>
-                  Every run can expose status, model, token use, tool calls, stop
-                  reasons, artifact paths, and publish state.
-                </p>
-              </article>
-
-              <article class="proof-card reveal">
-                <div class="proof-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none">
-                    <path d="M6 12.5 10 16l8-9M4 4h16v16H4z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </div>
-                <h3>Soft by contract</h3>
-                <p>
-                  MergeWarden provides suggestions, checks, and evidence. GitHub CI
-                  and branch protection remain responsible for mergeability.
-                </p>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <section class="section matrix" aria-labelledby="matrix-title">
-          <div class="section-inner">
-            <div class="section-heading reveal">
-              <div>
-                <div class="section-kicker">Coverage ownership</div>
-                <h2 id="matrix-title">Human reviewers keep authority. The agent owns the paperwork.</h2>
-              </div>
-              <p>
-                Keep the approval decision human and policy-driven, while moving the
-                repeatable evidence gathering into an auditable toolchain.
-              </p>
-            </div>
-
-            <div class="comparison reveal" role="table" aria-label="Review responsibility comparison">
-              <div class="comparison-row comparison-head" role="row">
-                <div class="comparison-cell" role="columnheader">Review task</div>
-                <div class="comparison-cell" role="columnheader">Manual review</div>
-                <div class="comparison-cell" role="columnheader">Lint and tests</div>
-                <div class="comparison-cell" role="columnheader">MergeWarden</div>
-              </div>
-              <div class="comparison-row" role="row">
-                <div class="comparison-cell" role="cell">Find risky changed behavior</div>
-                <div class="comparison-cell" role="cell">Human memory and time</div>
-                <div class="comparison-cell" role="cell">Only known assertions</div>
-                <div class="comparison-cell" role="cell">Diff plus contextual evidence</div>
-              </div>
-              <div class="comparison-row" role="row">
-                <div class="comparison-cell" role="cell">Place comments precisely</div>
-                <div class="comparison-cell" role="cell">Manual line selection</div>
-                <div class="comparison-cell" role="cell">Usually outside review copy</div>
-                <div class="comparison-cell" role="cell">Changed-line candidates only</div>
-              </div>
-              <div class="comparison-row" role="row">
-                <div class="comparison-cell" role="cell">Explain failure evidence</div>
-                <div class="comparison-cell" role="cell">Depends on reviewer bandwidth</div>
-                <div class="comparison-cell" role="cell">Logs without synthesis</div>
-                <div class="comparison-cell" role="cell">Structured evidence and next step</div>
-              </div>
-              <div class="comparison-row" role="row">
-                <div class="comparison-cell" role="cell">Decide whether to merge</div>
-                <div class="comparison-cell" role="cell">Human owned</div>
-                <div class="comparison-cell" role="cell">CI owned</div>
-                <div class="comparison-cell" role="cell">Never the hard authority</div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="section integrations" aria-labelledby="integrations-title">
-          <div class="section-inner">
-            <div class="section-heading reveal">
-              <div>
-                <div class="section-kicker">Works where reviews happen</div>
-                <h2 id="integrations-title">No new dashboard required for the first product loop.</h2>
-              </div>
-              <p>
-                The promotional site is separate from runtime. The product itself stays
-                centered on command output, HTTP contracts, CI artifacts, and GitHub PRs.
-              </p>
-            </div>
-
-            <div class="integration-strip">
-              <article class="integration reveal">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M7 8h10M7 12h10M7 16h6M4 4h16v16H4z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-                <div>
-                  <strong>CLI</strong>
-                  <span>Local review and debug commands for reproducible demos.</span>
-                </div>
-              </article>
-              <article class="integration reveal">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M4 7h16M7 4v6M17 4v6M6 14h12M6 18h8" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" />
-                </svg>
-                <div>
-                  <strong>FastAPI</strong>
-                  <span>Synchronous thin routes over the same Pydantic contracts.</span>
-                </div>
-              </article>
-              <article class="integration reveal">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M8 12h8M12 8v8M4 5h16v14H4z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-                <div>
-                  <strong>Actions</strong>
-                  <span>PR diff review, dry-run publishing, and artifact uploads.</span>
-                </div>
-              </article>
-              <article class="integration reveal">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M7 7h10v10H7zM3 12h4M17 12h4M12 3v4M12 17v4" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-                <div>
-                  <strong>Plugin later</strong>
-                  <span>IDE or GitHub App surfaces can follow once the advisory loop is stable.</span>
-                </div>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <section class="section faq" id="faq" aria-labelledby="faq-title">
-          <div class="section-inner">
-            <div class="section-heading reveal">
-              <div>
-                <div class="section-kicker">Common questions</div>
-                <h2 id="faq-title">Built to advise, not to take over your merge policy.</h2>
-              </div>
-              <p>
-                The product story should be conservative because the integration sits
-                close to review authority. That boundary is part of the value.
-              </p>
-            </div>
-
-            <div class="faq-list reveal">
-              <details open>
-                <summary>Is MergeWarden a replacement for CI?</summary>
-                <p>
-                  No. CI and branch protection remain the hard authority. MergeWarden
-                  adds advisory findings, run summaries, and review comments for risks
-                  that tests may not explain.
-                </p>
-              </details>
-              <details>
-                <summary>Why not start with a full web dashboard?</summary>
-                <p>
-                  The strongest first product loop is inside GitHub PR review. A
-                  dashboard can come later for organization-level history, but the
-                  current planning keeps runtime work in CLI, API, Actions, and artifacts.
-                </p>
-              </details>
-              <details>
-                <summary>Can it comment on unchanged files?</summary>
-                <p>
-                  Unchanged files can support evidence. Inline comments should stay on
-                  changed lines or changed hunks, otherwise findings remain in the check
-                  summary.
-                </p>
-              </details>
-              <details>
-                <summary>What should be built after GitHub Actions?</summary>
-                <p>
-                  Comment lifecycle hardening, webhook/auth integration, async execution,
-                  durable storage, and broader operational observability are the natural
-                  next steps.
-                </p>
-              </details>
-            </div>
-          </div>
-        </section>
-
-        <section class="cta" aria-labelledby="cta-title">
-          <div class="cta-box reveal">
-            <div>
-              <h2 id="cta-title">Put safer review evidence into every PR.</h2>
-              <p>
-                Start with a local advisory export, wire it into GitHub Actions, then
-                promote publishing when your team is ready for automated PR feedback.
-              </p>
-              <div class="hero-actions">
-                <a class="button button-primary" href="#github">Review setup</a>
-                <a class="button button-secondary" href="#github">Copy workflow</a>
-              </div>
-            </div>
-            <div class="terminal">
-              <div class="terminal-title">
-                <span class="traffic"><i></i><i></i><i></i></span>
-                <span>repo root</span>
-              </div>
-              <code>python cli.py review . --diff --output-json review_response.json --summary-json run_summary.json
-python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
-python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --dry-run</code>
-            </div>
-          </div>
-
-          <footer>
-            <span>MergeWarden - AI PR Gatekeeper for Safer Merges</span>
-            <span><a href="#top">Back to top</a></span>
-          </footer>
-        </section>
-      </main>
+    <div class="glow-background" aria-hidden="true">
+      <div class="glow-background__core"></div>
+      <div class="glow-background__outer"></div>
+      <div class="glow-background__lower-mist"></div>
+      <div class="glow-background__vignette"></div>
     </div>
 
-    <script>
-      const revealItems = document.querySelectorAll(".reveal");
-      const revealObserver = new IntersectionObserver(
-        entries => {
-          entries.forEach(entry => {
-            if (entry.isIntersecting) {
-              entry.target.classList.add("is-visible");
-              revealObserver.unobserve(entry.target);
-            }
-          });
-        },
-        { threshold: 0.16 }
-      );
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="site-header__about" href="#top">-&gt; About</a>
 
-      revealItems.forEach(item => revealObserver.observe(item));
+      <!-- approximation: text-based logo placeholder until a final MergeWarden mark is provided -->
+      <a class="site-header__logo" href="#top" aria-label="MergeWarden home">
+        <span class="site-header__logo-mark" aria-hidden="true">MERGEWARDEN</span>
+      </a>
 
-      const steps = Array.from(document.querySelectorAll("[data-step-rail] .step"));
-      let activeStep = 0;
+      <a class="site-header__cta" href="mailto:hello@mergewarden.dev">Book a Demo</a>
+    </header>
 
-      window.setInterval(() => {
-        if (!steps.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-          return;
-        }
-        steps[activeStep].classList.remove("is-active");
-        activeStep = (activeStep + 1) % steps.length;
-        steps[activeStep].classList.add("is-active");
-      }, 2600);
+    <main id="top" class="hero-shell">
+      <section class="hero" aria-labelledby="hero-title">
+        <h1 id="hero-title" class="hero__title">
+          <span>Real-Time Linguistic</span>
+          <span>Anomaly Detection</span>
+          <span>for AI</span>
+        </h1>
 
-      const copyButton = document.querySelector("[data-copy]");
-      if (copyButton) {
-        copyButton.addEventListener("click", async () => {
-          const target = document.querySelector(copyButton.dataset.copy);
-          if (!target) return;
+        <div class="hero__topic" aria-label="Current topic">
+          <span>FPGA acceleration</span>
+          <span aria-hidden="true">&lt;-</span>
+        </div>
 
-          const text = target.textContent.trim();
-          try {
-            await navigator.clipboard.writeText(text);
-            copyButton.textContent = "Copied";
-          } catch (error) {
-            const textarea = document.createElement("textarea");
-            textarea.value = text;
-            textarea.setAttribute("readonly", "");
-            textarea.style.position = "fixed";
-            textarea.style.opacity = "0";
-            document.body.appendChild(textarea);
-            textarea.select();
-            document.execCommand("copy");
-            textarea.remove();
-            copyButton.textContent = "Copied";
-          }
+        <div class="hero__edge-line" aria-hidden="true"></div>
+      </section>
 
-          window.setTimeout(() => {
-            copyButton.textContent = "Copy";
-          }, 1800);
-        });
-      }
-    </script>
+      <section class="mission-section" aria-labelledby="mission-title">
+        <div class="mission-section__inner">
+          <div class="mission-section__label">The Mission</div>
+          <div class="mission-section__line" aria-hidden="true"></div>
+          <h2 id="mission-title" class="mission-section__title">
+            <span>You can't block threats you can't</span>
+            <span>see. AI's hidden risks need to be</span>
+            <span>visible and manageable</span>
+          </h2>
+        </div>
+      </section>
+
+      <section class="problem-section" aria-labelledby="problem-title">
+        <div class="problem-section__inner">
+          <div class="problem-section__label">The Problem</div>
+          <div class="problem-section__line" aria-hidden="true"></div>
+          <h2 id="problem-title" class="problem-section__title">
+            AI adoption is outpacing security
+          </h2>
+
+          <div class="problem-section__cards" aria-label="AI security problem cards">
+            <article class="problem-card problem-card--vulnerabilities">
+              <div class="problem-card__content">
+                <svg class="problem-card__icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                  <path d="M16 3.5 25 6.8v7.1c0 6.6-3.9 11.7-9 14.1-5.1-2.4-9-7.5-9-14.1V6.8l9-3.3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+                  <path d="M16 7.6v16.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity=".72" />
+                </svg>
+                <h3>Hidden Vulnerabilities</h3>
+                <p>
+                  62% of organizations deploy AI with known security gaps, and attackers exploit them faster than defenders can respond.
+                </p>
+              </div>
+              <div class="problem-card__matrix" aria-hidden="true">
+                <span>010011001101 1010</span>
+                <span>attack_vector_scan</span>
+                <span>0110 1011 0010 1101</span>
+                <span>risk_signature: elevated</span>
+                <span>100101111010 0011</span>
+                <span>hidden_gap_trace</span>
+                <span>policy_bypass_probe</span>
+                <span>0101 1100 1001 1110</span>
+                <span>model_boundary_drift</span>
+                <span>111001011010</span>
+              </div>
+            </article>
+
+            <article class="problem-card problem-card--failures">
+              <div class="problem-card__content">
+                <svg class="problem-card__icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+                  <circle cx="16" cy="16" r="12.5" stroke="currentColor" stroke-width="1.6" />
+                  <path d="M7.4 7.4 24.6 24.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                <h3>Probabilistic Failures</h3>
+                <p>
+                  45% of AI-generated code fails security tests and introduces OWASP Top 10 risks. Predictive AI security can't guarantee protection.
+                </p>
+              </div>
+              <div class="problem-card__pills" aria-hidden="true">
+                <span>Benign Code</span>
+                <span>Malicious Prompt</span>
+                <span>Benign Code</span>
+                <span>Suspicious</span>
+                <span>Malicious Code</span>
+                <span>Malicious Input</span>
+                <span>Benign Code</span>
+                <span>Malicious Prompt</span>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="solution-section" aria-labelledby="solution-title" data-solution-diagram>
+        <div class="solution-section__ambient" aria-hidden="true"></div>
+
+        <div class="solution-section__copy">
+          <h2 id="solution-title" class="solution-section__title">
+            MergeWarden adds advisory review
+            <span>on top of CI signals</span>
+          </h2>
+          <p class="solution-section__subtitle">
+            MergeWarden reads diffs, PR context, repository state and CI results
+            to surface review suggestions, soft checks and evidence for issues
+            that traditional CI often misses.
+          </p>
+        </div>
+
+        <div class="solution-diagram" role="img" aria-label="Raw Diff, Pull Request, Repository Snapshot and Changed Files flow into GitHub Actions, then CI Checks, then MergeWarden, producing Review Suggestions, Soft Check, Evidence and Risk Notes.">
+          <div class="solution-diagram__halo" aria-hidden="true"></div>
+
+          <div class="solution-diagram__chips solution-diagram__chips--left" aria-label="Input chips">
+            <span class="flow-chip" style="--chip-delay: 900ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4 2.5h5.2L12 5.3v8.2H4z" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" />
+                <path d="M9.2 2.5v3H12M6 8h4M6 10.5h3" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>Raw Diff</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+            <span class="flow-chip" style="--chip-delay: 1000ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="4" cy="4" r="1.45" stroke="currentColor" stroke-width="1.15" />
+                <circle cx="12" cy="12" r="1.45" stroke="currentColor" stroke-width="1.15" />
+                <circle cx="4" cy="12" r="1.45" stroke="currentColor" stroke-width="1.15" />
+                <path d="M4 5.45v5.1M5.45 4H8c2.2 0 4 1.8 4 4v2.55" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+              </svg>
+              <span>Pull Request</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+            <span class="flow-chip" style="--chip-delay: 1100ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <ellipse cx="8" cy="4" rx="4.5" ry="1.7" stroke="currentColor" stroke-width="1.15" />
+                <path d="M3.5 4v4c0 .95 2 1.7 4.5 1.7s4.5-.75 4.5-1.7V4M3.5 8v4c0 .95 2 1.7 4.5 1.7s4.5-.75 4.5-1.7V8" stroke="currentColor" stroke-width="1.15" />
+              </svg>
+              <span>Repository Snapshot</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+            <span class="flow-chip" style="--chip-delay: 1200ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M5.2 5.8 3 8l2.2 2.2M10.8 5.8 13 8l-2.2 2.2M9.2 4.5 6.8 11.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>Changed Files</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+          </div>
+
+          <div class="solution-diagram__nodes" aria-hidden="true">
+            <div class="flow-node flow-node--actions flow-node--left" style="--node-delay: 360ms">
+              <span class="flow-node__body">
+                <span class="github-actions-node" aria-hidden="true">
+                  <span class="github-actions-node__track"></span>
+                  <span class="github-actions-node__dot github-actions-node__dot--top"></span>
+                  <span class="github-actions-node__dot github-actions-node__dot--middle"></span>
+                  <span class="github-actions-node__dot github-actions-node__dot--bottom"></span>
+                </span>
+              </span>
+              <span class="flow-node__label">GitHub Actions</span>
+            </div>
+            <div class="flow-node flow-node--checks" style="--node-delay: 500ms">
+              <span class="ci-checks-group" aria-hidden="true">
+                <span class="ci-check-tile">
+                  <svg viewBox="0 0 20 20" fill="none">
+                    <circle cx="10" cy="10" r="6.6" stroke="currentColor" stroke-width="1.5" />
+                    <path d="m6.9 10 2.2 2.2 4.3-4.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span class="ci-check-tile">
+                  <svg viewBox="0 0 20 20" fill="none">
+                    <path d="M5 5h10v10H5z" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+                    <path d="M7.6 8h4.8M7.6 10h4.8M7.6 12h3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+                  </svg>
+                </span>
+                <span class="ci-check-tile">
+                  <svg viewBox="0 0 20 20" fill="none">
+                    <path d="M10 3.5 15 5.4v3.9c0 3.7-2.2 6.5-5 7.7-2.8-1.2-5-4-5-7.7V5.4z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" />
+                  </svg>
+                </span>
+              </span>
+              <span class="flow-node__label">CI Checks</span>
+            </div>
+            <div class="flow-node flow-node--mergewarden flow-node--right" style="--node-delay: 640ms">
+              <span class="flow-node__body">
+                <img class="mergewarden-logo-node" src="assets/mergewarden-logo-mark.png" alt="" aria-hidden="true" />
+              </span>
+              <span class="flow-node__label">MergeWarden</span>
+            </div>
+          </div>
+
+          <svg class="diagram-connector" viewBox="0 0 1600 520" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <filter id="solution-line-glow" x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="5" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+
+              <path id="solution-path-raw-diff" d="M 333 84 H 359 C 398 100 416 220 536 238" />
+              <path id="solution-path-pull-request" d="M 333 219 H 359 C 392 219 426 250 536 254" />
+              <path id="solution-path-repository-snapshot" d="M 333 354 H 359 C 394 342 426 270 536 266" />
+              <path id="solution-path-changed-files" d="M 333 489 H 359 C 382 460 416 300 536 282" />
+              <path id="solution-path-actions-checks" d="M 628 260 C 648 260 660 260 680 260" />
+              <path id="solution-path-checks-mergewarden" d="M 920 260 C 948 260 978 260 1010 260" />
+              <path id="solution-path-review-suggestions" d="M 1104 238 C 1196 220 1210 84 1239 84 H 1265" />
+              <path id="solution-path-soft-check" d="M 1104 254 C 1196 250 1208 219 1239 219 H 1265" />
+              <path id="solution-path-evidence" d="M 1104 266 C 1196 270 1206 354 1239 354 H 1265" />
+              <path id="solution-path-risk-notes" d="M 1104 282 C 1196 300 1218 489 1239 489 H 1265" />
+              <path id="solution-route-raw-review" d="M 333 84 H 359 C 398 100 416 220 536 238 C 564 244 596 252 628 260 C 648 260 660 260 680 260 C 758 260 842 260 920 260 C 948 260 978 260 1010 260 C 1042 252 1074 244 1104 238 C 1196 220 1210 84 1239 84 H 1265" />
+              <path id="solution-route-pr-soft-check" d="M 333 219 H 359 C 392 219 426 250 536 254 C 564 256 596 258 628 260 C 648 260 660 260 680 260 C 758 260 842 260 920 260 C 948 260 978 260 1010 260 C 1042 258 1074 256 1104 254 C 1196 250 1208 219 1239 219 H 1265" />
+              <path id="solution-route-snapshot-evidence" d="M 333 354 H 359 C 394 342 426 270 536 266 C 564 264 596 262 628 260 C 648 260 660 260 680 260 C 758 260 842 260 920 260 C 948 260 978 260 1010 260 C 1042 262 1074 264 1104 266 C 1196 270 1206 354 1239 354 H 1265" />
+              <path id="solution-route-files-risk" d="M 333 489 H 359 C 382 460 416 300 536 282 C 564 276 596 268 628 260 C 648 260 660 260 680 260 C 758 260 842 260 920 260 C 948 260 978 260 1010 260 C 1042 268 1074 276 1104 282 C 1196 300 1218 489 1239 489 H 1265" />
+            </defs>
+
+            <g class="diagram-connector__glow">
+              <use href="#solution-path-raw-diff" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-pull-request" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-repository-snapshot" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-changed-files" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-actions-checks" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-checks-mergewarden" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-review-suggestions" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-soft-check" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-evidence" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+              <use href="#solution-path-risk-notes" class="diagram-connector__line diagram-connector__line--glow" pathLength="1" />
+            </g>
+
+            <g class="diagram-connector__strokes">
+              <use href="#solution-path-raw-diff" class="diagram-connector__line" pathLength="1" />
+              <use href="#solution-path-pull-request" class="diagram-connector__line" pathLength="1" />
+              <use href="#solution-path-repository-snapshot" class="diagram-connector__line" pathLength="1" />
+              <use href="#solution-path-changed-files" class="diagram-connector__line" pathLength="1" />
+              <use href="#solution-path-actions-checks" class="diagram-connector__line diagram-connector__line--core" pathLength="1" />
+              <use href="#solution-path-checks-mergewarden" class="diagram-connector__line diagram-connector__line--core" pathLength="1" />
+              <use href="#solution-path-review-suggestions" class="diagram-connector__line diagram-connector__line--output" pathLength="1" />
+              <use href="#solution-path-soft-check" class="diagram-connector__line diagram-connector__line--output" pathLength="1" />
+              <use href="#solution-path-evidence" class="diagram-connector__line diagram-connector__line--output" pathLength="1" />
+              <use href="#solution-path-risk-notes" class="diagram-connector__line diagram-connector__line--output" pathLength="1" />
+            </g>
+
+            <g class="diagram-data-packets">
+              <circle class="diagram-data-packet" r="3.2" data-packet-delay="2100">
+                <animateMotion dur="6.4s" begin="indefinite" repeatCount="indefinite" rotate="auto">
+                  <mpath href="#solution-route-raw-review" />
+                </animateMotion>
+                <animate attributeName="opacity" values="0;0;0.9;0.9;0" keyTimes="0;0.08;0.18;0.84;1" dur="6.4s" begin="indefinite" repeatCount="indefinite" />
+              </circle>
+              <circle class="diagram-data-packet diagram-data-packet--soft" r="2.8" data-packet-delay="2700">
+                <animateMotion dur="6.8s" begin="indefinite" repeatCount="indefinite" rotate="auto">
+                  <mpath href="#solution-route-pr-soft-check" />
+                </animateMotion>
+                <animate attributeName="opacity" values="0;0;0.78;0.78;0" keyTimes="0;0.08;0.18;0.84;1" dur="6.8s" begin="indefinite" repeatCount="indefinite" />
+              </circle>
+              <circle class="diagram-data-packet diagram-data-packet--soft" r="2.8" data-packet-delay="3250">
+                <animateMotion dur="7.1s" begin="indefinite" repeatCount="indefinite" rotate="auto">
+                  <mpath href="#solution-route-snapshot-evidence" />
+                </animateMotion>
+                <animate attributeName="opacity" values="0;0;0.76;0.76;0" keyTimes="0;0.08;0.18;0.84;1" dur="7.1s" begin="indefinite" repeatCount="indefinite" />
+              </circle>
+              <circle class="diagram-data-packet" r="3.2" data-packet-delay="3850">
+                <animateMotion dur="7.4s" begin="indefinite" repeatCount="indefinite" rotate="auto">
+                  <mpath href="#solution-route-files-risk" />
+                </animateMotion>
+                <animate attributeName="opacity" values="0;0;0.88;0.88;0" keyTimes="0;0.08;0.18;0.84;1" dur="7.4s" begin="indefinite" repeatCount="indefinite" />
+              </circle>
+            </g>
+          </svg>
+
+          <div class="solution-diagram__chips solution-diagram__chips--right" aria-label="Output chips">
+            <span class="flow-chip" style="--chip-delay: 980ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M3 3.5h10v6.8H7L4.2 13v-2.7H3z" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" />
+                <path d="M5.5 6h5M5.5 8h3.2" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+              </svg>
+              <span>Review Suggestions</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+            <span class="flow-chip" style="--chip-delay: 1080ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M5 3.5h6l1.5 1.6v7.4h-9v-9z" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" />
+                <path d="m5.9 8.4 1.4 1.4 3-3.3" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>Soft Check</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+            <span class="flow-chip" style="--chip-delay: 1180ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4 2.5h5.2L12 5.3v8.2H4z" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" />
+                <path d="M9.2 2.5v3H12M6 8h4M6 10.5h4" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span>Evidence</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+            <span class="flow-chip" style="--chip-delay: 1280ms">
+              <svg class="flow-chip__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M8 3 14 13H2z" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" />
+                <path d="M8 6.4v3.1M8 11.8h.01" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" />
+              </svg>
+              <span>Risk Notes</span>
+              <span class="flow-chip__socket" aria-hidden="true"></span>
+            </span>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="solution-diagram.js?v=20260526-solution-diagram-r8" defer></script>
   </body>
 </html>
