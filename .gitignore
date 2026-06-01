@@ -37,10 +37,17 @@ Thumbs.db
 # Docker
 docker-data/
 
-# Frontend local artifacts
+# AI tool artifacts (screenshots, browser profiles, etc.)
 artifacts/
+.codex-artifacts/
+
+# Frontend
 node_modules/
 .vite/
+
+# Python caches (supplement)
+.mypy_cache/
+.mypy_cache_temp/
 
 # Project-specific
 eval/outputs/
