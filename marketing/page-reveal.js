@@ -11,6 +11,14 @@ const initHeroTypingTitle = () => {
 
   if (!lineNodes.length || textNodes.some(node => !node)) return;
 
+  const startGlow = () => {
+    title.classList.add("is-glow-entering");
+    window.setTimeout(() => {
+      title.classList.remove("is-glow-entering");
+      title.classList.add("is-glowing");
+    }, 1200);
+  };
+
   const complete = () => {
     lines.forEach((line, index) => {
       textNodes[index].textContent = line;
@@ -53,10 +61,7 @@ const initHeroTypingTitle = () => {
       window.setTimeout(() => {
         title.classList.remove("is-typing");
         title.classList.add("is-complete");
-        window.setTimeout(() => {
-          cursor.remove();
-          title.classList.add("is-glowing");
-        }, 360);
+        window.setTimeout(startGlow, 360);
       }, 140);
       return;
     }
@@ -80,7 +85,6 @@ const initHeroTypingTitle = () => {
   reduceMotionQuery.addEventListener?.("change", event => {
     if (!event.matches) return;
     window.clearTimeout(timeoutId);
-    cursor.remove();
     title.classList.add("is-reduced-motion");
     complete();
   });
