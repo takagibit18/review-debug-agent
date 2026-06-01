@@ -37,6 +37,11 @@ Thumbs.db
 # Docker
 docker-data/
 
+# Frontend local artifacts
+artifacts/
+node_modules/
+.vite/
+
 # Project-specific
 eval/outputs/
 runs/
