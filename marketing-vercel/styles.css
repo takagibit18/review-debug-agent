@@ -6,10 +6,12 @@
   --font-mono: "Geist Mono", "IBM Plex Mono", "Roboto Mono", monospace;
   --font-wordmark: Michroma, Orbitron, Audiowide, "Geist Mono", monospace;
 
-  --color-bg-base: #030820;
-  --color-bg-deep: #010414;
-  --color-bg-section: #050a24;
-  --color-bg-section-soft: rgba(5, 10, 36, 0.82);
+  --color-bg-page: #071238;
+  --color-bg-base: #081641;
+  --color-bg-deep: #050b28;
+  --color-bg-section: #071238;
+  --color-bg-section-soft: rgba(8, 18, 56, 0.82);
+  --color-bg-transparent: rgba(7, 18, 56, 0);
   --color-text-primary: #f7f9ff;
   --color-text-secondary: rgba(255, 255, 255, 0.62);
   --color-text-inverse: #12182a;
@@ -58,11 +60,13 @@
     linear-gradient(90deg, rgba(3, 8, 32, 0) 0%, rgba(160, 200, 255, 0.1) 20%, rgba(220, 238, 255, 0.34) 44%, rgba(240, 248, 255, 0.5) 50%, rgba(184, 216, 255, 0.22) 62%, rgba(3, 8, 32, 0) 100%),
     radial-gradient(ellipse at 50% 50%, rgba(236, 247, 255, 0.76) 0%, rgba(206, 228, 255, 0.58) 12%, rgba(142, 188, 252, 0.34) 28%, rgba(74, 136, 232, 0.18) 48%, rgba(28, 70, 168, 0.06) 64%, rgba(3, 8, 32, 0) 78%);
   --glow-lower-mist:
-    radial-gradient(ellipse at 50% 50%, rgba(140, 166, 205, 0.11) 0%, rgba(82, 120, 182, 0.07) 34%, rgba(40, 84, 162, 0.04) 54%, rgba(3, 8, 32, 0) 76%);
-  --glow-section-radial: radial-gradient(ellipse at center, rgba(83, 145, 235, 0.42) 0%, rgba(3, 8, 32, 0) 62%);
-  --section-base-background: transparent;
+    radial-gradient(ellipse at 50% 50%, rgba(140, 166, 205, 0.11) 0%, rgba(82, 120, 182, 0.07) 34%, rgba(40, 84, 162, 0.04) 54%, var(--color-bg-transparent) 76%);
+  --glow-section-radial: radial-gradient(ellipse at center, rgba(83, 145, 235, 0.3) 0%, var(--color-bg-transparent) 64%);
+  --section-base-background: var(--color-bg-section);
+  --section-transition-overlay:
+    linear-gradient(180deg, rgba(9, 22, 66, 0.08) 0%, rgba(8, 20, 62, 0) 30%, rgba(8, 20, 62, 0) 70%, rgba(9, 22, 66, 0.08) 100%);
   --section-transition-mask:
-    linear-gradient(180deg, rgba(1, 4, 20, 0.34) 0%, rgba(3, 8, 32, 0.12) 24%, rgba(3, 8, 32, 0.1) 70%, rgba(1, 4, 20, 0.36) 100%);
+    linear-gradient(180deg, rgba(7, 18, 56, 0.04) 0%, rgba(7, 18, 56, 0) 30%, rgba(7, 18, 56, 0) 70%, rgba(7, 18, 56, 0.04) 100%);
   --header-mask-gradient:
     linear-gradient(
       180deg,
@@ -114,8 +118,9 @@ body {
   overflow-x: hidden;
   color: var(--color-text-primary);
   background:
-    linear-gradient(180deg, var(--color-bg-base) 0%, var(--color-bg-deep) 100%) fixed,
-    var(--color-bg-base);
+    radial-gradient(ellipse at 50% 0%, rgba(28, 62, 128, 0.22), rgba(7, 18, 56, 0) 46%) fixed,
+    linear-gradient(180deg, var(--color-bg-base) 0%, var(--color-bg-page) 44%, var(--color-bg-deep) 100%) fixed,
+    var(--color-bg-page);
   font-family: var(--font-sans);
 }
 
@@ -369,13 +374,13 @@ a {
   inset: 0;
   z-index: 0;
   content: "";
-  background: var(--section-transition-mask);
+  background: var(--section-transition-overlay);
   pointer-events: none;
 }
 
 .mission-section {
   position: relative;
-  min-height: 100vh;
+  min-height: 88vh;
   overflow: hidden;
 }
 
@@ -393,19 +398,17 @@ a {
 }
 
 .mission-section::after {
-  background:
-    var(--section-transition-mask),
-    radial-gradient(ellipse at center, rgba(3, 8, 32, 0) 42%, rgba(1, 4, 20, 0.62) 100%);
+  background: var(--section-transition-overlay);
 }
 
 .mission-section__inner {
   position: relative;
   z-index: 1;
   display: flex;
-  min-height: 100vh;
+  min-height: 88vh;
   flex-direction: column;
   align-items: center;
-  padding: clamp(116px, 14vh, 150px) var(--layout-page-padding-desktop) 120px;
+  padding: clamp(104px, 12vh, 136px) var(--layout-page-padding-desktop) 72px;
   text-align: center;
 }
 
@@ -466,7 +469,7 @@ a {
 
 .problem-section {
   position: relative;
-  min-height: 108vh;
+  min-height: 100vh;
   overflow: hidden;
 }
 
@@ -476,8 +479,7 @@ a {
   z-index: 0;
   content: "";
   background:
-    radial-gradient(ellipse at 50% 25%, rgba(83, 145, 235, 0.11) 0%, rgba(3, 8, 32, 0) 62%),
-    radial-gradient(ellipse at 50% 72%, rgba(83, 145, 235, 0.1) 0%, rgba(3, 8, 32, 0) 58%);
+    radial-gradient(ellipse at 50% 62%, rgba(83, 145, 235, 0.03) 0%, var(--color-bg-transparent) 60%);
   pointer-events: none;
 }
 
@@ -485,10 +487,10 @@ a {
   position: relative;
   z-index: 1;
   display: flex;
-  min-height: 108vh;
+  min-height: 100vh;
   flex-direction: column;
   align-items: center;
-  padding: clamp(116px, 15vh, 170px) var(--layout-page-padding-desktop) 180px;
+  padding: clamp(72px, 9vh, 108px) var(--layout-page-padding-desktop) 156px;
   text-align: center;
 }
 
@@ -1066,6 +1068,9 @@ a {
   position: relative;
   min-height: 100vh;
   overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(11, 27, 78, 0.18) 0%, rgba(7, 18, 56, 0) 24%),
+    var(--section-base-background);
   padding: clamp(120px, 14vh, 160px) var(--layout-page-padding-desktop) clamp(112px, 12vh, 150px);
 }
 
@@ -1088,17 +1093,16 @@ a {
 }
 
 .solution-section::after {
-  background:
-    var(--section-transition-mask),
-    radial-gradient(ellipse at center, rgba(3, 8, 32, 0) 38%, rgba(1, 4, 20, 0.72) 100%);
+  background: var(--section-transition-overlay);
 }
 
 .solution-section__ambient {
   z-index: 0;
   background:
-    radial-gradient(ellipse at 50% 64%, rgba(138, 184, 255, 0.11), rgba(68, 120, 220, 0.07) 26%, rgba(3, 8, 32, 0) 60%),
-    radial-gradient(ellipse at 21% 58%, rgba(76, 138, 238, 0.07), rgba(3, 8, 32, 0) 38%),
-    radial-gradient(ellipse at 79% 58%, rgba(76, 138, 238, 0.07), rgba(3, 8, 32, 0) 38%);
+    radial-gradient(ellipse at 50% 0%, rgba(83, 145, 235, 0.045), var(--color-bg-transparent) 42%),
+    radial-gradient(ellipse at 50% 64%, rgba(138, 184, 255, 0.11), rgba(68, 120, 220, 0.07) 26%, var(--color-bg-transparent) 60%),
+    radial-gradient(ellipse at 21% 58%, rgba(76, 138, 238, 0.07), var(--color-bg-transparent) 38%),
+    radial-gradient(ellipse at 79% 58%, rgba(76, 138, 238, 0.07), var(--color-bg-transparent) 38%);
   filter: blur(36px);
   opacity: 0.54;
 }

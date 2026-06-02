@@ -33,6 +33,17 @@ from src.tools.base import ToolResult, ToolSpec
 logger = logging.getLogger(__name__)
 _SUBMIT_MAX_TOKENS = 2048
 _SYNTHETIC_CONTEXT_MAX_CHARS = 3600
+_DSML_ISSUES_PARAMETER_PATTERN = re.compile(
+    r"parameter\s+name\s*=\s*\\?[\"']issues\\?[\"']",
+    re.IGNORECASE,
+)
+_EMPTY_ISSUES_SUMMARY_CONCERN_PATTERN = re.compile(
+    r"\b("
+    r"one concern|concerns? noted|subtle logic change|logic change|"
+    r"behavioral modification|behavior(?:al)? change|compatibility risk"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 class InferenceEngine:
@@ -371,6 +382,11 @@ class InferenceEngine:
                     logger.warning("Invalid submit_review arguments ignored: %s", error)
                     parse_meta["submit_review_validation_error"] = error
                     continue
+                payload_error = self._validate_submit_review_payload(payload)
+                if payload_error:
+                    logger.warning("Invalid submit_review payload ignored: %s", payload_error)
+                    parse_meta["submit_review_validation_error"] = payload_error
+                    continue
                 normalized_payload, warnings = self._normalize_review_payload(payload)
                 parse_meta["location_warnings"] = warnings
                 try:
@@ -485,6 +501,29 @@ class InferenceEngine:
             return candidate if isinstance(candidate, dict) else None
         except Exception:  # noqa: BLE001
             return None
+
+    @staticmethod
+    def _validate_submit_review_payload(payload: dict[str, Any]) -> str:
+        summary = payload.get("summary")
+        if isinstance(summary, str) and _DSML_ISSUES_PARAMETER_PATTERN.search(summary):
+            return "Invalid submit_review payload: DSML parameter leak for issues in summary"
+        if "issues" not in payload:
+            return "Invalid submit_review payload: missing required issues list"
+        if not isinstance(payload["issues"], list):
+            return (
+                "Invalid submit_review payload: issues must be a list, "
+                f"got {type(payload['issues']).__name__}"
+            )
+        if (
+            isinstance(summary, str)
+            and not payload["issues"]
+            and _EMPTY_ISSUES_SUMMARY_CONCERN_PATTERN.search(summary)
+        ):
+            return (
+                "Invalid submit_review payload: summary mentions review concerns "
+                "but issues is empty"
+            )
+        return ""
 
     @staticmethod
     def _normalize_review_payload(payload: Any) -> tuple[dict[str, Any], list[dict[str, str]]]:
