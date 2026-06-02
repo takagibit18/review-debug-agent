@@ -7,7 +7,7 @@ import json
 from pathlib import Path, PurePath
 
 from src.analyzer.event_log import EventType
-from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
 from src.models.exceptions import ModelTimeoutError
 from src.orchestrator.agent_loop import AgentOrchestrator
@@ -737,6 +737,44 @@ def test_soft_budget_skips_force_submit_finalize(tmp_path, monkeypatch) -> None:
     )
     assert finalize_event["payload"]["finalize_attempt"] is False
     assert finalize_event["payload"]["skip_reason"] == "budget_soft_capped"
+
+
+def test_soft_budget_returns_submitted_compatibility_warning(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TOKEN_BUDGET", "10")
+    orchestrator = AgentOrchestrator()
+
+    async def _soft_cap_with_submitted_issue(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        orchestrator._latest_tokens = 10  # noqa: SLF001
+        return AnalysisPlan(
+            draft_review=ReviewReport(
+                summary="Partial review found a compatibility risk.",
+                issues=[
+                    ReviewIssue(
+                        severity=Severity.WARNING,
+                        location="src/_pytest/python.py:1200",
+                        evidence=(
+                            "if modified_val is None or len(modified_val) > 100:\n"
+                            "        return str(argname) + str(idx)"
+                        ),
+                        suggestion=(
+                            "The limit silently truncates long parameter IDs and can "
+                            "break test selection scripts."
+                        ),
+                        confidence=0.75,
+                    )
+                ],
+            )
+        )
+
+    monkeypatch.setattr(orchestrator, "analyze", _soft_cap_with_submitted_issue)
+
+    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+
+    assert response.context.decisions[-1].result == "stop:budget_soft_capped"
+    assert [issue.location for issue in response.report.issues] == [
+        "src/_pytest/python.py:1200"
+    ]
 
 
 def test_run_timeout_stops_and_skips_force_submit_finalize(tmp_path, monkeypatch) -> None:

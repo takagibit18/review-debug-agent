@@ -266,6 +266,48 @@ def test_merge_review_reports_keeps_specific_risk_warning_below_standard_thresho
     ]
 
 
+def test_merge_review_reports_keeps_compatibility_warning_at_relaxed_threshold() -> None:
+    report = ReviewReport(
+        summary="summary",
+        issues=[
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="src/_pytest/python.py:1195-1198",
+                evidence=(
+                    "+    if modified_val is None or len(modified_val) > 100:\n"
+                    "+        return str(argname) + str(idx)\n"
+                    "+    return modified_val"
+                ),
+                suggestion=(
+                    "Any parameter ID over 100 chars will be replaced with "
+                    "auto-generated IDs."
+                ),
+                confidence=0.70,
+            ),
+            ReviewIssue(
+                severity=Severity.WARNING,
+                location="src/_pytest/python.py:1200",
+                evidence=(
+                    "if modified_val is None or len(modified_val) > 100:\n"
+                    "        return str(argname) + str(idx)"
+                ),
+                suggestion=(
+                    "The limit silently truncates long parameter IDs and can "
+                    "break test selection scripts."
+                ),
+                confidence=0.75,
+            ),
+        ],
+    )
+
+    merged = ResultProcessor.merge_review_reports([report])
+
+    assert [issue.location for issue in merged.issues] == [
+        "src/_pytest/python.py:1195-1198",
+        "src/_pytest/python.py:1200",
+    ]
+
+
 def test_result_processor_budget_from_constructor() -> None:
     processor = ResultProcessor(token_budget=10)
     assert processor.is_budget_exhausted(9) is False
