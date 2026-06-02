@@ -77,6 +77,61 @@ def test_marketing_sections_share_lucien_style_blue_canvas() -> None:
         assert "padding: clamp(72px, 9vh, 108px) var(--layout-page-padding-desktop) 156px;" in problem_inner_rule
 
 
+def test_hero_background_uses_lucien_style_blue_canvas() -> None:
+    for directory in MARKETING_DIRS:
+        css = (directory / "styles.css").read_text(encoding="utf-8")
+
+        root_rule = _rule_body(css, ":root")
+        hero_rule = _rule_body(css, ".hero")
+        vignette_value = root_rule.split("--glow-vignette:", 1)[1].split(";", 1)[0]
+
+        assert "--hero-bg-top-blue:" in root_rule
+        assert "--hero-bg-side-blue:" in root_rule
+        assert "--hero-bg-horizon-blue:" in root_rule
+        assert "--hero-vignette-blue:" in root_rule
+        assert "var(--hero-bg-top-blue)" in hero_rule
+        assert hero_rule.count("var(--hero-bg-side-blue)") == 2
+        assert "var(--hero-bg-horizon-blue)" in hero_rule
+        assert (
+            "linear-gradient(180deg, var(--color-bg-base) 0%, "
+            "var(--color-bg-page) 46%, var(--color-bg-section) 100%)"
+        ) in hero_rule
+        assert "var(--color-bg-deep) 0%" not in hero_rule
+        assert "rgba(3, 8, 32, 0)" not in hero_rule
+        assert "rgba(1, 4, 20" not in vignette_value
+        assert "var(--hero-vignette-blue)" in vignette_value
+
+
+def test_hero_to_mission_transition_uses_soft_overlap() -> None:
+    for directory in MARKETING_DIRS:
+        css = (directory / "styles.css").read_text(encoding="utf-8")
+
+        root_rule = _rule_body(css, ":root")
+        hero_shell_rule = _rule_body(css, ".hero-shell")
+        hero_transition_rule = _rule_body(css, ".hero::after")
+        mission_rule = _rule_body(css, ".mission-section")
+        mission_after_rule = _rule_body(css, ".mission-section::after")
+
+        assert "--hero-to-section-transition:" in root_rule
+        assert "--mission-top-carry:" in root_rule
+        assert "--mission-transition-overlay:" in root_rule
+        assert "background: var(--section-base-background);" in hero_shell_rule
+        assert "bottom: -2px;" in hero_transition_rule
+        assert "z-index: 6;" in hero_transition_rule
+        assert "height: clamp(220px, 26vh, 320px);" in hero_transition_rule
+        assert "background: var(--hero-to-section-transition);" in hero_transition_rule
+        assert "pointer-events: none;" in hero_transition_rule
+        assert "margin-top: -2px;" in mission_rule
+        assert "var(--mission-top-carry)" in mission_rule
+        assert "background: var(--mission-transition-overlay);" in mission_after_rule
+        assert "rgba(7, 18, 56, 0.68) 72%" in root_rule
+        assert "var(--section-base-background) 100%" in root_rule
+        assert "linear-gradient(180deg, var(--section-base-background) 0%" in root_rule
+        assert "radial-gradient(ellipse at 50% 96%" not in root_rule
+        assert "rgba(7, 18, 56, 0.82) 72%" not in root_rule
+        assert "rgba(7, 18, 56, 0.04) 100%" in root_rule
+
+
 def test_hero_title_text_has_safe_paint_area_for_glow() -> None:
     for directory in MARKETING_DIRS:
         css = (directory / "styles.css").read_text(encoding="utf-8")

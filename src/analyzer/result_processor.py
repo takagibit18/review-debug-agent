@@ -24,7 +24,9 @@ class ResultProcessor:
     _RISK_WARNING_PATTERN = re.compile(
         r"\b("
         r"NullReferenceException|exception|regression|breaking|behavior(?:al)? change|"
-        r"user-visible|incorrect|error|fail(?:ure)?|throws?|crash"
+        r"user-visible|compatibility(?: risk)?|incorrect|error|fail(?:ure)?|"
+        r"breaks?|throws?|crash|silent(?:ly)?|truncat(?:e|es|ed|ing|ion)|"
+        r"replac(?:e|es|ed|ing)"
         r")\b",
         re.IGNORECASE,
     )
