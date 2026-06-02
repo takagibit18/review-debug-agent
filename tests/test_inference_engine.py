@@ -134,6 +134,132 @@ class InvalidThenValidSubmitClient(RecordingFakeModelClient):
         )
 
 
+class DsmlLeakThenValidSubmitClient(RecordingFakeModelClient):
+    """Return one DSML-leaked submit_review call, then a repaired valid one."""
+
+    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def,unused-argument]
+        self.calls.append(messages)
+        self.configs.append(config)
+        self.tools.append(tools)
+        if len(self.calls) == 1:
+            return ModelResponse(
+                content="",
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "submit_review",
+                            "arguments": json.dumps(
+                                {
+                                    "summary": (
+                                        "found issue </summary>\n"
+                                        '<DSML parameter name="issues" string="false">'
+                                        '[{"severity":"critical"}]'
+                                    )
+                                }
+                            ),
+                        }
+                    }
+                ],
+                usage=TokenUsage(total_tokens=11),
+                model="fake-model",
+                finish_reason="tool_calls",
+            )
+        return ModelResponse(
+            content="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_review",
+                        "arguments": json.dumps(
+                            {
+                                "summary": "repaired issue",
+                                "issues": [
+                                    {
+                                        "severity": "critical",
+                                        "location": "src/x.py:10",
+                                        "evidence": "+ if modified_val:",
+                                        "suggestion": "Preserve the modified value.",
+                                        "confidence": 0.95,
+                                    }
+                                ],
+                            }
+                        ),
+                    }
+                }
+            ],
+            usage=TokenUsage(total_tokens=13),
+            model="fake-model",
+            finish_reason="tool_calls",
+        )
+
+
+class IssueLikeSummaryThenValidSubmitClient(RecordingFakeModelClient):
+    """Return empty issues with issue-like summary language, then a repaired valid issue."""
+
+    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def,unused-argument]
+        self.calls.append(messages)
+        self.configs.append(config)
+        self.tools.append(tools)
+        if len(self.calls) == 1:
+            return ModelResponse(
+                content="",
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "submit_review",
+                            "arguments": json.dumps(
+                                {
+                                    "summary": (
+                                        "The change is a behavioral modification. "
+                                        "One concern: the callable-generated ID path can "
+                                        "silently replace stable long IDs."
+                                    ),
+                                    "issues": [],
+                                }
+                            ),
+                        }
+                    }
+                ],
+                usage=TokenUsage(total_tokens=11),
+                model="fake-model",
+                finish_reason="tool_calls",
+            )
+        return ModelResponse(
+            content="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_review",
+                        "arguments": json.dumps(
+                            {
+                                "summary": "repaired issue",
+                                "issues": [
+                                    {
+                                        "severity": "warning",
+                                        "location": "src/_pytest/python.py:1200",
+                                        "evidence": (
+                                            "+    if modified_val is None or "
+                                            "len(modified_val) > 100:\n"
+                                            "+        return str(argname) + str(idx)"
+                                        ),
+                                        "suggestion": (
+                                            "Preserve callable-generated IDs or document "
+                                            "the compatibility change."
+                                        ),
+                                        "confidence": 0.85,
+                                    }
+                                ],
+                            }
+                        ),
+                    }
+                }
+            ],
+            usage=TokenUsage(total_tokens=13),
+            model="fake-model",
+            finish_reason="tool_calls",
+        )
+
+
 def test_analyze_appends_tool_feedback_messages(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
@@ -612,6 +738,111 @@ def test_submit_review_arguments_allow_unescaped_control_characters() -> None:
     assert plan.draft_review.issues[0].evidence == "if value:\n    return value"
 
 
+def test_submit_review_payload_requires_explicit_issues_list() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps({"summary": "looks clean"}),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert plan.draft_review is None
+    assert "issues" in parse_meta["submit_review_validation_error"]
+
+
+def test_submit_review_rejects_dsml_issues_parameter_leak_in_summary() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    leaked_summary = (
+        "review notes </summary>\n"
+        '<DSML parameter name="issues" string="false">[]'
+    )
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps({"summary": leaked_summary, "issues": []}),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert plan.draft_review is None
+    assert "DSML" in parse_meta["submit_review_validation_error"]
+
+
+def test_submit_review_rejects_issue_like_summary_with_empty_issues() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps(
+                        {
+                            "summary": (
+                                "This is a behavioral modification. One concern: "
+                                "callable IDs may be replaced."
+                            ),
+                            "issues": [],
+                        }
+                    ),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert plan.draft_review is None
+    assert "summary mentions review concerns" in parse_meta["submit_review_validation_error"]
+
+
+def test_submit_review_allows_empty_issues_with_honest_no_bug_summary() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps(
+                        {
+                            "summary": (
+                                "No concrete bugs, regressions, or breaking changes "
+                                "are evident from the diff alone."
+                            ),
+                            "issues": [],
+                        }
+                    ),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert parse_meta["submit_review_validation_error"] == ""
+    assert plan.draft_review is not None
+    assert plan.draft_review.issues == []
+
+
 def test_invalid_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = InvalidThenValidSubmitClient()
@@ -633,3 +864,49 @@ def test_invalid_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
     assert total_tokens == 24
     assert len(client.calls) == 2
     assert any("issues.0.severity" in message.content for message in client.calls[1])
+
+
+def test_dsml_leaked_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = DsmlLeakThenValidSubmitClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    state = ContextState(goal="Run structured code review")
+    request = ReviewRequest(repo_path=".")
+
+    plan, total_tokens, _ = asyncio.run(
+        engine.analyze(
+            state=state,
+            request=request,
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+        )
+    )
+
+    assert plan.draft_review is not None
+    assert plan.draft_review.issues[0].severity.value == "critical"
+    assert total_tokens == 24
+    assert len(client.calls) == 2
+    assert any("DSML parameter leak" in message.content for message in client.calls[1])
+
+
+def test_issue_like_empty_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = IssueLikeSummaryThenValidSubmitClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    state = ContextState(goal="Run structured code review")
+    request = ReviewRequest(repo_path=".")
+
+    plan, total_tokens, _ = asyncio.run(
+        engine.analyze(
+            state=state,
+            request=request,
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+        )
+    )
+
+    assert plan.draft_review is not None
+    assert plan.draft_review.issues[0].severity.value == "warning"
+    assert total_tokens == 24
+    assert len(client.calls) == 2
+    assert any("summary mentions review concerns" in message.content for message in client.calls[1])

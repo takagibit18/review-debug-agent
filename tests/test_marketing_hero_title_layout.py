@@ -50,6 +50,33 @@ def test_hero_title_uses_white_first_glow_entry_state() -> None:
         assert "drop-shadow(0 0 10px rgba(120, 170, 255, 0.18))" in enter_keyframes
 
 
+def test_marketing_sections_share_lucien_style_blue_canvas() -> None:
+    for directory in MARKETING_DIRS:
+        css = (directory / "styles.css").read_text(encoding="utf-8")
+
+        root_rule = _rule_body(css, ":root")
+        shared_section_rule = _rule_body(
+            css,
+            ".mission-section,\n.problem-section,\n.solution-section,\n.value-cards-section,\n.artifacts-section,\n.advisory-section,\n.cta-section",
+        )
+        mission_rule = _rule_body(css, ".mission-section")
+        mission_inner_rule = _rule_body(css, ".mission-section__inner")
+        problem_rule = _rule_body(css, ".problem-section")
+        problem_inner_rule = _rule_body(css, ".problem-section__inner")
+
+        assert "--color-bg-page: #071238;" in root_rule
+        assert "--section-base-background: var(--color-bg-section);" in root_rule
+        assert "--section-transition-overlay:" in root_rule
+        assert "linear-gradient(180deg, var(--color-bg-base) 0%, var(--color-bg-page) 44%, var(--color-bg-deep) 100%) fixed" in css
+        assert "background: var(--section-base-background);" in shared_section_rule
+        assert "min-height: 88vh;" in mission_rule
+        assert "min-height: 88vh;" in mission_inner_rule
+        assert "padding: clamp(104px, 12vh, 136px) var(--layout-page-padding-desktop) 72px;" in mission_inner_rule
+        assert "min-height: 100vh;" in problem_rule
+        assert "min-height: 100vh;" in problem_inner_rule
+        assert "padding: clamp(72px, 9vh, 108px) var(--layout-page-padding-desktop) 156px;" in problem_inner_rule
+
+
 def test_hero_title_text_has_safe_paint_area_for_glow() -> None:
     for directory in MARKETING_DIRS:
         css = (directory / "styles.css").read_text(encoding="utf-8")
