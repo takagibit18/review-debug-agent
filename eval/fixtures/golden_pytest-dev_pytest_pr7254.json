@@ -30,7 +30,7 @@
         "line": 1197,
         "end_line": 1200,
         "category": "compatibility",
-        "description": "Long parameter IDs are silently replaced with generated arg/index IDs without distinguishing implicit IDs from user-provided IDs and without warning. This can break users who intentionally supplied stable long IDs for reporting or aggregation, and it makes the ID change hard to notice."
+        "description": "The 100-character fallback is applied after idfn-generated values are assigned back to val, so a user-supplied ids callable that intentionally returns a stable long string ID will be silently replaced with argname/index. Explicit ids lists and pytest.param(id=...) bypass this path, but callable-generated IDs do not, making this a compatibility risk for users relying on stable callable IDs."
       }
     ],
     "min_issues": 1,
