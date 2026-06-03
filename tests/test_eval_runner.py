@@ -1216,3 +1216,15 @@ def test_reviewed_golden_fixtures_use_git_workspaces_without_sparse_files(
         assert _validate_expected_locations_against_diff(
             fixture, tmp_path / fixture.id
         ) == []
+
+
+def test_nethermind_expected_issue_tracks_runtime_risk_as_warning() -> None:
+    fixtures = load_fixtures(Path("eval") / "fixtures", suite="golden", reviewed_only=True)
+    fixture = next(
+        item
+        for item in fixtures
+        if item.id == "golden_NethermindEth_nethermind_pr5381"
+    )
+
+    assert fixture.expected.issues[0].category == "runtime"
+    assert fixture.expected.issues[0].severity == Severity.WARNING

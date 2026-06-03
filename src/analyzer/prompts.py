@@ -34,6 +34,12 @@ SYSTEM_PROMPT_REVIEW = (
     "For concrete changed-code bugs, regressions, compatibility breaks, or user-visible behavior changes, "
     "use confidence >= 0.85; reserve lower confidence for speculative or non-blocking concerns. "
     "Do not label something critical unless the diff itself clearly supports it. "
+    "Check for silent behavior changes: fallback paths, coercion, or exception handling "
+    "can make inputs that previously failed, errored, or were rejected quietly succeed. "
+    "Pay special attention to cross-type comparison, precision semantics, boundary values, "
+    "and error exposure semantics. Tests can show intent, but if users receive changed "
+    "behavior without a user-visible warning or explicit documentation, report at least "
+    "a warning with concrete changed-line evidence. "
     "When paths are uncertain, use list_dir first before glob/grep/read_file. "
     "After any Directory/File not found error, validate parent directory first and avoid blind retries."
 )
@@ -70,6 +76,10 @@ FINALIZE_REVIEW_NOTICE = (
     "or user-visible behavior change unless there is a corresponding issue in issues[]. "
     "For concrete changed-code bugs, regressions, compatibility breaks, or user-visible behavior changes, "
     "use confidence >= 0.85; reserve lower confidence for speculative or non-blocking concerns. "
+    "Before submitting an empty review, re-check whether any fallback path, coercion, or exception handling "
+    "creates a silent behavior change in cross-type comparison, precision, boundary-value, "
+    "or error exposure semantics. If users receive changed behavior without a user-visible warning "
+    "or explicit documentation, report at least a warning with concrete changed-line evidence. "
     "If uncertain, return whatever partial findings are supported by what was already read; "
     "an empty issues list is acceptable with an honest summary."
 )

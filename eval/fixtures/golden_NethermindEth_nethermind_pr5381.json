@@ -24,7 +24,7 @@
   "expected": {
     "issues": [
       {
-        "severity": "critical",
+        "severity": "warning",
         "location_pattern": "src/Nethermind/Nethermind.Merge.Plugin/EngineRpcModule.Paris.cs",
         "path": "src/Nethermind/Nethermind.Merge.Plugin/EngineRpcModule.Paris.cs",
         "line": 80,
