@@ -20,3 +20,14 @@ def test_review_prompts_call_out_silent_fallback_semantic_changes() -> None:
     assert "precision" in combined
     assert "error exposure" in combined
     assert "warning" in combined
+
+
+def test_review_prompts_bound_positive_extra_to_independent_root_causes() -> None:
+    combined = f"{SYSTEM_PROMPT_REVIEW}\n{FINALIZE_REVIEW_NOTICE}"
+    normalized = combined.lower()
+
+    assert "independent root cause" in combined
+    assert "downstream symptom" in combined
+    assert "same issue" in combined
+    assert "hypothetical fix" in combined
+    assert "do not promote" in normalized

@@ -40,6 +40,11 @@ SYSTEM_PROMPT_REVIEW = (
     "and error exposure semantics. Tests can show intent, but if users receive changed "
     "behavior without a user-visible warning or explicit documentation, report at least "
     "a warning with concrete changed-line evidence. "
+    "Report one issue per independent root cause. If a downstream symptom, cache/keying "
+    "effect, or behavioral consequence comes from the same defect, include it as evidence "
+    "or suggestion in the same issue instead of creating another warning. "
+    "Do not promote consequences of a hypothetical fix into a separate issue; keep them "
+    "inside the suggestion unless the current diff already creates that independent risk. "
     "When paths are uncertain, use list_dir first before glob/grep/read_file. "
     "After any Directory/File not found error, validate parent directory first and avoid blind retries."
 )
@@ -80,6 +85,10 @@ FINALIZE_REVIEW_NOTICE = (
     "creates a silent behavior change in cross-type comparison, precision, boundary-value, "
     "or error exposure semantics. If users receive changed behavior without a user-visible warning "
     "or explicit documentation, report at least a warning with concrete changed-line evidence. "
+    "Before submitting multiple issues, merge findings that share the same independent root cause; "
+    "a downstream symptom or cache/keying effect should stay in the same issue. "
+    "Do not promote a hypothetical fix side effect into its own warning unless the current diff "
+    "already creates that separate risk. "
     "If uncertain, return whatever partial findings are supported by what was already read; "
     "an empty issues list is acceptable with an honest summary."
 )
