@@ -50,3 +50,23 @@ def test_build_tool_schemas_from_default_registry_is_complete() -> None:
         assert schema["type"] == "function"
         assert schema["function"]["description"]
         assert schema["function"]["parameters"]["type"] == "object"
+
+
+def test_build_tool_schemas_include_review_context_tools_when_registered(tmp_path) -> None:
+    from src.tools.review_context import ReviewToolContext
+
+    context = ReviewToolContext.from_diff(
+        tmp_path,
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n",
+    )
+    schemas = build_tool_schemas(create_default_registry(review_context=context).list_specs())
+
+    by_name = {schema["function"]["name"]: schema for schema in schemas}
+
+    assert {"get_changed_context", "find_symbol_context", "validate_review_draft"}.issubset(by_name)
+    assert by_name["get_changed_context"]["function"]["parameters"]["properties"]["radius"]["maximum"] == 200
