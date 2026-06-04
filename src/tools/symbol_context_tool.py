@@ -16,15 +16,42 @@ from src.tools.symbol_backends import StaticSymbolBackend, SymbolBackend, Symbol
 class FindSymbolContextInput(BaseModel):
     """Validated input for static symbol lookup."""
 
-    symbol: str = Field(..., min_length=1, description="Symbol name to inspect")
-    path: str = Field(default=".", description="File or directory path used as lookup scope")
+    symbol: str = Field(
+        ...,
+        min_length=1,
+        description="Name of the symbol to look up, such as a class name, function name, "
+        "method name, field name, or variable name",
+    )
+    path: str = Field(
+        default=".",
+        description="File or directory path that scopes the lookup; use the changed file "
+        "path to search within that file, or '.' to search the whole repository",
+    )
     mode: Literal["definition", "references", "enclosing", "all"] = Field(
         default="all",
-        description="Which symbol context to return",
+        description="What to return: 'definition' for where the symbol is declared, "
+        "'references' for where it is called or used, 'enclosing' for the class or "
+        "function that contains a given line, or 'all' for everything at once",
     )
-    line: int | None = Field(default=None, ge=1, description="Line for enclosing-symbol lookup")
-    max_results: int = Field(default=30, ge=1, le=200, description="Maximum results to return")
-    context_radius: int = Field(default=4, ge=0, le=40, description="Lines around each result")
+    line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Line number used with mode='enclosing' to find which class or "
+        "function contains this line",
+    )
+    max_results: int = Field(
+        default=30,
+        ge=1,
+        le=200,
+        description="Maximum number of definition or reference results to return",
+    )
+    context_radius: int = Field(
+        default=4,
+        ge=0,
+        le=40,
+        description="Number of source lines to include before and after each result "
+        "so you can see surrounding code without a separate read_file call",
+    )
 
 
 class FindSymbolContextTool(BaseTool):
@@ -47,9 +74,18 @@ class FindSymbolContextTool(BaseTool):
         return ToolSpec(
             name="find_symbol_context",
             description=(
-                "Find static symbol definitions, references, and enclosing class/function "
-                "context without starting an LSP or language server. Use this for targeted "
-                "evidence about definitions, references, fields, constructors, and methods."
+                "Find where a symbol (class, function, method, field, variable) is defined "
+                "and referenced across the repository using static analysis. Returns "
+                "definition sites with their signatures, call sites and usage references "
+                "with surrounding source context, and the enclosing class or function for "
+                "a given line. Use this when you have identified a changed symbol and need "
+                "to understand who calls it, where it is defined, or what downstream code "
+                "might be affected by the change. Prefer this over grep_files when you want "
+                "semantic symbol-level results (definitions and references with confidence "
+                "scores) rather than raw text matches. For languages where static "
+                "analysis returns low confidence, fall back to grep_files for "
+                "reliable text-based search. This tool does not start a language "
+                "server and does not modify files."
             ),
             parameters=FindSymbolContextInput.model_json_schema(),
             safety=ToolSafety.READONLY,

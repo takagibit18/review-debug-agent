@@ -38,10 +38,16 @@ class ReviewDraftIssueInput(BaseModel):
 class ValidateReviewDraftInput(BaseModel):
     """Validated input for review draft validation."""
 
-    summary: str = Field(default="", description="Candidate review summary")
+    summary: str = Field(
+        default="",
+        description="Your candidate review summary text; the tool checks whether it "
+        "mentions bug, regression, or breaking-change keywords without a corresponding "
+        "issue that passes the output filter",
+    )
     issues: list[ReviewDraftIssueInput] = Field(
         default_factory=list,
-        description="Candidate issues to validate before submit_review",
+        description="The list of candidate issues you plan to include in submit_review; "
+        "pass every issue here first so the tool can validate each one before submission",
     )
 
 
@@ -56,10 +62,17 @@ class ValidateReviewDraftTool(BaseTool):
         return ToolSpec(
             name="validate_review_draft",
             description=(
-                "Validate a candidate review draft against deterministic output policy: "
-                "canonical locations, changed-line targeting, evidence specificity, and "
-                "the current critical/warning filter. This gives policy feedback only; "
-                "it does not replace submit_review and does not judge semantic correctness."
+                "Check your candidate review issues against output policy before calling "
+                "submit_review. For each issue, this tool verifies: whether the location "
+                "uses the correct canonical file path format, whether the location points "
+                "to a changed line in the diff, whether the evidence contains concrete "
+                "code or diff snippets, and whether the confidence meets the threshold "
+                "for the chosen severity level. Use this BEFORE submit_review — it gives "
+                "you deterministic policy feedback so you can fix location formatting "
+                "errors, raise confidence on borderline issues, and drop issues that would "
+                "not pass the output filter. This tool only validates policy compliance; "
+                "it does not judge whether your analysis is semantically correct and it "
+                "does not replace submit_review."
             ),
             parameters=ValidateReviewDraftInput.model_json_schema(),
             safety=ToolSafety.READONLY,

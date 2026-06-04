@@ -16,15 +16,40 @@ from src.tools.symbol_backends import StaticSymbolBackend
 class GetChangedContextInput(BaseModel):
     """Validated input for changed context lookup."""
 
-    file_path: str = Field(..., description="Repo-relative file path")
-    line: int | None = Field(default=None, ge=1, description="Start line to inspect")
-    end_line: int | None = Field(default=None, ge=1, description="Optional end line to inspect")
-    hunk_index: int | None = Field(default=None, ge=0, description="Zero-based diff hunk index")
-    radius: int = Field(default=40, ge=1, le=200, description="File context radius")
-    include_imports: bool = Field(default=True, description="Include top import/use/using preview")
+    file_path: str = Field(..., description="Repo-relative path to the changed file to inspect")
+    line: int | None = Field(
+        default=None,
+        ge=1,
+        description="New-side line number to center the source window on; use the changed "
+        "line numbers from the diff hunk header",
+    )
+    end_line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional end line to inspect a range of changed lines",
+    )
+    hunk_index: int | None = Field(
+        default=None,
+        ge=0,
+        description="Zero-based index of the diff hunk to return; use this instead of line "
+        "when you want a specific hunk by its position in the diff",
+    )
+    radius: int = Field(
+        default=40,
+        ge=1,
+        le=200,
+        description="Number of source lines to include before and after the target line "
+        "or hunk in the returned file window",
+    )
+    include_imports: bool = Field(
+        default=True,
+        description="Whether to return the file's top import/use/using statements so you "
+        "can see module dependencies without an extra read_file call",
+    )
     include_enclosing_symbol: bool = Field(
         default=True,
-        description="Include static enclosing class/function/method symbols",
+        description="Whether to return the enclosing class, function, or method symbol "
+        "at the requested line so you know the structural context",
     )
 
 
@@ -40,10 +65,18 @@ class GetChangedContextTool(BaseTool):
         return ToolSpec(
             name="get_changed_context",
             description=(
-                "Return atomic evidence for a changed file: the matching changed diff hunk, "
-                "new-side changed line numbers, nearby source window, top imports, and "
-                "static enclosing symbols. This tool does not judge whether code is buggy "
-                "and does not search across files."
+                "Inspect the diff hunks and surrounding source code of a changed file. "
+                "Returns the matching diff hunk (added and removed lines), the exact changed "
+                "line numbers, a window of nearby source lines, the file's top imports, and "
+                "the enclosing class or function symbol. Use this when you need to understand "
+                "what a diff hunk actually changed and see the code around it before deciding "
+                "whether it introduces a bug or regression. Prefer this over read_file when "
+                "you already have a diff and want the changed region with its immediate "
+                "context — it packages the diff hunk and source window together so you do "
+                "not need multiple read_file calls. This tool only inspects files that "
+                "appear in the diff. Use read_file when you need to examine unchanged "
+                "files that may be affected by the change. It does not search for "
+                "patterns or symbols across files."
             ),
             parameters=GetChangedContextInput.model_json_schema(),
             safety=ToolSafety.READONLY,
