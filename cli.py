@@ -98,6 +98,19 @@ def _render_review_issue(issue: ReviewIssue, index: int) -> None:
     click.echo(f"   Suggested fix: {issue.suggestion}")
 
 
+def _find_blocking_review_error(response: ReviewResponse) -> str | None:
+    """Return a blocking review error that should fail automation, if any."""
+    for error in response.context.errors:
+        message = error.message
+        if error.category == "runtime" and (
+            "Model analysis failed:" in message
+            or "Authentication failed" in message
+            or "auth_failed" in message
+        ):
+            return message
+    return None
+
+
 def _render_debug_response(response: DebugResponse, verbose: bool) -> None:
     """Render a debug response for terminal output."""
     click.echo("Running debug command...")
@@ -182,6 +195,9 @@ def review(
         Path(summary_json).write_text(summary.model_dump_json(indent=2) + "\n", encoding="utf-8")
         click.echo(f"Run summary saved to: {Path(summary_json).as_posix()}")
     _render_review_response(response, ctx.obj["verbose"])
+    blocking_error = _find_blocking_review_error(response)
+    if blocking_error:
+        raise click.ClickException(f"review produced no trusted result: {blocking_error}")
 
 
 @main.command()

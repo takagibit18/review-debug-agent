@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 import cli
 from cli import main
-from src.analyzer.context_state import ContextState
+from src.analyzer.context_state import ContextState, ErrorDetail
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import DebugResponse, ReviewResponse
 
@@ -372,6 +372,54 @@ def test_review_command_can_export_response_and_run_summary(
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["run_id"] == "run-export"
     assert summary["publish_status"] == "not_requested"
+
+
+def test_review_command_fails_after_export_when_model_auth_fails(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "review.json"
+    summary_path = tmp_path / "summary.json"
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-auth-failed",
+            report=ReviewReport(summary="Review pipeline completed with placeholder summary."),
+            context=ContextState(
+                current_files=[request.repo_path],
+                errors=[
+                    ErrorDetail(
+                        file=request.repo_path,
+                        message=(
+                            "Model analysis failed: Authentication failed for the model "
+                            "provider (status=401) [code=auth_failed]"
+                        ),
+                        category="runtime",
+                    )
+                ],
+            ),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "review",
+            ".",
+            "--output-json",
+            str(response_path),
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "review produced no trusted result" in result.output
+    assert "auth_failed" in result.output
+    assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-auth-failed"
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-auth-failed"
 
 
 def test_review_command_renders_triaged_sections(cli_runner: CliRunner, monkeypatch) -> None:
