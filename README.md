@@ -1,210 +1,194 @@
 # MergeWarden
 
-> AI PR Gatekeeper for Safer Merges
+MergeWarden 是面向工程团队的 AI PR 守门员。它会阅读 Pull Request 的代码变更、测试结果与 CI 日志，输出可追溯的审查结论、风险提示和最小修复建议，帮助团队在合并前更快发现隐藏问题。
 
-面向开发团队的 PR 守门 Agent，会审查代码变更、诊断 CI 失败原因，并补充 CI 难以覆盖的风险判断。它默认提供建议、soft check 与可复盘证据，不替代 GitHub CI 对“能否合并”的硬性裁决。
+[查看产品展示页](https://merge-warden.vercel.app/)
 
-## 功能概述
+## 产品定位
 
-- **PR 自动审查**：按严重级别分类问题（安全 / 正确性 / 风格 / 可维护性），支持行号引用与 diff hunk 定位
-- **CI / Debug 辅助**：提取关键报错、推测失败原因、给出验证步骤与最小修复建议
-- **合并风险提示**：结合代码上下文、测试结果和工程约束，提示合并前风险与测试缺口；后续 PR 集成默认以建议或 soft check 形式呈现
+MergeWarden 不替代 GitHub CI、分支保护或人工评审。它作为合并前的智能辅助层，默认以建议、软检查和结构化证据的形式参与 PR 流程，让团队在不增加硬性阻塞的情况下获得更稳定的代码审查反馈。
 
-### 输入
+适合以下场景：
+
+- 希望在 PR 合并前补充 AI 风险审查。
+- 需要快速定位 CI 失败原因并获得可执行修复建议。
+- 想把代码审查结果沉淀为结构化报告、检查摘要和可复盘证据。
+- 需要在 GitHub Actions 中发布非阻塞式建议检查。
+
+## 核心能力
+
+### PR 自动审查
+
+MergeWarden 会围绕安全性、正确性、可维护性和工程规范审查 PR diff，并尽量把问题定位到变更行或变更块。审查结果包含严重级别、位置、证据、建议和置信度，便于开发者直接处理。
+
+### CI 失败诊断
+
+MergeWarden 可以读取测试失败输出和 CI 日志，提取关键报错，推断可能原因，并给出验证步骤与最小修复方向。它的目标不是生成冗长解释，而是帮助开发者尽快找到下一步。
+
+### 合并风险提示
+
+MergeWarden 会结合代码上下文、测试覆盖与工程约束，提示合并前仍需关注的风险，例如测试缺口、未覆盖路径、潜在兼容性问题或需要人工确认的边界条件。
+
+### GitHub 建议式发布
+
+MergeWarden 支持将审查结果发布为 GitHub 软检查和可选 PR 评论。默认试运行，正式发布时也保持仅建议模式：GitHub CI 与分支保护仍然是最终合并权限来源。
+
+## 输入与输出
+
+MergeWarden 支持以下输入：
 
 - 本地仓库路径
-- Git diff / PR patch
-- 指定文件 + 错误日志 / 测试失败输出
+- Git diff 或 PR patch
+- 指定文件、错误日志或测试失败输出
+- GitHub Actions 中生成的 PR diff 与 changed-lines 映射
 
-### 输出
+MergeWarden 输出以下内容：
 
-- 结构化 Review 报告（`severity` / `location` / `evidence` / `suggestion` / `confidence`）
-- Debug 建议与最小修复 diff
-
-Review 输出面向 PR diff：问题定位应优先落在 changed line 或 changed hunk；未变更文件只作为上下文证据，不作为默认 inline comment 目标。
+- 结构化 Review 报告
+- CI 失败诊断建议
+- 最小修复方向或 diff 建议
+- GitHub 建议式软检查摘要
+- 可追踪的事件日志与运行摘要
 
 ## 快速开始
 
 ### 环境要求
 
-- Python 3.11+
-- OpenAI API Key（或兼容 API）
+- Python 3.11 或更高版本
+- OpenAI API Key 或兼容 OpenAI API 的模型服务
 
 ### 本地安装
 
 ```bash
-# 克隆仓库
 git clone https://github.com/<your-org>/mergewarden.git
 cd mergewarden
 
-# 创建虚拟环境并安装依赖
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 
-# 配置环境变量
 cp .env.example .env
-# 编辑 .env 填入你的 API Key
+```
 
-# 运行
+Windows PowerShell 可使用以下方式启用虚拟环境：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+编辑 `.env` 后填入模型服务凭据，然后运行：
+
+```bash
 python cli.py review --help
 python cli.py debug --help
 ```
 
-### Docker
+### Docker 运行
 
 ```bash
-# Build the CLI image.
 docker compose build agent
-
-# Run the same CLI entrypoints inside the container.
 docker compose run --rm agent python cli.py review --help
 docker compose run --rm agent python cli.py debug --help
 ```
 
-The compose service reads `.env` and mounts the current repository at `/app`.
-For a real review/debug run, copy `.env.example` to `.env`, set your OpenAI-compatible
-API credentials, then replace `--help` with the target path and options you want.
-The Docker execute backend smoke test is intentionally manual:
+Docker compose 会读取 `.env`，并将当前仓库挂载到容器的 `/app` 目录。实际审查或诊断时，将 `--help` 替换为目标路径和需要的参数即可。
 
-```bash
-docker build -f Dockerfile.execute -t mergewarden-execute:latest .
-RUN_DOCKER_TESTS=1 pytest -q tests/test_docker_backend_smoke.py -rs
-```
+### FastAPI 服务
 
-### FastAPI
-
-MVP+ includes a synchronous thin HTTP layer over the same orchestrator and
-Pydantic contracts used by the CLI.
+MergeWarden 提供同步 HTTP 接口，复用 CLI 的编排流程和 Pydantic 契约。
 
 ```bash
 uvicorn src.api.app:app --reload
 ```
 
-Available endpoints:
+可用接口：
 
 - `GET /health`
 - `POST /review`
 - `POST /debug`
 - `GET /runs/{run_id}/summary`
 
-### MVP+ status
+## GitHub Actions 集成
 
-MVP+ is complete for the current engineering and numeric eval scope: CLI,
-FastAPI, Docker CLI demo, event logs, workspace-backed golden fixtures, and the
-stable eval gate are in place. The current golden baseline is
-`eval/outputs/20260518_151719_report.json`: schema validity `1.0`, hit rate
-`0.75`, and false-positive rate `0.0`, which clears the stable
-`hit_rate >= 0.6` target. Details are recorded in
-[docs/mvp_plus_eval_closure.md](docs/mvp_plus_eval_closure.md).
+仓库包含 `.github/workflows/github-advisory.yml`，用于在 PR 流程中运行 MergeWarden：
 
-Phase 2 adds productized run summaries and GitHub Actions-friendly advisory
-publishing. Publishing is advisory-only: MergeWarden writes a neutral soft check
-and optional review comments, while GitHub CI / branch protection remains the
-hard merge authority. Dry-run is the default.
+1. 生成 PR diff。
+2. 生成 `changed_lines.json`。
+3. 执行 `review --diff --output-json --summary-json`。
+4. 默认执行建议式发布试运行。
+5. 在具备写权限的同仓库 PR 中发布软检查和可选评论。
+
+发布到 GitHub 时，需要为 `GITHUB_TOKEN` 授权：
+
+- `checks: write`
+- `pull-requests: write`
+
+示例命令：
 
 ```bash
-python -m eval.run diagnose --input eval/outputs/20260518_151719_report.json
-python -m eval.run trend --inputs "eval/outputs/*_report.json"
 python scripts/github_changed_lines.py --diff-file pr.diff --output changed_lines.json
-python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
 python cli.py review . --diff --output-json review_response.json --summary-json run_summary.json
 python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
 ```
 
-The repository includes `.github/workflows/github-advisory.yml` for the PR
-loop: it builds the PR diff, writes `changed_lines.json`, runs
-`review --diff --output-json --summary-json`, dry-runs advisory publishing,
-then publishes on same-repository PRs where `GITHUB_TOKEN` has write
-permissions. It uploads the response, run summary, changed-lines map, PR diff,
-publish result, and event JSONL logs as workflow artifacts.
-
-To publish from GitHub Actions, grant `checks: write` and `pull-requests: write`
-to `GITHUB_TOKEN`, then pass `--publish`. Inline comments are limited to changed
-lines; findings outside changed lines stay in the soft-check summary. MergeWarden
-comments include hidden fingerprints so later runs can update matching comments
-and mark stale findings without touching human comments.
+内联评论仅发布到变更行；无法落到变更行的问题会保留在软检查摘要中。MergeWarden 会为评论写入隐藏指纹，以便后续运行更新匹配评论并标记过期发现，同时避免覆盖人工评论。
 
 ## 项目结构
 
-```
-├── src/
-│   ├── analyzer/          # 核心分析引擎（Analyzer Agent 域）
-│   │   ├── context_state.py       # 结构化状态管理
-│   │   ├── inference_engine.py    # LLM 推理引擎
-│   │   └── output_formatter.py    # 结构化输出格式化
-│   ├── orchestrator/      # 5 阶段 Agent 编排层
-│   │   └── agent_loop.py          # Agent 主循环
-│   ├── tools/             # 工具系统（Integration Agent 域）
-│   │   └── base.py                # 工具基类 + 注册机制
-│   ├── security/          # 权限与沙箱
-│   │   └── sandbox.py             # 沙箱执行
-│   ├── models/            # 模型 / Provider 抽象层
-│   │   └── client.py              # OpenAI 兼容客户端
-│   └── config.py          # 全局配置
-├── tests/                 # 测试
-├── eval/                  # 评测集与评测脚本
-│   └── fixtures/          # 评测用例
-├── docs/                  # 项目文档（架构/契约/规划）
-│   ├── architecture.md
-│   ├── shared_contracts.md
-│   ├── execute_tools_design.md  # execute 类工具设计与安全规范
-│   ├── cli_tools_orchestrator_contract.md
-│   ├── golden_fixture_snapshot_plan.md
-│   ├── mvp_plus_roadmap.md
-│   └── project_plan.md
-├── cli.py                 # CLI 入口（Click）
-├── agent.md               # Agent 开发约束与知识索引入口
-├── Dockerfile
-├── docker-compose.yml
-└── requirements.txt
+```text
+src/
+  analyzer/        核心分析引擎
+  orchestrator/    Agent 编排流程
+  tools/           工具系统与注册机制
+  security/        权限与沙箱执行
+  models/          OpenAI 兼容模型客户端
+  api/             FastAPI 服务
+tests/             自动化测试
+eval/              评测集与评测脚本
+docs/              架构、契约与规划文档
+scripts/           工程脚本
+cli.py             CLI 入口
+agent.md           Agent 开发约束与知识索引入口
+Dockerfile         CLI 容器镜像
+docker-compose.yml Docker compose 配置
+requirements.txt   运行时依赖
 ```
 
-### 架构分层
+## 开发命令
 
-```
-入口层    CLI (Click) · FastAPI 同步薄层
-   ↓
-编排层    Agent 循环（5 阶段模式）
-   ↓
-工具层    Tool Calling（只读 / 写入 / 执行，分级权限）
-   ↓
-服务层    API 客户端 · 状态管理 · 上下文压缩
-   ↓
-模型层    OpenAI 兼容 API / Provider 抽象
-   ↓
-横切关注  配置 · 日志 · 结构化输出 · 成本追踪 · 权限
-```
-
-## 开发指南
-
-### 环境搭建
+安装开发依赖：
 
 ```bash
 pip install -r requirements-dev.txt
 ```
 
-### 运行测试
+运行测试：
 
 ```bash
 pytest
 ```
 
-### 代码风格
+运行代码质量检查：
 
 ```bash
-ruff check .          # lint
-ruff format --check . # format check
-mypy src/             # type check
+ruff check .
+ruff format --check .
+mypy src/
 ```
 
-项目使用 **全英文注释**，README 与用户文档使用中文。详细协作规范请参考 [CONTRIBUTING.md](CONTRIBUTING.md)。
+如需执行 Docker 后端 smoke test：
+
+```bash
+docker build -f Dockerfile.execute -t mergewarden-execute:latest .
+RUN_DOCKER_TESTS=1 pytest -q tests/test_docker_backend_smoke.py -rs
+```
 
 ## 协作约定
 
-本项目采用 PR + Issue 驱动的协作模式，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-若使用 AI Agent 协作开发，请先阅读 [agent.md](agent.md)（渐进式知识索引与编码约束）。
+MergeWarden 采用 PR 与 Issue 驱动的协作方式。代码、文档和审查流程请参考 [贡献指南](CONTRIBUTING.md)。
 
-## License
+使用 AI Agent 协作开发前，请先阅读 [agent.md](agent.md)，其中包含渐进式知识索引、编码约束和审查要求。
+
+## 许可证
 
 [MIT](LICENSE)
