@@ -30,7 +30,7 @@
         "line": 285,
         "end_line": 288,
         "category": "precision",
-        "description": "The TypeError fallback silently treats Decimal/float approximate comparisons as supported by switching to range comparison without warning. That can give users false confidence because mixed Decimal/float arithmetic has different precision and behavior, so unsupported or lossy comparisons should warn or remain explicit instead of silently passing."
+        "description": "The TypeError fallback silently changes pytest.approx semantics for mixed Decimal/float values by treating them as supported through range comparison. This is a precision-sensitive API path: mixed Decimal/float arithmetic has different precision and conversion behavior, so accepting it without an explicit warning or opt-in can give users false confidence in approximate comparisons."
       }
     ],
     "min_issues": 1,
@@ -48,7 +48,7 @@
       "pytest",
       "precision"
     ],
-    "difficulty": "medium",
+    "difficulty": "hard",
     "annotated_by": "manual",
     "reviewed": true,
     "created_at": "2026-05-08T00:00:00+00:00"

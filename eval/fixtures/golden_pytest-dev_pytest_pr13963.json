@@ -1,0 +1,56 @@
+{
+  "id": "golden_pytest-dev_pytest_pr13963",
+  "type": "review",
+  "source": {
+    "repo_full_name": "pytest-dev/pytest",
+    "pr_number": 13963,
+    "url": "https://github.com/pytest-dev/pytest/pull/13963",
+    "merge_commit_sha": "c287dd7147319bf76179633def108c4b5aa013e6",
+    "title": "Ensure subtest's context kwargs are JSON serializable"
+  },
+  "input": {
+    "diff_text": "diff --git a/src/_pytest/subtests.py b/src/_pytest/subtests.py\n--- a/src/_pytest/subtests.py\n+++ b/src/_pytest/subtests.py\n@@ -61,8 +61,15 @@ class SubtestContext:\n     msg: str | None\n     kwargs: Mapping[str, Any]\n \n+    def __post_init__(self) -> None:\n+        # Brute-force the returned kwargs dict to be JSON serializable (pytest-dev/pytest-xdist#1273).\n+        object.__setattr__(\n+            self, \"kwargs\", {k: saferepr(v) for (k, v) in self.kwargs.items()}\n+        )\n+\n     def _to_json(self) -> dict[str, Any]:\n-        return dataclasses.asdict(self)\n+        result = dataclasses.asdict(self)\n+        return result\n \n     @classmethod\n     def _from_json(cls, d: dict[str, Any]) -> Self:\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/pytest-dev/pytest.git",
+      "base_sha": "2fb64da82c83d4a485b3b2626ab8b39ede340d43",
+      "head_sha": "de923a008ef80ac03747bb370402d07d71f879e3",
+      "checkout_sha": "c287dd7147319bf76179633def108c4b5aa013e6",
+      "diff_base_sha": "2fb64da82c83d4a485b3b2626ab8b39ede340d43"
+    }
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "src/_pytest/subtests.py",
+        "path": "src/_pytest/subtests.py",
+        "line": 64,
+        "end_line": 68,
+        "category": "serialization",
+        "description": "SubtestContext now converts every kwargs value to saferepr() at construction time, not only when serializing the report. That fixes JSON serialization for xdist, but it also changes the in-memory public context from original typed values to strings, so plugins or reporters that inspect context.kwargs lose type information."
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 1,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "github",
+      "review",
+      "positive-sample",
+      "should-detect",
+      "serialization",
+      "api-compatibility",
+      "pytest"
+    ],
+    "difficulty": "medium",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-06-04T00:00:00+00:00"
+  }
+}

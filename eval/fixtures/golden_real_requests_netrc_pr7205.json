@@ -35,7 +35,8 @@
       "auth",
       "netrc",
       "negative-sample",
-      "zero-issue"
+      "zero-issue",
+      "authorization"
     ],
     "difficulty": "easy",
     "annotated_by": "manual",

@@ -1,0 +1,58 @@
+{
+  "id": "golden_openclaw_openclaw_pr37717",
+  "type": "review",
+  "source": {
+    "repo_full_name": "openclaw/openclaw",
+    "pr_number": 37717,
+    "url": "https://github.com/openclaw/openclaw/pull/37717",
+    "merge_commit_sha": "",
+    "title": "feat: add Azure api-version support for OpenAI-compatible chat completions"
+  },
+  "input": {
+    "diff_text": "diff --git a/src/agents/pi-embedded-runner/model.ts b/src/agents/pi-embedded-runner/model.ts\n--- a/src/agents/pi-embedded-runner/model.ts\n+++ b/src/agents/pi-embedded-runner/model.ts\n@@ -17,6 +17,7 @@ type InlineModelEntry = ModelDefinitionConfig & {\n };\n type InlineProviderConfig = {\n   baseUrl?: string;\n+  apiVersion?: string;\n   api?: ModelDefinitionConfig[\"api\"];\n   models?: ModelDefinitionConfig[];\n   headers?: Record<string, string>;\n@@ -52,15 +53,18 @@ function applyConfiguredProviderOverrides(params: {\n   if (\n     !configuredModel &&\n     !providerConfig.baseUrl &&\n+    !providerConfig.apiVersion &&\n     !providerConfig.api &&\n     !providerConfig.headers\n   ) {\n     return discoveredModel;\n   }\n+  const resolvedApi = configuredModel?.api ?? providerConfig.api ?? discoveredModel.api;\n+  const resolvedBaseUrl = providerConfig.baseUrl ?? discoveredModel.baseUrl;\n   return {\n     ...discoveredModel,\n-    api: configuredModel?.api ?? providerConfig.api ?? discoveredModel.api,\n-    baseUrl: providerConfig.baseUrl ?? discoveredModel.baseUrl,\n+    api: resolvedApi,\n+    baseUrl: resolvedBaseUrl,\n     reasoning: configuredModel?.reasoning ?? discoveredModel.reasoning,\n     input: configuredModel?.input ?? discoveredModel.input,\n     cost: configuredModel?.cost ?? discoveredModel.cost,\n@@ -126,7 +130,17 @@ export function resolveModelWithRegistry(params: {\n     (entry) => normalizeProviderId(entry.provider) === normalizedProvider && entry.id === modelId,\n   );\n   if (inlineMatch) {\n-    return normalizeModelCompat(inlineMatch as Model<Api>);\n+    const baseUrlSource = inlineMatch.baseUrl ?? providerConfig?.baseUrl;\n+    if (!baseUrlSource) {\n+      return undefined;\n+    }\n+    const api = inlineMatch.api ?? providerConfig?.api ?? \"openai-responses\";\n+    const baseUrl = baseUrlSource;\n+    return normalizeModelCompat({\n+      ...(inlineMatch as Model<Api>),\n+      api,\n+      baseUrl,\n+    });\n   }\n \n   // Forward-compat fallbacks must be checked BEFORE the generic providerCfg fallback.\n@@ -162,12 +176,18 @@ export function resolveModelWithRegistry(params: {\n \n   const configuredModel = providerConfig?.models?.find((candidate) => candidate.id === modelId);\n   if (providerConfig || modelId.startsWith(\"mock-\")) {\n+    const resolvedApi = providerConfig?.api ?? \"openai-responses\";\n+    const providerBaseUrl = providerConfig?.baseUrl ?? \"\";\n+    if (!providerBaseUrl && !modelId.startsWith(\"mock-\")) {\n+      return undefined;\n+    }\n+    const resolvedBaseUrl = providerBaseUrl;\n     return normalizeModelCompat({\n       id: modelId,\n       name: modelId,\n-      api: providerConfig?.api ?? \"openai-responses\",\n+      api: resolvedApi,\n       provider,\n-      baseUrl: providerConfig?.baseUrl,\n+      baseUrl: resolvedBaseUrl,\n       reasoning: configuredModel?.reasoning ?? false,\n       input: [\"text\"],\n       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/openclaw/openclaw.git",
+      "base_sha": "7d6d112656223bee0025457d64dbc6464ffc5566",
+      "head_sha": "2324f97456c5be60905658bc600f8be86013788d",
+      "checkout_sha": "2324f97456c5be60905658bc600f8be86013788d",
+      "diff_base_sha": "7d6d112656223bee0025457d64dbc6464ffc5566"
+    }
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "src/agents/pi-embedded-runner/model.ts",
+        "path": "src/agents/pi-embedded-runner/model.ts",
+        "line": 132,
+        "end_line": 144,
+        "category": "api-compatibility",
+        "description": "The inline-provider branch now returns undefined whenever a custom model has no baseUrl. That changes the existing fallback behavior for configured OpenAI-compatible providers and can surface as an unknown-model failure for non-Azure configurations instead of preserving the discovered registry defaults."
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 1,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "github",
+      "review",
+      "rejected-pr",
+      "manual",
+      "positive-sample",
+      "should-detect",
+      "api-compatibility",
+      "config",
+      "azure"
+    ],
+    "difficulty": "medium",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-06-04T00:00:00+00:00"
+  }
+}

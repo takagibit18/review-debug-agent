@@ -1174,18 +1174,37 @@ def test_golden_fixture_distribution_has_required_buckets() -> None:
     )
     manifest = json.loads((Path("eval") / "fixtures" / "manifest.json").read_text())
 
-    assert {fixture.id for fixture in real} == {
-        "golden_astral-sh_ruff_pr24648",
-        "golden_real_requests_netrc_pr7205",
-        "golden_pytest-dev_pytest_pr8513",
-        "golden_NethermindEth_nethermind_pr5381",
-        "golden_pytest-dev_pytest_pr9350",
-        "golden_pytest-dev_pytest_pr7254",
+    assert 14 <= len(real) <= 16
+    assert sum(1 for fixture in real if fixture.expected.issues) >= 9
+    assert sum(1 for fixture in real if not fixture.expected.issues) >= 4
+
+    tag_sets = [set(fixture.metadata.tags) for fixture in real]
+    required_tags = {
+        "api-compatibility",
+        "authorization",
+        "concurrency",
+        "config",
+        "input-validation",
+        "negative-sample",
+        "precision",
+        "runtime",
+        "serialization",
+        "should-detect",
     }
+    covered_tags = set().union(*tag_sets)
+    assert required_tags <= covered_tags
+
+    source_keys = {
+        (fixture.source.repo_full_name, fixture.source.pr_number) for fixture in real
+    }
+    assert len(source_keys) == len(real)
     assert synth == []
     fixture_by_path = {
         entry["path"]: Fixture.model_validate_json(Path(entry["path"]).read_text())
         for entry in manifest["entries"]
+    }
+    assert {entry["fixture_id"] for entry in manifest["entries"]} == {
+        fixture.id for fixture in real
     }
     for entry in manifest["entries"]:
         assert entry["reviewed"] == fixture_by_path[entry["path"]].metadata.reviewed
