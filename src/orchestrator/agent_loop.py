@@ -29,6 +29,7 @@ from src.tools import create_default_registry
 from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
 from src.tools.path_utils import tool_workspace_root
+from src.tools.review_context import ReviewToolContext
 
 
 class AgentOrchestrator:
@@ -99,8 +100,12 @@ class AgentOrchestrator:
             ),
             repo_path=request.repo_path,
         )
+        review_context = self._build_review_tool_context(request)
         if self._external_registry is None:
-            self._registry = create_default_registry(include_execute=False)
+            self._registry = create_default_registry(
+                include_execute=False,
+                review_context=review_context,
+            )
         state = self.prepare_context(request)
         await self._maybe_prefetch_review_changed_files(state, request)
         response: ReviewResponse | DebugResponse | None = None
@@ -944,6 +949,14 @@ class AgentOrchestrator:
     @staticmethod
     def _changed_new_lines_for_file(diff_text: str) -> dict[str, set[int]]:
         return changed_new_lines_by_file(diff_text)
+
+    def _build_review_tool_context(self, request: ReviewRequest) -> ReviewToolContext | None:
+        diff_text = request.diff_text or ""
+        if request.diff_mode and not diff_text:
+            diff_text = self._context_builder.load_diff(request.repo_path)
+        if not diff_text.strip():
+            return None
+        return ReviewToolContext.from_diff(request.repo_path, diff_text)
 
     async def _execute_one_tool(
         self,

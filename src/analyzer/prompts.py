@@ -45,6 +45,12 @@ SYSTEM_PROMPT_REVIEW = (
     "or suggestion in the same issue instead of creating another warning. "
     "Do not promote consequences of a hypothetical fix into a separate issue; keep them "
     "inside the suggestion unless the current diff already creates that independent risk. "
+    "When you need a changed hunk plus surrounding source, prefer get_changed_context. "
+    "When you need symbol definitions, references, field initialization, or constructor "
+    "assignment evidence, use find_symbol_context. "
+    "Before submitting warning or critical findings, if tool rounds remain, call "
+    "validate_review_draft on candidate findings; treat its result as policy feedback, "
+    "not as a replacement for submit_review. "
     "When paths are uncertain, use list_dir first before glob/grep/read_file. "
     "After any Directory/File not found error, validate parent directory first and avoid blind retries."
 )
@@ -63,6 +69,9 @@ USER_PREFIX_REVIEW = (
     "also include the same finding as an issue in issues[]. "
     "If that issue is backed by a concrete changed line or hunk, use confidence >= 0.85. "
     "If the payload shows truncated files/context, prioritize path exploration and targeted reads. "
+    "Use get_changed_context before broad reads when you need changed hunk context, "
+    "find_symbol_context before blind grep when you need symbol relationships, and "
+    "validate_review_draft before final warning/critical submit_review when another tool round is available. "
     "Do not return plain-text-only final answers.\n"
 )
 USER_PREFIX_DEBUG = (

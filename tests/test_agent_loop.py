@@ -948,6 +948,79 @@ def test_review_diff_first_prefetch_reads_changed_files_before_model(
     assert prefetch_event["payload"]["selected_files"] == ["src/module.py"]
 
 
+def test_review_mode_registers_review_context_tools_from_diff_text(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo"
+    changed = repo / "src" / "module.py"
+    changed.parent.mkdir(parents=True)
+    changed.write_text("print('changed')\n", encoding="utf-8")
+    orchestrator = AgentOrchestrator()
+    seen_tool_names: list[set[str]] = []
+
+    async def _capture_tool_specs(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        seen_tool_names.append({spec.name for spec in tool_specs})
+        return AnalysisPlan(needs_tools=False, tool_calls=[])
+
+    monkeypatch.setattr(orchestrator, "analyze", _capture_tool_specs)
+    diff_text = (
+        "diff --git a/src/module.py b/src/module.py\n"
+        "--- a/src/module.py\n"
+        "+++ b/src/module.py\n"
+        "@@ -1 +1 @@\n"
+        "-print('old')\n"
+        "+print('changed')\n"
+    )
+
+    asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(repo_path=str(repo), diff_mode=True, diff_text=diff_text)
+        )
+    )
+
+    assert {"get_changed_context", "find_symbol_context", "validate_review_draft"}.issubset(
+        seen_tool_names[0]
+    )
+
+
+def test_external_registry_is_not_overridden_by_review_context_tools(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    registry = ToolRegistry()
+    registry.register(DummyEchoTool())
+    orchestrator = AgentOrchestrator(registry=registry)
+    seen_tool_names: list[set[str]] = []
+
+    async def _capture_tool_specs(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        seen_tool_names.append({spec.name for spec in tool_specs})
+        return AnalysisPlan(needs_tools=False, tool_calls=[])
+
+    monkeypatch.setattr(orchestrator, "analyze", _capture_tool_specs)
+
+    asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(
+                repo_path=str(tmp_path),
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/src/module.py b/src/module.py\n"
+                    "--- a/src/module.py\n"
+                    "+++ b/src/module.py\n"
+                    "@@ -1 +1 @@\n"
+                    "-old\n"
+                    "+new\n"
+                ),
+            )
+        )
+    )
+
+    assert seen_tool_names[0] == {"echo_tool"}
+
+
 # ---------------------------------------------------------------------------
 # Pre-budget submit-only path
 # ---------------------------------------------------------------------------
