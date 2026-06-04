@@ -71,6 +71,40 @@ jobs:
             echo "has_key=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Verify model provider credentials
+        if: steps.review-credentials.outputs.has_key == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from openai import OpenAI
+
+          api_key = os.environ["OPENAI_API_KEY"]
+          base_url = os.environ["OPENAI_BASE_URL"].rstrip("/")
+          model = os.environ["MODEL_NAME"]
+          print(f"Model provider base_url: {base_url}")
+          print(f"Model provider model: {model}")
+          print(f"Model provider key length: {len(api_key)}")
+          print(f"Model provider key prefix: {api_key[:3]}***")
+          try:
+              client = OpenAI(api_key=api_key, base_url=base_url)
+              client.chat.completions.create(
+                  model=model,
+                  messages=[{"role": "user", "content": "Reply with ok."}],
+                  max_tokens=8,
+                  temperature=0,
+              )
+          except Exception as exc:
+              print(f"::error::Model provider credential preflight failed: {type(exc).__name__}: {exc}")
+              sys.exit(1)
+          print("Model provider credential preflight passed.")
+          PY
+
       - name: Run MergeWarden review
         if: steps.review-credentials.outputs.has_key == 'true'
         env:
