@@ -1,0 +1,162 @@
+name: MergeWarden PR 审查
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  mergewarden:
+    name: MergeWarden advisory
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !github.event.pull_request.draft }}
+
+    env:
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts/mergewarden
+      REVIEW_RESPONSE_JSON: ${{ github.workspace }}/artifacts/mergewarden/review_response.json
+      RUN_SUMMARY_JSON: ${{ github.workspace }}/artifacts/mergewarden/run_summary.json
+      CHANGED_LINES_JSON: ${{ github.workspace }}/artifacts/mergewarden/changed_lines.json
+      PUBLISH_DRY_RUN_JSON: ${{ github.workspace }}/artifacts/mergewarden/publish_dry_run.json
+      PUBLISH_RESULT_JSON: ${{ github.workspace }}/artifacts/mergewarden/publish_result.json
+      PR_DIFF_PATH: ${{ github.workspace }}/artifacts/mergewarden/pr.diff
+      OWNER_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_REF_NAME: ${{ github.event.pull_request.base.ref }}
+
+    steps:
+      - name: 检查必要配置
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${{ vars.MERGEWARDEN_REPOSITORY }}" ]; then
+            echo "::error::请设置 repository variable MERGEWARDEN_REPOSITORY，例如 owner/mergewarden。"
+            exit 1
+          fi
+
+      - name: Checkout 目标 PR 仓库
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: target
+
+      - name: Checkout MergeWarden runtime
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.MERGEWARDEN_REPOSITORY }}
+          ref: ${{ vars.MERGEWARDEN_REF || 'main' }}
+          token: ${{ secrets.MERGEWARDEN_REPOSITORY_TOKEN || github.token }}
+          path: .mergewarden/runtime
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装 MergeWarden 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r .mergewarden/runtime/requirements-dev.txt
+
+      - name: 准备 PR diff
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR"
+          git fetch --no-tags origin "+refs/heads/$BASE_REF_NAME:refs/remotes/origin/$BASE_REF_NAME"
+          MERGE_BASE="$(git merge-base "origin/$BASE_REF_NAME" "$HEAD_SHA")"
+          echo "MERGE_BASE=$MERGE_BASE" >> "$GITHUB_ENV"
+          git diff --no-ext-diff "$MERGE_BASE" "$HEAD_SHA" > "$PR_DIFF_PATH"
+          python "$GITHUB_WORKSPACE/.mergewarden/runtime/scripts/github_changed_lines.py" \
+            --diff-file "$PR_DIFF_PATH" \
+            --output "$CHANGED_LINES_JSON"
+          git reset --soft "$MERGE_BASE"
+
+      - name: 检查模型 API 凭证
+        id: review-credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
+        run: |
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 OPENAI_API_KEY，跳过 MergeWarden 审查和发布。"
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 运行 MergeWarden 审查
+        if: steps.review-credentials.outputs.has_key == 'true'
+        working-directory: target
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
+          EVENT_LOG_DIR: ${{ github.workspace }}/artifacts/mergewarden/event_logs
+          REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '4' }}
+          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '88000' }}
+          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '88000' }}
+        run: |
+          python "$GITHUB_WORKSPACE/.mergewarden/runtime/cli.py" review . \
+            --diff \
+            --output-json "$REVIEW_RESPONSE_JSON" \
+            --summary-json "$RUN_SUMMARY_JSON"
+
+      - name: Dry-run GitHub advisory 发布
+        if: steps.review-credentials.outputs.has_key == 'true'
+        run: |
+          python .mergewarden/runtime/cli.py github-advisory publish \
+            --repo "$OWNER_REPO" \
+            --pr-number "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --response-json "$REVIEW_RESPONSE_JSON" \
+            --changed-lines-json "$CHANGED_LINES_JSON" \
+            --dry-run \
+            --output-json "$PUBLISH_DRY_RUN_JSON"
+
+      - name: 发布 GitHub advisory
+        if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python .mergewarden/runtime/cli.py github-advisory publish \
+            --repo "$OWNER_REPO" \
+            --pr-number "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" \
+            --response-json "$REVIEW_RESPONSE_JSON" \
+            --changed-lines-json "$CHANGED_LINES_JSON" \
+            --publish \
+            --output-json "$PUBLISH_RESULT_JSON"
+
+      - name: 保留 fork PR 的 dry-run 结果
+        if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          cp "$PUBLISH_DRY_RUN_JSON" "$PUBLISH_RESULT_JSON"
+
+      - name: 写入跳过发布结果
+        if: steps.review-credentials.outputs.has_key != 'true'
+        run: |
+          mkdir -p "$ARTIFACT_DIR"
+          printf '{"status":"skipped","reason":"未配置 OPENAI_API_KEY"}\n' > "$PUBLISH_RESULT_JSON"
+
+      - name: 上传 MergeWarden 产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mergewarden-advisory-${{ github.event.pull_request.number }}
+          if-no-files-found: ignore
+          path: |
+            artifacts/mergewarden/review_response.json
+            artifacts/mergewarden/run_summary.json
+            artifacts/mergewarden/changed_lines.json
+            artifacts/mergewarden/pr.diff
+            artifacts/mergewarden/publish_dry_run.json
+            artifacts/mergewarden/publish_result.json
+            artifacts/mergewarden/event_logs/*.jsonl
