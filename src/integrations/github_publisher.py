@@ -114,6 +114,10 @@ class GitHubPublisherClient(Protocol):
 
     async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]: ...
 
+    async def get_pull_request(self, owner_repo: str, pr_number: int) -> dict[str, Any]: ...
+
+    async def get_pull_diff(self, owner_repo: str, pr_number: int) -> str: ...
+
     async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     async def create_review_comment(
@@ -163,6 +167,22 @@ class GitHubApiClient:
         self._raise_api_error(resp, path)
         payload = resp.json()
         return payload if isinstance(payload, list) else []
+
+    async def get_pull_request(self, owner_repo: str, pr_number: int) -> dict[str, Any]:
+        path = f"/repos/{owner_repo}/pulls/{pr_number}"
+        resp = await self._client.get(path)
+        self._raise_api_error(resp, path)
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else {}
+
+    async def get_pull_diff(self, owner_repo: str, pr_number: int) -> str:
+        path = f"/repos/{owner_repo}/pulls/{pr_number}"
+        resp = await self._client.get(
+            path,
+            headers={"Accept": "application/vnd.github.diff"},
+        )
+        self._raise_api_error(resp, path)
+        return resp.text
 
     async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/check-runs"

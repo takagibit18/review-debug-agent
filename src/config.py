@@ -26,6 +26,7 @@ _base_url_adapter = TypeAdapter(AnyHttpUrl)
 PermissionMode = Literal["default", "plan"]
 TraceDetailMode = Literal["off", "compact", "full"]
 ExecuteBackend = Literal["subprocess", "docker"]
+GitHubAuthMode = Literal["token", "app"]
 
 _DEFAULT_EXECUTE_ALLOWED_COMMANDS: tuple[str, ...] = (
     "python",
@@ -60,6 +61,26 @@ def _default_execute_backend() -> ExecuteBackend:
     if raw in {"subprocess", "docker"}:
         return cast(ExecuteBackend, raw)
     return "subprocess"
+
+
+def _default_github_auth_mode() -> GitHubAuthMode:
+    raw = str(os.getenv("GITHUB_AUTH_MODE", "")).strip().lower()
+    if raw in {"token", "app"}:
+        return cast(GitHubAuthMode, raw)
+    if _parse_bool_env("GITHUB_APP_MODE", False):
+        return "app"
+    return "token"
+
+
+def _normalize_private_key_env(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        value = value[1:-1].strip()
+    return value.replace("\\n", "\n")
 
 
 def _default_agent_trace_detail() -> TraceDetailMode:
@@ -343,6 +364,48 @@ class Settings(BaseModel):
         min_length=1,
         description="Hidden marker used to identify MergeWarden-owned GitHub review comments.",
     )
+    github_auth_mode: GitHubAuthMode = Field(
+        default_factory=_default_github_auth_mode,
+        description="GitHub API auth mode: token uses GITHUB_TOKEN/GH_TOKEN, app uses installation tokens.",
+    )
+    github_app_id: str = Field(
+        default_factory=lambda: os.getenv("GITHUB_APP_ID", "").strip(),
+        description="GitHub App numeric app id.",
+    )
+    github_private_key: str = Field(
+        default_factory=lambda: _normalize_private_key_env(
+            os.getenv("GITHUB_PRIVATE_KEY", "")
+        ),
+        description="GitHub App PEM private key; literal \\n sequences are supported.",
+    )
+    github_webhook_secret: str = Field(
+        default_factory=lambda: os.getenv("GITHUB_WEBHOOK_SECRET", "").strip(),
+        description="GitHub App webhook secret used for X-Hub-Signature-256 verification.",
+    )
+    github_app_client_id: str = Field(
+        default_factory=lambda: os.getenv("GITHUB_APP_CLIENT_ID", "").strip(),
+        description="Optional GitHub App client id for future OAuth flows.",
+    )
+    github_app_client_secret: str = Field(
+        default_factory=lambda: os.getenv("GITHUB_APP_CLIENT_SECRET", "").strip(),
+        description="Optional GitHub App client secret for future OAuth flows.",
+    )
+    app_base_url: str = Field(
+        default_factory=lambda: (
+            os.getenv("APP_BASE_URL")
+            or os.getenv("PUBLIC_URL")
+            or "http://localhost:8000"
+        ).strip(),
+        description="Public base URL used when configuring GitHub App webhooks.",
+    )
+    github_review_draft_prs: bool = Field(
+        default_factory=lambda: _parse_bool_env("GITHUB_REVIEW_DRAFT_PRS", False),
+        description="Whether GitHub App webhook reviews draft pull requests.",
+    )
+    github_webhook_allow_rerun: bool = Field(
+        default_factory=lambda: _parse_bool_env("GITHUB_WEBHOOK_ALLOW_RERUN", False),
+        description="Allow duplicate delivery/repo/pull/head review execution from webhooks.",
+    )
 
     @field_validator("openai_api_key", "model_name", mode="before")
     @classmethod
@@ -444,6 +507,23 @@ class Settings(BaseModel):
             return "<!-- mergewarden:comment -->"
         raw = str(value).strip()
         return raw or "<!-- mergewarden:comment -->"
+
+    @field_validator("github_auth_mode", mode="before")
+    @classmethod
+    def _validate_github_auth_mode(cls, value: object) -> str:
+        if value is None:
+            return _default_github_auth_mode()
+        raw = str(value).strip().lower()
+        if raw in {"token", "app"}:
+            return raw
+        return _default_github_auth_mode()
+
+    @field_validator("github_private_key", mode="before")
+    @classmethod
+    def _validate_github_private_key(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return _normalize_private_key_env(str(value))
 
     @field_validator("execute_docker_memory_mb", mode="before")
     @classmethod

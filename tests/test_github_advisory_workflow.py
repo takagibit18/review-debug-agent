@@ -15,4 +15,6 @@ def test_github_advisory_workflow_wires_phase2_publish_loop() -> None:
     assert "github-advisory publish" in workflow
     assert "--dry-run" in workflow
     assert "--publish" in workflow
-    assert "actions/upload-artifact@v4" in workflow
+    assert "actions/checkout@v6" in workflow
+    assert "actions/setup-python@v6" in workflow
+    assert "actions/upload-artifact@v7" in workflow
