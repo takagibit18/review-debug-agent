@@ -1,0 +1,66 @@
+{
+  "id": "golden_pydantic_pydantic_pr11581",
+  "type": "review",
+  "source": {
+    "repo_full_name": "pydantic/pydantic",
+    "pr_number": 11581,
+    "url": "https://github.com/pydantic/pydantic/pull/11581",
+    "merge_commit_sha": "",
+    "title": "fix infinite recursion in BaseModel equality checks"
+  },
+  "input": {
+    "diff_text": "diff --git a/pydantic/main.py b/pydantic/main.py\n--- a/pydantic/main.py\n+++ b/pydantic/main.py\n@@ -11,6 +11,7 @@\n import types\n import warnings\n from collections.abc import Generator, Mapping\n+from contextvars import ContextVar\n from copy import copy, deepcopy\n from functools import cached_property\n from typing import (\n@@ -77,6 +78,7 @@\n IncEx: TypeAlias = Union[set[int], set[str], Mapping[int, Union['IncEx', bool]], Mapping[str, Union['IncEx', bool]]]\n \n _object_setattr = _model_construction.object_setattr\n+_eq_recursion_tracker: ContextVar[set[tuple[int, int]] | None] = ContextVar('_eq_recursion_tracker', default=None)\n \n \n def _check_frozen(model_cls: type[BaseModel], name: str, value: Any) -> None:\n@@ -1144,13 +1146,19 @@ def __getstate__(self) -> dict[Any, Any]:\n             '__pydantic_private__': private,\n         }\n \n+    _eq_recursion_tracker: ContextVar[set[tuple[int, int]] | None] = ContextVar('_eq_recursion_tracker', default=None)\n+\n     def __setstate__(self, state: dict[Any, Any]) -> None:\n         _object_setattr(self, '__pydantic_fields_set__', state.get('__pydantic_fields_set__', {}))\n         _object_setattr(self, '__pydantic_extra__', state.get('__pydantic_extra__', {}))\n         _object_setattr(self, '__pydantic_private__', state.get('__pydantic_private__', {}))\n         _object_setattr(self, '__dict__', state.get('__dict__', {}))\n \n     if not TYPE_CHECKING:\n+        # ContextVar to track objects being compared to prevent infinite recursion\n+        _eq_recursion_tracker: ContextVar[set[tuple[int, int]] | None] = ContextVar(\n+            '_eq_recursion_tracker', default=None\n+        )\n \n         def __eq__(self, other: Any) -> bool:\n             if isinstance(other, BaseModel):\n@@ -1160,48 +1168,82 @@ def __eq__(self, other: Any) -> bool:\n                 self_type = self.__pydantic_generic_metadata__['origin'] or self.__class__\n                 other_type = other.__pydantic_generic_metadata__['origin'] or other.__class__\n \n-                # Perform common checks first\n-                if not (\n-                    self_type == other_type\n-                    and getattr(self, '__pydantic_private__', None) == getattr(other, '__pydantic_private__', None)\n-                    and self.__pydantic_extra__ == other.__pydantic_extra__\n-                ):\n-                    return False\n-\n-                # We only want to compare pydantic fields but ignoring fields is costly.\n-                # We'll perform a fast check first, and fallback only when needed\n-                # See GH-7444 and GH-7825 for rationale and a performance benchmark\n-\n-                # First, do the fast (and sometimes faulty) __dict__ comparison\n-                if self.__dict__ == other.__dict__:\n-                    # If the check above passes, then pydantic fields are equal, we can return early\n-                    return True\n-\n-                # We don't want to trigger unnecessary costly filtering of __dict__ on all unequal objects, so we return\n-                # early if there are no keys to ignore (we would just return False later on anyway)\n-                model_fields = type(self).__pydantic_fields__.keys()\n-                if self.__dict__.keys() <= model_fields and other.__dict__.keys() <= model_fields:\n-                    return False\n-\n-                # If we reach here, there are non-pydantic-fields keys, mapped to unequal values, that we need to ignore\n-                # Resort to costly filtering of the __dict__ objects\n-                # We use operator.itemgetter because it is much faster than dict comprehensions\n-                # NOTE: Contrary to standard python class and instances, when the Model class has a default value for an\n-                # attribute and the model instance doesn't have a corresponding attribute, accessing the missing attribute\n-                # raises an error in BaseModel.__getattr__ instead of returning the class attribute\n-                # So we can use operator.itemgetter() instead of operator.attrgetter()\n-                getter = operator.itemgetter(*model_fields) if model_fields else lambda _: _utils._SENTINEL\n+                # Check for recursive comparison to prevent infinite recursion\n+                # Get or create the recursion tracker\n+                recursion_tracker = _eq_recursion_tracker.get()\n+                if recursion_tracker is None:\n+                    recursion_tracker = set()\n+                    token = _eq_recursion_tracker.set(recursion_tracker)\n+                else:\n+                    token = None\n+\n                 try:\n-                    return getter(self.__dict__) == getter(other.__dict__)\n-                except KeyError:\n-                    # In rare cases (such as when using the deprecated BaseModel.copy() method),\n-                    # the __dict__ may not contain all model fields, which is how we can get here.\n-                    # getter(self.__dict__) is much faster than any 'safe' method that accounts\n-                    # for missing keys, and wrapping it in a `try` doesn't slow things down much\n-                    # in the common case.\n-                    self_fields_proxy = _utils.SafeGetItemProxy(self.__dict__)\n-                    other_fields_proxy = _utils.SafeGetItemProxy(other.__dict__)\n-                    return getter(self_fields_proxy) == getter(other_fields_proxy)\n+                    # Create a unique identifier for this comparison pair\n+                    # We use a tuple of object IDs to identify the comparison\n+                    self_id = id(self)\n+                    other_id = id(other)\n+                    # We need to check both directions to handle mutual recursion\n+                    pair_ids = (self_id, other_id)\n+                    reverse_pair_ids = (other_id, self_id)\n+\n+                    # If we've seen this pair before, we're in a recursive loop\n+                    if pair_ids in recursion_tracker or reverse_pair_ids in recursion_tracker:\n+                        # Return True to break the recursion cycle\n+                        return True\n+\n+                    # Add this pair to the tracker\n+                    recursion_tracker.add(pair_ids)\n+\n+                    # Perform common checks first\n+                    if not (\n+                        self_type == other_type\n+                        and getattr(self, '__pydantic_private__', None) == getattr(other, '__pydantic_private__', None)\n+                        and self.__pydantic_extra__ == other.__pydantic_extra__\n+                    ):\n+                        return False\n+\n+                    # We only want to compare pydantic fields but ignoring fields is costly.\n+                    # We'll perform a fast check first, and fallback only when needed\n+                    # See GH-7444 and GH-7825 for rationale and a performance benchmark\n+\n+                    # First, do the fast (and sometimes faulty) __dict__ comparison\n+                    if self.__dict__ == other.__dict__:\n+                        # If the check above passes, then pydantic fields are equal, we can return early\n+                        return True\n+\n+                    # We don't want to trigger unnecessary costly filtering of __dict__ on all unequal objects, so we return\n+                    # early if there are no keys to ignore (we would just return False later on anyway)\n+                    model_fields = type(self).__pydantic_fields__.keys()\n+                    if self.__dict__.keys() <= model_fields and other.__dict__.keys() <= model_fields:\n+                        return False\n+\n+                    # If we reach here, there are non-pydantic-fields keys, mapped to unequal values, that we need to ignore\n+                    # Resort to costly filtering of the __dict__ objects\n+                    # We use operator.itemgetter because it is much faster than dict comprehensions\n+                    # NOTE: Contrary to standard python class and instances, when the Model class has a default value for an\n+                    # attribute and the model instance doesn't have a corresponding attribute, accessing the missing attribute\n+                    # raises an error in BaseModel.__getattr__ instead of returning the class attribute\n+                    # So we can use operator.itemgetter() instead of operator.attrgetter()\n+                    getter = operator.itemgetter(*model_fields) if model_fields else lambda _: _utils._SENTINEL\n+                    try:\n+                        return getter(self.__dict__) == getter(other.__dict__)\n+                    except KeyError:\n+                        # In rare cases (such as when using the deprecated BaseModel.copy() method),\n+                        # the __dict__ may not contain all model fields, which is how we can get here.\n+                        # getter(self.__dict__) is much faster than any 'safe' method that accounts\n+                        # for missing keys, and wrapping it in a `try` doesn't slow things down much\n+                        # in the common case.\n+                        self_fields_proxy = _utils.SafeGetItemProxy(self.__dict__)\n+                        other_fields_proxy = _utils.SafeGetItemProxy(other.__dict__)\n+                        return getter(self_fields_proxy) == getter(other_fields_proxy)\n+                finally:\n+                    # Clean up: remove this pair from the tracker and reset the context if needed\n+                    if recursion_tracker is not None:\n+                        pair_ids = (id(self), id(other))\n+                        if pair_ids in recursion_tracker:\n+                            recursion_tracker.remove(pair_ids)\n+                    if token is not None:\n+                        _eq_recursion_tracker.reset(token)\n \n             # other instance is not a BaseModel\n             else:\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/pydantic/pydantic.git",
+      "base_sha": "c449cae821e758e8f8e584a50c63baec4f427c16",
+      "head_sha": "966a2d66a17237db9571c29525fae5e62e8188f1",
+      "checkout_sha": "966a2d66a17237db9571c29525fae5e62e8188f1",
+      "diff_base_sha": "c449cae821e758e8f8e584a50c63baec4f427c16"
+    }
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "pydantic/main.py",
+        "path": "pydantic/main.py",
+        "line": 1149,
+        "end_line": 1151,
+        "category": "runtime",
+        "description": "The PR declares _eq_recursion_tracker more than once, including inside the BaseModel class body under the runtime-only if not TYPE_CHECKING block. Having separate ContextVar definitions with the same name makes it unclear which tracker equality uses and risks future maintenance changes reading or resetting the wrong variable."
+      },
+      {
+        "severity": "warning",
+        "location_pattern": "pydantic/main.py",
+        "path": "pydantic/main.py",
+        "line": 1190,
+        "end_line": 1192,
+        "category": "performance",
+        "description": "BaseModel equality is a hot path, and the cycle escape returns True as soon as a recursive pair is seen. That prevents infinite recursion, but it can also hide actual inequality because the remaining fields in the recursive structure are not fully compared."
+      }
+    ],
+    "min_issues": 2,
+    "max_issues": 3,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "github",
+      "review",
+      "manual",
+      "positive-sample",
+      "should-detect",
+      "performance",
+      "concurrency",
+      "pydantic"
+    ],
+    "difficulty": "hard",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-06-04T00:00:00+00:00"
+  }
+}

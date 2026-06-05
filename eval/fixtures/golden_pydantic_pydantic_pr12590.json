@@ -1,0 +1,45 @@
+{
+  "id": "golden_pydantic_pydantic_pr12590",
+  "type": "review",
+  "source": {
+    "repo_full_name": "pydantic/pydantic",
+    "pr_number": 12590,
+    "url": "https://github.com/pydantic/pydantic/pull/12590",
+    "merge_commit_sha": "dc016c731b439eb2ba0bfd03bb525f134fed3649",
+    "title": "Clarify annotated_types predicates in documentation"
+  },
+  "input": {
+    "diff_text": "diff --git a/docs/api/standard_library_types.md b/docs/api/standard_library_types.md\n--- a/docs/api/standard_library_types.md\n+++ b/docs/api/standard_library_types.md\n@@ -81,8 +81,9 @@ Strings support the following constraints:\n | `to_lower`         | Whether to convert the string to lowercase        | N/A                                                                                                                                           |\n \n These constraints can be provided using the [`StringConstraints`][pydantic.types.StringConstraints] metadata type, or using the [`Field()`][pydantic.Field] function (except for `to_upper` and `to_lower`).\n-The `MinLen`, `MaxLen`, `Len`, `LowerCase`, `UpperCase` metadata types from the [`annotated-types`](https://github.com/annotated-types/annotated-types)\n-library can also be used.\n+\n+The [`annotated-types`](https://github.com/annotated-types/annotated-types) library also provides the `MinLen`, `MaxLen` and `Len` metadata types, as well\n+as the `LowerCase`, `UpperCase`, `IsDigit` and `IsAscii` predicates (must be parameterized with `str`, e.g. `LowerCase[str]`).\n \n <!-- markdownlint-disable-next-line no-empty-links -->\n [](){#pattern-constraint-note}\n@@ -237,8 +238,10 @@ Floats support the following constraints:\n | `allow_inf_nan` | Whether to allow NaN (not-a-number) and infinite values | N/A                                                                                                     |\n \n These constraints can be provided using the [`Field()`][pydantic.Field] function.\n-The `Le`, `Ge`, `Lt`, `Gt` and `MultipleOf` metadata types from the [`annotated-types`](https://github.com/annotated-types/annotated-types)\n-library and the [`AllowInfNan`][pydantic.types.AllowInfNan] type can also be used.\n+\n+The [`annotated-types`](https://github.com/annotated-types/annotated-types) library also provides the `Le`, `Ge`, `Lt`, `Gt` and `MultipleOf` metadata types,\n+as well as the `IsFinite`, `IsNotFinite`, `IsNan`, `IsNotNan`, `IsAscii`, `IsInfinite` and `IsNotInfinite` predicates\n+(must be parameterized with `float`, e.g. `IsFinite[float]`). The [`AllowInfNan`][pydantic.types.AllowInfNan] type can also be used.\n \n Pydantic also provides the following types as convenience aliases:\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/pydantic/pydantic.git",
+      "base_sha": "8ed09ab94936a22c3cd934d8266327137d5d9523",
+      "head_sha": "d96f77288c04d99413bde664e724144b30dc9957",
+      "checkout_sha": "dc016c731b439eb2ba0bfd03bb525f134fed3649",
+      "diff_base_sha": "8ed09ab94936a22c3cd934d8266327137d5d9523"
+    }
+  },
+  "expected": {
+    "issues": [],
+    "min_issues": 0,
+    "max_issues": 0,
+    "is_empty_annotation": true
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "github",
+      "review",
+      "negative-sample",
+      "zero-issue",
+      "docs-only",
+      "pydantic"
+    ],
+    "difficulty": "easy",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-06-04T00:00:00+00:00"
+  }
+}
