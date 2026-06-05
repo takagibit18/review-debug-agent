@@ -90,7 +90,6 @@ jobs:
           print(f"Model provider base_url: {base_url}")
           print(f"Model provider model: {model}")
           print(f"Model provider key length: {len(api_key)}")
-          print(f"Model provider key prefix: {api_key[:3]}***")
           try:
               client = OpenAI(api_key=api_key, base_url=base_url)
               client.chat.completions.create(
@@ -113,8 +112,8 @@ jobs:
           MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
           EVENT_LOG_DIR: .mergewarden/logs
           REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '3' }}
-          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '160000' }}
-          TOKEN_HARD_BUDGET: ${{ vars.TOKEN_HARD_BUDGET || '220000' }}
+          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '260000' }}
+          TOKEN_HARD_BUDGET: ${{ vars.TOKEN_HARD_BUDGET || '340000' }}
           PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '80000' }}
           AGENT_TRACE_DETAIL: ${{ vars.AGENT_TRACE_DETAIL || 'compact' }}
         run: |
