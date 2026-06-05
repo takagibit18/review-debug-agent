@@ -112,9 +112,11 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
           EVENT_LOG_DIR: .mergewarden/logs
-          REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '4' }}
-          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '88000' }}
-          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '88000' }}
+          REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '3' }}
+          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '160000' }}
+          TOKEN_HARD_BUDGET: ${{ vars.TOKEN_HARD_BUDGET || '220000' }}
+          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '80000' }}
+          AGENT_TRACE_DETAIL: ${{ vars.AGENT_TRACE_DETAIL || 'compact' }}
         run: |
           python cli.py review . --diff --output-json "$REVIEW_RESPONSE_JSON" --summary-json "$RUN_SUMMARY_JSON"
 

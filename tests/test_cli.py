@@ -422,6 +422,51 @@ def test_review_command_fails_after_export_when_model_auth_fails(
     assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-auth-failed"
 
 
+def test_review_command_fails_after_export_when_budget_hard_caps(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "review.json"
+    summary_path = tmp_path / "summary.json"
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-budget-capped",
+            report=ReviewReport(summary="Review pipeline completed with placeholder summary."),
+            context=ContextState(
+                current_files=[request.repo_path],
+                errors=[
+                    ErrorDetail(
+                        file="",
+                        message="Token budget exhausted; returning partial result.",
+                        category="runtime",
+                    )
+                ],
+            ),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "review",
+            ".",
+            "--output-json",
+            str(response_path),
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "review produced no trusted result" in result.output
+    assert "Token budget exhausted" in result.output
+    assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-budget-capped"
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-budget-capped"
+
+
 def test_review_command_renders_triaged_sections(cli_runner: CliRunner, monkeypatch) -> None:
     async def _run_review(self, request):  # type: ignore[no-untyped-def]
         must_fix = ReviewIssue(
