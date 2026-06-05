@@ -278,6 +278,7 @@ class GitHubPublisher:
                 request.pr_number,
                 {
                     "body": create_item.body,
+                    "commit_id": request.head_sha,
                     "path": create_item.path,
                     "line": create_item.line,
                     "side": "RIGHT",

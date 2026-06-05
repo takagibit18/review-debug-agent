@@ -165,7 +165,10 @@ def test_real_publish_uses_fake_client_for_check_comments_and_stale_updates() ->
     assert result.check_run["id"] == 101
     assert len(client.created_check_runs) == 1
     assert len(client.created_review_comments) == 1
+    assert client.created_review_comments[0]["payload"]["commit_id"] == "abc123"
     assert client.created_review_comments[0]["payload"]["path"] == "src/app.py"
+    assert client.created_review_comments[0]["payload"]["line"] == 10
+    assert client.created_review_comments[0]["payload"]["side"] == "RIGHT"
     assert len(client.updated_review_comments) == 1
     assert "Stale MergeWarden advisory" in client.updated_review_comments[0]["body"]
     assert result.inline_comment_records[0].comment_id == 201
