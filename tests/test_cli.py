@@ -37,7 +37,19 @@ def test_debug_help(cli_runner: CliRunner) -> None:
     assert "--error-log" in result.output
 
 
-def test_review_command_returns_structured_response(cli_runner: CliRunner) -> None:
+def test_review_command_returns_structured_response(
+    cli_runner: CliRunner,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-review-smoke",
+            report=ReviewReport(summary="ok"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
     result = cli_runner.invoke(main, ["review", "."])
     assert result.exit_code == 0
     assert "Running review command..." in result.output
@@ -56,7 +68,19 @@ def test_debug_command_returns_structured_response(cli_runner: CliRunner) -> Non
     assert "Tracked files:" in result.output
 
 
-def test_verbose_review_command_includes_json(cli_runner: CliRunner) -> None:
+def test_verbose_review_command_includes_json(
+    cli_runner: CliRunner,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-review-verbose",
+            report=ReviewReport(summary="ok"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
     result = cli_runner.invoke(main, ["--verbose", "review", "."])
     assert result.exit_code == 0
     assert '"report"' in result.output
@@ -537,6 +561,15 @@ def test_review_command_passes_permission_mode(cli_runner: CliRunner, monkeypatc
         return original_init(self, *args, **kwargs)
 
     monkeypatch.setattr(cli.AgentOrchestrator, "__init__", _capturing_init)
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-review-permission",
+            report=ReviewReport(summary="ok"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
 
     result = cli_runner.invoke(main, ["--permission-mode", "plan", "review", "."])
     assert result.exit_code == 0
