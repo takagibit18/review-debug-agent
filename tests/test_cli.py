@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 import cli
 from cli import main
-from src.analyzer.context_state import ContextState
+from src.analyzer.context_state import ContextState, ErrorDetail
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import DebugResponse, ReviewResponse
 
@@ -37,7 +37,19 @@ def test_debug_help(cli_runner: CliRunner) -> None:
     assert "--error-log" in result.output
 
 
-def test_review_command_returns_structured_response(cli_runner: CliRunner) -> None:
+def test_review_command_returns_structured_response(
+    cli_runner: CliRunner,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-review-smoke",
+            report=ReviewReport(summary="ok"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
     result = cli_runner.invoke(main, ["review", "."])
     assert result.exit_code == 0
     assert "Running review command..." in result.output
@@ -56,7 +68,19 @@ def test_debug_command_returns_structured_response(cli_runner: CliRunner) -> Non
     assert "Tracked files:" in result.output
 
 
-def test_verbose_review_command_includes_json(cli_runner: CliRunner) -> None:
+def test_verbose_review_command_includes_json(
+    cli_runner: CliRunner,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-review-verbose",
+            report=ReviewReport(summary="ok"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
     result = cli_runner.invoke(main, ["--verbose", "review", "."])
     assert result.exit_code == 0
     assert '"report"' in result.output
@@ -374,6 +398,99 @@ def test_review_command_can_export_response_and_run_summary(
     assert summary["publish_status"] == "not_requested"
 
 
+def test_review_command_fails_after_export_when_model_auth_fails(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "review.json"
+    summary_path = tmp_path / "summary.json"
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-auth-failed",
+            report=ReviewReport(summary="Review pipeline completed with placeholder summary."),
+            context=ContextState(
+                current_files=[request.repo_path],
+                errors=[
+                    ErrorDetail(
+                        file=request.repo_path,
+                        message=(
+                            "Model analysis failed: Authentication failed for the model "
+                            "provider (status=401) [code=auth_failed]"
+                        ),
+                        category="runtime",
+                    )
+                ],
+            ),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "review",
+            ".",
+            "--output-json",
+            str(response_path),
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "review produced no trusted result" in result.output
+    assert "auth_failed" in result.output
+    assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-auth-failed"
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-auth-failed"
+
+
+def test_review_command_fails_after_export_when_budget_hard_caps(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "review.json"
+    summary_path = tmp_path / "summary.json"
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-budget-capped",
+            report=ReviewReport(summary="Review pipeline completed with placeholder summary."),
+            context=ContextState(
+                current_files=[request.repo_path],
+                errors=[
+                    ErrorDetail(
+                        file="",
+                        message="Token budget exhausted; returning partial result.",
+                        category="runtime",
+                    )
+                ],
+            ),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "review",
+            ".",
+            "--output-json",
+            str(response_path),
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "review produced no trusted result" in result.output
+    assert "Token budget exhausted" in result.output
+    assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-budget-capped"
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-budget-capped"
+
+
 def test_review_command_renders_triaged_sections(cli_runner: CliRunner, monkeypatch) -> None:
     async def _run_review(self, request):  # type: ignore[no-untyped-def]
         must_fix = ReviewIssue(
@@ -444,6 +561,15 @@ def test_review_command_passes_permission_mode(cli_runner: CliRunner, monkeypatc
         return original_init(self, *args, **kwargs)
 
     monkeypatch.setattr(cli.AgentOrchestrator, "__init__", _capturing_init)
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-review-permission",
+            report=ReviewReport(summary="ok"),
+            context=ContextState(current_files=[request.repo_path]),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
 
     result = cli_runner.invoke(main, ["--permission-mode", "plan", "review", "."])
     assert result.exit_code == 0

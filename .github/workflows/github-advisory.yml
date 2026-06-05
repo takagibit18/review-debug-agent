@@ -31,13 +31,13 @@ jobs:
 
     steps:
       - name: Check out PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -71,6 +71,39 @@ jobs:
             echo "has_key=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Verify model provider credentials
+        if: steps.review-credentials.outputs.has_key == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from openai import OpenAI
+
+          api_key = os.environ["OPENAI_API_KEY"]
+          base_url = os.environ["OPENAI_BASE_URL"].rstrip("/")
+          model = os.environ["MODEL_NAME"]
+          print(f"Model provider base_url: {base_url}")
+          print(f"Model provider model: {model}")
+          print(f"Model provider key length: {len(api_key)}")
+          try:
+              client = OpenAI(api_key=api_key, base_url=base_url)
+              client.chat.completions.create(
+                  model=model,
+                  messages=[{"role": "user", "content": "Reply with ok."}],
+                  max_tokens=8,
+                  temperature=0,
+              )
+          except Exception as exc:
+              print(f"::error::Model provider credential preflight failed: {type(exc).__name__}: {exc}")
+              sys.exit(1)
+          print("Model provider credential preflight passed.")
+          PY
+
       - name: Run MergeWarden review
         if: steps.review-credentials.outputs.has_key == 'true'
         env:
@@ -78,9 +111,11 @@ jobs:
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
           EVENT_LOG_DIR: .mergewarden/logs
-          REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '4' }}
-          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '88000' }}
-          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '88000' }}
+          REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '3' }}
+          TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '260000' }}
+          TOKEN_HARD_BUDGET: ${{ vars.TOKEN_HARD_BUDGET || '340000' }}
+          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '80000' }}
+          AGENT_TRACE_DETAIL: ${{ vars.AGENT_TRACE_DETAIL || 'compact' }}
         run: |
           python cli.py review . --diff --output-json "$REVIEW_RESPONSE_JSON" --summary-json "$RUN_SUMMARY_JSON"
 
@@ -122,7 +157,7 @@ jobs:
 
       - name: Upload GitHub advisory artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: github-advisory-${{ github.event.pull_request.number }}
           if-no-files-found: ignore

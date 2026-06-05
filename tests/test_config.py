@@ -101,3 +101,23 @@ def test_github_advisory_publish_defaults_are_safe(monkeypatch) -> None:
 
     assert settings.github_advisory_dry_run is True
     assert settings.github_advisory_comment_marker == "<!-- mergewarden:comment -->"
+
+
+def test_github_auth_mode_defaults_to_token(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_AUTH_MODE", raising=False)
+    monkeypatch.delenv("GITHUB_APP_MODE", raising=False)
+
+    settings = get_settings()
+
+    assert settings.github_auth_mode == "token"
+
+
+def test_github_app_mode_switch_and_private_key_newlines(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_AUTH_MODE", raising=False)
+    monkeypatch.setenv("GITHUB_APP_MODE", "true")
+    monkeypatch.setenv("GITHUB_PRIVATE_KEY", "-----BEGIN-----\\nabc\\n-----END-----")
+
+    settings = get_settings()
+
+    assert settings.github_auth_mode == "app"
+    assert settings.github_private_key == "-----BEGIN-----\nabc\n-----END-----"

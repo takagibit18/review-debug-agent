@@ -46,7 +46,8 @@
       "positive-sample",
       "should-detect",
       "nethermind",
-      "runtime"
+      "runtime",
+      "concurrency"
     ],
     "difficulty": "hard",
     "annotated_by": "manual",

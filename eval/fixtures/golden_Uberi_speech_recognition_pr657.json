@@ -1,0 +1,58 @@
+{
+  "id": "golden_Uberi_speech_recognition_pr657",
+  "type": "review",
+  "source": {
+    "repo_full_name": "Uberi/speech_recognition",
+    "pr_number": 657,
+    "url": "https://github.com/Uberi/speech_recognition/pull/657",
+    "merge_commit_sha": "",
+    "title": "Vosk api: allow selecting different models and automatic model download"
+  },
+  "input": {
+    "diff_text": "diff --git a/speech_recognition/__init__.py b/speech_recognition/__init__.py\n--- a/speech_recognition/__init__.py\n+++ b/speech_recognition/__init__.py\n@@ -1684,16 +1684,31 @@ def recognize_whisper(self, audio_data, model=\"base\", show_dict=False, load_opti\n             return result[\"text\"]\n \n             \n-    def recognize_vosk(self, audio_data, language='en'):\n+    def recognize_vosk(self, audio_data, model='', language='en-us'):\n         from vosk import Model, KaldiRecognizer\n-        \n+\n         assert isinstance(audio_data, AudioData), \"Data must be audio data\"\n-        \n+\n         if not hasattr(self, 'vosk_model'):\n-            if not os.path.exists(\"model\"):\n-                return \"Please download the model from https://github.com/alphacep/vosk-api/blob/master/doc/models.md and unpack as 'model' in the current folder.\"\n-                exit (1)\n-            self.vosk_model = Model(\"model\")\n+            if model:\n+                if not os.path.exists(model):\n+                    raise RequestError(f\"Please download the model from https://github.com/alphacep/vosk-api/blob/master/doc/models.md and unpack as '{model}' in the current folder.\")\n+                self.vosk_model = Model(model)\n+            else:\n+                try:\n+                    import requests\n+                except ImportError:\n+                    raise RequestError(\"requests module is required to download model data\")\n+                # verify this language is available via api\n+                response = requests.get('https://alphacephei.com/vosk/models/model-list.json', timeout=10)\n+                # raise error if bad response\n+                response.raise_for_status()\n+\n+                models = response.json()\n+                languages = { m[\"lang\"] for m in models }\n+                if language not in languages:\n+                    raise RequestError(f\"Language '{language}' not available. Available language codes are: {languages}\")\n+                self.vosk_model = Model(lang=language)\n \n         rec = KaldiRecognizer(self.vosk_model, 16000);\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/Uberi/speech_recognition.git",
+      "base_sha": "010382b80267f0f7794169fccc8e875ee7da7c19",
+      "head_sha": "4e20020a0656165cf00a940c4372423719f4af70",
+      "checkout_sha": "4e20020a0656165cf00a940c4372423719f4af70",
+      "diff_base_sha": "010382b80267f0f7794169fccc8e875ee7da7c19"
+    }
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "speech_recognition/__init__.py",
+        "path": "speech_recognition/__init__.py",
+        "line": 1687,
+        "end_line": 1707,
+        "category": "api-compatibility",
+        "description": "The default Vosk path now performs a network-backed model lookup and requires requests instead of using the documented local model directory. That is a breaking runtime behavior change for offline users and existing local deployments, and the PR itself acknowledges the previous behavior is broken."
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 1,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "github",
+      "review",
+      "manual",
+      "positive-sample",
+      "should-detect",
+      "api-compatibility",
+      "input-validation",
+      "network",
+      "vosk"
+    ],
+    "difficulty": "medium",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-06-04T00:00:00+00:00"
+  }
+}

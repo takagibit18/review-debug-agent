@@ -1,0 +1,45 @@
+{
+  "id": "golden_pytest-dev_pytest_pr13969",
+  "type": "review",
+  "source": {
+    "repo_full_name": "pytest-dev/pytest",
+    "pr_number": 13969,
+    "url": "https://github.com/pytest-dev/pytest/pull/13969",
+    "merge_commit_sha": "fd47511afeb024d2fbad9257d1b44310672c6a0f",
+    "title": "Fix a typo in the 9.0 changelog"
+  },
+  "input": {
+    "diff_text": "diff --git a/doc/en/changelog.rst b/doc/en/changelog.rst\n--- a/doc/en/changelog.rst\n+++ b/doc/en/changelog.rst\n@@ -326,7 +326,7 @@ Bug fixes\n - `#13865 <https://github.com/pytest-dev/pytest/issues/13865>`_: Fixed `--show-capture` with `--tb=line`.\n \n \n-- `#13522 <https://github.com/pytest-dev/pytest/issues/13522>`_: Fixed :fixture:`pytester` in subprocess mode ignored all :attr`pytester.plugins <pytest.Pytester.plugins>` except the first.\n+- `#13522 <https://github.com/pytest-dev/pytest/issues/13522>`_: Fixed :fixture:`pytester` in subprocess mode ignored all :attr:`pytester.plugins <pytest.Pytester.plugins>` except the first.\n \n   Fixed :fixture:`pytester` in subprocess mode silently ignored non-str :attr:`pytester.plugins <pytest.Pytester.plugins>`.\n   Now it errors instead.\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/pytest-dev/pytest.git",
+      "base_sha": "bbb0c0778a0fce3afb456fa8850994a63320a996",
+      "head_sha": "377ebcb9d88aa8319800e0c0672a8bc284a53770",
+      "checkout_sha": "fd47511afeb024d2fbad9257d1b44310672c6a0f",
+      "diff_base_sha": "bbb0c0778a0fce3afb456fa8850994a63320a996"
+    }
+  },
+  "expected": {
+    "issues": [],
+    "min_issues": 0,
+    "max_issues": 0,
+    "is_empty_annotation": true
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "github",
+      "review",
+      "negative-sample",
+      "zero-issue",
+      "docs-only",
+      "pytest"
+    ],
+    "difficulty": "easy",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-06-04T00:00:00+00:00"
+  }
+}

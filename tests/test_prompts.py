@@ -1,6 +1,6 @@
 """Tests for model prompt contracts."""
 
-from src.analyzer.prompts import FINALIZE_REVIEW_NOTICE, SYSTEM_PROMPT_REVIEW
+from src.analyzer.prompts import FINALIZE_REVIEW_NOTICE, SYSTEM_PROMPT_REVIEW, USER_PREFIX_REVIEW
 
 
 def test_finalize_review_notice_requires_empty_issues_for_speculative_suggestions() -> None:
@@ -31,3 +31,13 @@ def test_review_prompts_bound_positive_extra_to_independent_root_causes() -> Non
     assert "same issue" in combined
     assert "hypothetical fix" in combined
     assert "do not promote" in normalized
+
+
+def test_review_prompts_describe_atomic_review_tools() -> None:
+    combined = f"{SYSTEM_PROMPT_REVIEW}\n{USER_PREFIX_REVIEW}"
+
+    assert "get_changed_context" in combined
+    assert "find_symbol_context" in combined
+    assert "validate_review_draft" in combined
+    assert "policy feedback" in combined
+    assert "submit_review" in combined

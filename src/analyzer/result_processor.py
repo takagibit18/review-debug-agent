@@ -2,34 +2,20 @@
 
 from __future__ import annotations
 
-import re
 from uuid import uuid4
 
 from src.analyzer.context_state import ContextState, DecisionStep
 from src.analyzer.output_formatter import (
     ReviewIssue,
     ReviewReport,
-    Severity,
-    has_specific_code_evidence,
 )
+from src.analyzer.review_policy import is_specific_risk_warning, passes_issue_filter
 from src.analyzer.schemas import AnalysisPlan, DebugResponse, ReviewResponse
 from src.tools.base import ToolResult
 
 
 class ResultProcessor:
     """Convert phase outputs into final structured responses."""
-    _MIN_CRITICAL_CONFIDENCE = 0.85
-    _MIN_WARNING_CONFIDENCE = 0.85
-    _MIN_RISK_WARNING_CONFIDENCE = 0.70
-    _RISK_WARNING_PATTERN = re.compile(
-        r"\b("
-        r"NullReferenceException|exception|regression|breaking|behavior(?:al)? change|"
-        r"user-visible|compatibility(?: risk)?|incorrect|error|fail(?:ure)?|"
-        r"breaks?|throws?|crash|silent(?:ly)?|truncat(?:e|es|ed|ing|ion)|"
-        r"replac(?:e|es|ed|ing)"
-        r")\b",
-        re.IGNORECASE,
-    )
 
     def __init__(self, token_budget: int = 12000, token_hard_budget: int | None = None) -> None:
         self._token_budget = token_budget
@@ -116,27 +102,11 @@ class ResultProcessor:
 
     @staticmethod
     def _passes_issue_filter(issue: ReviewIssue) -> bool:
-        if issue.severity == Severity.CRITICAL:
-            return (
-                issue.confidence >= ResultProcessor._MIN_CRITICAL_CONFIDENCE
-                and has_specific_code_evidence(issue.evidence)
-            )
-        if issue.severity == Severity.WARNING:
-            return (
-                issue.confidence >= ResultProcessor._MIN_WARNING_CONFIDENCE
-                or ResultProcessor._is_specific_risk_warning(issue)
-            )
-        return True
+        return passes_issue_filter(issue)
 
     @staticmethod
     def _is_specific_risk_warning(issue: ReviewIssue) -> bool:
-        if issue.confidence < ResultProcessor._MIN_RISK_WARNING_CONFIDENCE:
-            return False
-        combined = f"{issue.evidence}\n{issue.suggestion}"
-        return (
-            has_specific_code_evidence(issue.evidence)
-            and ResultProcessor._RISK_WARNING_PATTERN.search(combined) is not None
-        )
+        return is_specific_risk_warning(issue)
 
     def is_budget_exhausted(self, total_tokens: int) -> bool:
         """Backward-compatible: True when soft cap is reached."""

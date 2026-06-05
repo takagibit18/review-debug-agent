@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-07T15:36:10.480408+00:00",
+  "generated_at": "2026-06-04T00:00:00+00:00",
   "entries": [
     {
       "fixture_id": "golden_astral-sh_ruff_pr24648",
@@ -8,24 +8,6 @@
       "repo_full_name": "astral-sh/ruff",
       "pr_number": 24648,
       "path": "eval/fixtures/golden_astral-sh_ruff_pr24648.json",
-      "reviewed": true
-    },
-    {
-      "fixture_id": "golden_real_requests_netrc_pr7205",
-      "suite": "golden",
-      "fixture_type": "review",
-      "repo_full_name": "psf/requests",
-      "pr_number": 7205,
-      "path": "eval/fixtures/golden_real_requests_netrc_pr7205.json",
-      "reviewed": true
-    },
-    {
-      "fixture_id": "golden_pytest-dev_pytest_pr8513",
-      "suite": "golden",
-      "fixture_type": "review",
-      "repo_full_name": "pytest-dev/pytest",
-      "pr_number": 8513,
-      "path": "eval/fixtures/golden_pytest-dev_pytest_pr8513.json",
       "reviewed": true
     },
     {
@@ -38,12 +20,75 @@
       "reviewed": true
     },
     {
-      "fixture_id": "golden_pytest-dev_pytest_pr9350",
+      "fixture_id": "golden_openclaw_openclaw_pr37717",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "openclaw/openclaw",
+      "pr_number": 37717,
+      "path": "eval/fixtures/golden_openclaw_openclaw_pr37717.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic_pr11581",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pydantic/pydantic",
+      "pr_number": 11581,
+      "path": "eval/fixtures/golden_pydantic_pydantic_pr11581.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic_pr11685",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pydantic/pydantic",
+      "pr_number": 11685,
+      "path": "eval/fixtures/golden_pydantic_pydantic_pr11685.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic_pr12117",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pydantic/pydantic",
+      "pr_number": 12117,
+      "path": "eval/fixtures/golden_pydantic_pydantic_pr12117.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic_pr12568",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pydantic/pydantic",
+      "pr_number": 12568,
+      "path": "eval/fixtures/golden_pydantic_pydantic_pr12568.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic_pr12590",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pydantic/pydantic",
+      "pr_number": 12590,
+      "path": "eval/fixtures/golden_pydantic_pydantic_pr12590.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pytest-dev_pytest_pr13963",
       "suite": "golden",
       "fixture_type": "review",
       "repo_full_name": "pytest-dev/pytest",
-      "pr_number": 9350,
-      "path": "eval/fixtures/golden_pytest-dev_pytest_pr9350.json",
+      "pr_number": 13963,
+      "path": "eval/fixtures/golden_pytest-dev_pytest_pr13963.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pytest-dev_pytest_pr13969",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pytest-dev/pytest",
+      "pr_number": 13969,
+      "path": "eval/fixtures/golden_pytest-dev_pytest_pr13969.json",
       "reviewed": true
     },
     {
@@ -53,6 +98,42 @@
       "repo_full_name": "pytest-dev/pytest",
       "pr_number": 7254,
       "path": "eval/fixtures/golden_pytest-dev_pytest_pr7254.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pytest-dev_pytest_pr8513",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pytest-dev/pytest",
+      "pr_number": 8513,
+      "path": "eval/fixtures/golden_pytest-dev_pytest_pr8513.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pytest-dev_pytest_pr9350",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pytest-dev/pytest",
+      "pr_number": 9350,
+      "path": "eval/fixtures/golden_pytest-dev_pytest_pr9350.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_real_requests_netrc_pr7205",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "psf/requests",
+      "pr_number": 7205,
+      "path": "eval/fixtures/golden_real_requests_netrc_pr7205.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_Uberi_speech_recognition_pr657",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "Uberi/speech_recognition",
+      "pr_number": 657,
+      "path": "eval/fixtures/golden_Uberi_speech_recognition_pr657.json",
       "reviewed": true
     }
   ]

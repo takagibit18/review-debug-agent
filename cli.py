@@ -15,6 +15,7 @@ from src.analyzer.output_formatter import ReviewIssue, triage_review_report
 from src.analyzer.run_summary import summarize_run_artifacts
 from src import __version__
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
+from src.analyzer.review_failures import find_blocking_review_error
 from src.config import get_settings
 from src.integrations.github_adapter import build_github_advisory_payload
 from src.integrations.github_publisher import (
@@ -182,6 +183,9 @@ def review(
         Path(summary_json).write_text(summary.model_dump_json(indent=2) + "\n", encoding="utf-8")
         click.echo(f"Run summary saved to: {Path(summary_json).as_posix()}")
     _render_review_response(response, ctx.obj["verbose"])
+    blocking_error = find_blocking_review_error(response)
+    if blocking_error:
+        raise click.ClickException(f"review produced no trusted result: {blocking_error}")
 
 
 @main.command()

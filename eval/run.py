@@ -127,6 +127,18 @@ def crawl_cmd(
     type=click.Path(exists=False),
     help="Optional fixed output path for report JSON.",
 )
+@click.option(
+    "--repo",
+    "repo_filters",
+    multiple=True,
+    help="Only run fixtures from this owner/repo. May be provided multiple times.",
+)
+@click.option(
+    "--fixture-id",
+    "fixture_id_filters",
+    multiple=True,
+    help="Only run the named fixture id. May be provided multiple times.",
+)
 def eval_cmd(
     suite: str,
     include_unreviewed: bool,
@@ -136,6 +148,8 @@ def eval_cmd(
     review_max_iterations: int | None,
     temperature: float | None,
     output_json: str | None,
+    repo_filters: tuple[str, ...],
+    fixture_id_filters: tuple[str, ...],
 ) -> None:
     """Run evaluation for one suite."""
     settings = get_settings()
@@ -161,6 +175,8 @@ def eval_cmd(
                 temperature if temperature is not None else settings.eval_temperature
             ),
             output_json=output_json,
+            repo_filters=repo_filters,
+            fixture_id_filters=fixture_id_filters,
         )
     )
 
@@ -208,6 +224,48 @@ def trend_cmd(inputs: tuple[str, ...]) -> None:
         raise click.ClickException("No report files matched the provided inputs.")
     trend = build_quality_trend(paths)
     click.echo(trend.model_dump_json(indent=2))
+
+
+@main.command("merge-reports")
+@click.argument(
+    "inputs",
+    nargs=-1,
+    required=True,
+    type=click.Path(exists=True),
+)
+@click.option(
+    "--suite",
+    default="golden",
+    help="Suite name for the merged report.",
+)
+@click.option(
+    "--output-json",
+    required=True,
+    type=click.Path(exists=False),
+    help="Output path for the merged report JSON.",
+)
+def merge_reports_cmd(inputs: tuple[str, ...], suite: str, output_json: str) -> None:
+    """Merge batch eval reports and recompute aggregate metrics."""
+    reports = [
+        EvalReport.model_validate_json(Path(path).read_text(encoding="utf-8"))
+        for path in inputs
+    ]
+    results: list[EvalResult] = [
+        result for report in reports for result in report.results
+    ]
+    sampled_results = [
+        result for report in reports for result in report.sampled_results
+    ]
+    report = build_eval_report(
+        suite=suite,
+        results=results,
+        sampled_results=sampled_results,
+    )
+    report_path = save_report_json(report, output_path=output_json)
+    artifact_paths = write_eval_artifacts(report, report_path)
+    render_report(report)
+    click.echo(f"Merged {len(reports)} reports into {report_path.as_posix()}")
+    click.echo(f"Diagnostics saved to: {Path(artifact_paths.diagnostics_path).as_posix()}")
 
 
 async def _crawl(
@@ -275,8 +333,15 @@ async def _evaluate(
     review_max_iterations: int = 1,
     temperature: float = 0.0,
     output_json: str | None = None,
+    repo_filters: tuple[str, ...] = (),
+    fixture_id_filters: tuple[str, ...] = (),
 ) -> None:
     fixtures = load_fixtures(suite=suite, reviewed_only=not include_unreviewed)
+    fixtures = _filter_fixtures(
+        fixtures,
+        repo_filters=repo_filters,
+        fixture_id_filters=fixture_id_filters,
+    )
     if not fixtures:
         raise click.ClickException(f"No fixtures found for suite '{suite}'.")
 
@@ -307,6 +372,25 @@ async def _evaluate(
         f"Run summaries saved to: {Path(artifact_paths.run_summaries_path).as_posix()}"
     )
     click.echo(f"Human review sheet: {review_sheet.as_posix()}")
+
+
+def _filter_fixtures(
+    fixtures: list[object],
+    *,
+    repo_filters: tuple[str, ...] = (),
+    fixture_id_filters: tuple[str, ...] = (),
+) -> list[object]:
+    """Filter fixtures for batch eval runs."""
+    repos = {item.strip() for item in repo_filters if item.strip()}
+    fixture_ids = {item.strip() for item in fixture_id_filters if item.strip()}
+    filtered = []
+    for fixture in fixtures:
+        if repos and getattr(fixture.source, "repo_full_name", "") not in repos:
+            continue
+        if fixture_ids and getattr(fixture, "id", "") not in fixture_ids:
+            continue
+        filtered.append(fixture)
+    return filtered
 
 
 if __name__ == "__main__":
