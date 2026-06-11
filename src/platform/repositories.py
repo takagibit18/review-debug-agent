@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import cast
 from uuid import uuid4
 
 from src.platform.models import (
@@ -558,7 +559,7 @@ class PlatformRepository:
         return _delivery(row) if row is not None else None
 
     def _fetchone(self, sql: str, params: tuple[object, ...]) -> sqlite3.Row | None:
-        return self.conn.execute(sql, params).fetchone()
+        return cast(sqlite3.Row | None, self.conn.execute(sql, params).fetchone())
 
 
 def _installation(row: sqlite3.Row) -> InstallationRecord:

@@ -7,7 +7,8 @@ import inspect
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Coroutine
+from typing import Any, Awaitable, Callable, Literal, cast
 
 from pydantic import BaseModel, Field
 
@@ -39,7 +40,8 @@ class ReviewPipelineResult(BaseModel):
     model_name: str = ""
 
 
-ReviewPipeline = Callable[[ReviewRunRecord, EffectiveTenantConfig], Any]
+PublishStatusValue = Literal["not_requested", "dry_run", "published", "failed"]
+ReviewPipeline = Callable[[ReviewRunRecord, EffectiveTenantConfig], ReviewPipelineResult | Awaitable[Any] | dict[str, Any]]
 
 
 class PlatformWorker:
@@ -117,7 +119,7 @@ class PlatformWorker:
     ) -> ReviewPipelineResult:
         result = self.pipeline(run, config)
         if inspect.isawaitable(result):
-            result = asyncio.run(result)
+            result = asyncio.run(cast(Coroutine[Any, Any, Any], result))
         if isinstance(result, ReviewPipelineResult):
             return result
         return ReviewPipelineResult.model_validate(result)
@@ -171,14 +173,21 @@ def _resolve_event_log_path(log_dir: str, run_id: str) -> Path:
     return Path(log_dir) / f"{run_id}.jsonl"
 
 
-def _publish_status(payload: Any) -> str:
+def _publish_status(payload: Any) -> PublishStatusValue:
     if payload is None:
-        return ""
+        return "not_requested"
     if hasattr(payload, "status"):
-        return str(payload.status)
+        return _coerce_publish_status(str(payload.status))
     if isinstance(payload, dict):
-        return str(payload.get("status", "") or "")
-    return ""
+        return _coerce_publish_status(str(payload.get("status", "") or ""))
+    return "not_requested"
+
+
+def _coerce_publish_status(value: str) -> PublishStatusValue:
+    normalized = value.strip()
+    if normalized in {"dry_run", "published", "failed"}:
+        return cast(PublishStatusValue, normalized)
+    return "not_requested"
 
 
 def _summary_total_tokens(payload: Any) -> int:

@@ -34,6 +34,7 @@ from src.platform.schemas import (
     RetryRunResponse,
     ReviewRunDetailResponse,
     ReviewRunResponse,
+    UsageRecordResponse,
     WebhookDeliveryResponse,
 )
 from src.platform.services import WebhookIngestionService
@@ -53,6 +54,14 @@ def platform_startup() -> None:
         init_db(conn)
     finally:
         conn.close()
+    logger.warning(
+        "platform API stores webhook reviews as queued database jobs; start "
+        "`python cli.py platform worker` to process queued runs",
+        extra={
+            "database_url": settings.platform_database_url,
+            "single_worker": settings.platform_worker_single_worker,
+        },
+    )
 
 
 @app.get("/health")
@@ -172,6 +181,9 @@ def platform_health() -> PlatformHealthResponse:
             "mode": "db_polling",
             "single_worker": settings.platform_worker_single_worker,
             "poll_interval_seconds": settings.platform_worker_poll_interval_seconds,
+            "required": True,
+            "start_command": "python cli.py platform worker",
+            "api_processes_reviews_inline": False,
         },
         artifact_root=settings.platform_artifact_root,
     )
@@ -226,7 +238,10 @@ def platform_run_detail(run_id: str) -> ReviewRunDetailResponse:
         base = _run_response(run, artifacts)
         return ReviewRunDetailResponse(
             **base.model_dump(),
-            usage_records=repo.list_usage_records(run_id=run_id),
+            usage_records=[
+                UsageRecordResponse.model_validate(item)
+                for item in repo.list_usage_records(run_id=run_id)
+            ],
         )
 
 

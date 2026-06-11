@@ -131,6 +131,9 @@ installations/repositories/runs, DB webhook idempotency, a polling worker,
 local run artifacts, tenant config resolution, and `/platform/*` management
 APIs for local/internal validation.
 
+Webhook handling only queues review runs; start `python cli.py platform worker`
+as a separate process to execute them.
+
 See [docs/platform_mvp.md](docs/platform_mvp.md) for setup, worker commands,
 mock webhook testing, artifact paths, and current production gaps.
 

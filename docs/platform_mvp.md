@@ -71,6 +71,10 @@ PLATFORM_DATABASE_URL=sqlite:///C:/tmp/mergewarden-platform-test.db
 uvicorn src.api.app:app --reload
 ```
 
+Important: the API process does not run reviews inline. `/github/webhook` records
+the delivery, creates a queued `review_runs` row, and returns quickly. Start the
+worker process below or queued runs will remain queued.
+
 Useful endpoints:
 
 - `GET /platform/health`
@@ -84,6 +88,8 @@ Useful endpoints:
 `POST /platform/runs/{run_id}/retry` creates a new queued run instead of mutating the old run. This keeps the failed run as an immutable audit record.
 
 ## Start The Worker
+
+This process is required for webhook-created review runs to execute.
 
 Process one queued run and exit:
 
