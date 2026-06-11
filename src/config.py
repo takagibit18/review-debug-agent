@@ -406,6 +406,46 @@ class Settings(BaseModel):
         default_factory=lambda: _parse_bool_env("GITHUB_WEBHOOK_ALLOW_RERUN", False),
         description="Allow duplicate delivery/repo/pull/head review execution from webhooks.",
     )
+    platform_database_url: str = Field(
+        default_factory=lambda: os.getenv(
+            "PLATFORM_DATABASE_URL",
+            "sqlite:///.mergewarden/platform.db",
+        ).strip(),
+        min_length=1,
+        description="SQLite database URL for the platform MVP.",
+    )
+    platform_artifact_root: str = Field(
+        default_factory=lambda: os.getenv(
+            "PLATFORM_ARTIFACT_ROOT",
+            ".mergewarden/platform-artifacts",
+        ).strip(),
+        min_length=1,
+        description="Root directory for platform run artifacts.",
+    )
+    platform_init_db_on_startup: bool = Field(
+        default_factory=lambda: _parse_bool_env("PLATFORM_INIT_DB_ON_STARTUP", True),
+        description="Initialize platform tables on API/worker startup.",
+    )
+    platform_review_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env("PLATFORM_REVIEW_ENABLED", True),
+        description="Global default for whether webhook reviews are enabled.",
+    )
+    platform_publish_comments: bool = Field(
+        default_factory=lambda: _parse_bool_env("PLATFORM_PUBLISH_COMMENTS", True),
+        description="Global default for publishing GitHub inline comments.",
+    )
+    platform_worker_poll_interval_seconds: float = Field(
+        default_factory=lambda: float(
+            os.getenv("PLATFORM_WORKER_POLL_INTERVAL_SECONDS", "2.0")
+        ),
+        gt=0.0,
+        le=3600.0,
+        description="Polling interval for the local DB-backed platform worker.",
+    )
+    platform_worker_single_worker: bool = Field(
+        default_factory=lambda: _parse_bool_env("PLATFORM_WORKER_SINGLE_WORKER", True),
+        description="Documented MVP guard: SQLite worker is intended for a single local worker.",
+    )
 
     @field_validator("openai_api_key", "model_name", mode="before")
     @classmethod
@@ -524,6 +564,22 @@ class Settings(BaseModel):
         if value is None:
             return ""
         return _normalize_private_key_env(str(value))
+
+    @field_validator("platform_database_url", mode="before")
+    @classmethod
+    def _validate_platform_database_url(cls, value: object) -> str:
+        if value is None:
+            return "sqlite:///.mergewarden/platform.db"
+        raw = str(value).strip()
+        return raw or "sqlite:///.mergewarden/platform.db"
+
+    @field_validator("platform_artifact_root", mode="before")
+    @classmethod
+    def _validate_platform_artifact_root(cls, value: object) -> str:
+        if value is None:
+            return ".mergewarden/platform-artifacts"
+        raw = str(value).strip()
+        return raw or ".mergewarden/platform-artifacts"
 
     @field_validator("execute_docker_memory_mb", mode="before")
     @classmethod

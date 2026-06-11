@@ -7,7 +7,10 @@ from typing import Any
 import json
 import logging
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from fastapi import FastAPI, HTTPException, Query, Request
 
 from src import __version__
 from src.analyzer.run_summary import RunSummary, summarize_event_log
@@ -18,14 +21,49 @@ from src.integrations.github_pr_review import (
     run_github_pull_request_review,
 )
 from src.integrations.github_webhook import (
-    claim_webhook_work,
-    decide_github_webhook,
     verify_github_webhook_signature,
 )
 from src.orchestrator.agent_loop import AgentOrchestrator
+from src.platform.artifacts import ArtifactStore
+from src.platform.db import connect, init_db
+from src.platform.repositories import PlatformRepository
+from src.platform.schemas import (
+    InstallationResponse,
+    PlatformHealthResponse,
+    RepositoryResponse,
+    RetryRunResponse,
+    ReviewRunDetailResponse,
+    ReviewRunResponse,
+    UsageRecordResponse,
+    WebhookDeliveryResponse,
+)
+from src.platform.services import WebhookIngestionService
 
 app = FastAPI(title="MergeWarden API", version=__version__)
 logger = logging.getLogger(__name__)
+_initialized_platform_databases: set[str] = set()
+
+
+@app.on_event("startup")
+def platform_startup() -> None:
+    """Initialize platform storage for local MVP deployments."""
+    settings = get_settings()
+    if not settings.platform_init_db_on_startup:
+        return
+    conn = connect(settings.platform_database_url)
+    try:
+        init_db(conn)
+        _initialized_platform_databases.add(settings.platform_database_url)
+    finally:
+        conn.close()
+    logger.warning(
+        "platform API stores webhook reviews as queued database jobs; start "
+        "`python cli.py platform worker` to process queued runs",
+        extra={
+            "database_url": settings.platform_database_url,
+            "single_worker": settings.platform_worker_single_worker,
+        },
+    )
 
 
 @app.get("/health")
@@ -77,9 +115,8 @@ def run_summary(run_id: str) -> RunSummary:
 @app.post("/github/webhook")
 async def github_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    """Receive GitHub App webhooks and enqueue pull-request reviews."""
+    """Receive GitHub App webhooks and durably enqueue pull-request reviews."""
     settings = get_settings()
     body = await request.body()
     delivery_id = request.headers.get("X-GitHub-Delivery", "")
@@ -112,51 +149,130 @@ async def github_webhook(
             "action": str(payload.get("action", "") or ""),
         },
     )
-    decision = decide_github_webhook(
-        event_name=event_name,
-        delivery_id=delivery_id,
-        payload=payload,
-        settings=settings,
-    )
-    decision = claim_webhook_work(
-        decision=decision,
-        delivery_id=delivery_id,
-        allow_rerun=settings.github_webhook_allow_rerun,
-    )
-    if decision.status != "accepted" or decision.trigger is None:
-        logger.info(
-            "event ignored",
-            extra={
-                "delivery_id": delivery_id,
-                "event_name": event_name,
-                "status": decision.status,
-                "reason": decision.reason,
-            },
+    with _platform_repo(settings) as repo:
+        result = WebhookIngestionService(repo, settings).ingest(
+            event_name=event_name,
+            delivery_id=delivery_id,
+            payload=payload,
         )
-        return {
-            "status": decision.status,
-            "reason": decision.reason,
-            "delivery_id": delivery_id,
-        }
-
     logger.info(
-        "pull_request review accepted",
+        "webhook handled",
         extra={
             "delivery_id": delivery_id,
-            "owner_repo": decision.trigger.owner_repo,
-            "pull_number": decision.trigger.pull_number,
-            "head_sha": decision.trigger.head_sha,
-            "installation_id": decision.trigger.installation_id,
+            "event_name": event_name,
+            "status": result.status,
+            "reason": result.reason,
+            "run_id": result.run_id,
         },
     )
-    background_tasks.add_task(process_github_pull_request_review, decision.trigger)
-    return {
-        "status": "accepted",
-        "delivery_id": delivery_id,
-        "owner_repo": decision.trigger.owner_repo,
-        "pull_number": decision.trigger.pull_number,
-        "head_sha": decision.trigger.head_sha,
-    }
+    return result.model_dump(exclude_none=True, exclude_defaults=True)
+
+
+@app.get("/platform/health", response_model=PlatformHealthResponse)
+def platform_health() -> PlatformHealthResponse:
+    settings = get_settings()
+    connected = False
+    with _platform_repo(settings) as repo:
+        repo.conn.execute("SELECT 1").fetchone()
+        connected = True
+    return PlatformHealthResponse(
+        status="ok",
+        database_url=settings.platform_database_url,
+        database_connected=connected,
+        worker={
+            "mode": "db_polling",
+            "single_worker": settings.platform_worker_single_worker,
+            "poll_interval_seconds": settings.platform_worker_poll_interval_seconds,
+            "required": True,
+            "start_command": "python cli.py platform worker",
+            "api_processes_reviews_inline": False,
+        },
+        artifact_root=settings.platform_artifact_root,
+    )
+
+
+@app.get("/platform/installations", response_model=list[InstallationResponse])
+def platform_installations() -> list[InstallationResponse]:
+    settings = get_settings()
+    with _platform_repo(settings) as repo:
+        return [
+            InstallationResponse.model_validate(item.model_dump())
+            for item in repo.list_installations()
+        ]
+
+
+@app.get("/platform/repositories", response_model=list[RepositoryResponse])
+def platform_repositories(
+    installation_id: int | None = Query(default=None),
+) -> list[RepositoryResponse]:
+    settings = get_settings()
+    with _platform_repo(settings) as repo:
+        return [
+            RepositoryResponse.model_validate(item.model_dump())
+            for item in repo.list_repositories(installation_id=installation_id)
+        ]
+
+
+@app.get("/platform/runs", response_model=list[ReviewRunResponse])
+def platform_runs(
+    repo_full_name: str | None = Query(default=None),
+    pr_number: int | None = Query(default=None),
+    status: str | None = Query(default=None),
+) -> list[ReviewRunResponse]:
+    settings = get_settings()
+    artifacts = ArtifactStore(settings.platform_artifact_root)
+    with _platform_repo(settings) as repo:
+        return [
+            _run_response(run, artifacts)
+            for run in repo.list_runs(
+                repo_full_name=repo_full_name,
+                pr_number=pr_number,
+                status=status,
+            )
+        ]
+
+
+@app.get("/platform/runs/{run_id}", response_model=ReviewRunDetailResponse)
+def platform_run_detail(run_id: str) -> ReviewRunDetailResponse:
+    settings = get_settings()
+    artifacts = ArtifactStore(settings.platform_artifact_root)
+    with _platform_repo(settings) as repo:
+        run = repo.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail={"message": "run not found", "run_id": run_id})
+        base = _run_response(run, artifacts)
+        return ReviewRunDetailResponse(
+            **base.model_dump(),
+            usage_records=[
+                UsageRecordResponse.model_validate(item.model_dump())
+                for item in repo.list_usage_records(run_id=run_id)
+            ],
+        )
+
+
+@app.post("/platform/runs/{run_id}/retry", response_model=RetryRunResponse)
+def platform_retry_run(run_id: str) -> RetryRunResponse:
+    settings = get_settings()
+    with _platform_repo(settings) as repo:
+        try:
+            retry = repo.retry_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail={"message": "run not found", "run_id": run_id}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail={"message": str(exc), "run_id": run_id}) from exc
+    return RetryRunResponse(status="queued", run_id=retry.run_id, previous_run_id=run_id)
+
+
+@app.get("/platform/deliveries", response_model=list[WebhookDeliveryResponse])
+def platform_deliveries(
+    status: str | None = Query(default=None),
+) -> list[WebhookDeliveryResponse]:
+    settings = get_settings()
+    with _platform_repo(settings) as repo:
+        return [
+            WebhookDeliveryResponse.model_validate(item.model_dump())
+            for item in repo.list_deliveries(status=status)
+        ]
 
 
 async def process_github_pull_request_review(
@@ -188,6 +304,36 @@ def _resolve_event_log_path(log_dir: str, run_id: str) -> str:
     from pathlib import Path
 
     return str(Path(log_dir) / f"{run_id}.jsonl")
+
+
+@contextmanager
+def _platform_repo(settings: Any | None = None) -> Iterator[PlatformRepository]:
+    active_settings = settings or get_settings()
+    conn = connect(active_settings.platform_database_url)
+    try:
+        if (
+            active_settings.platform_init_db_on_startup
+            and active_settings.platform_database_url not in _initialized_platform_databases
+        ):
+            init_db(conn)
+            _initialized_platform_databases.add(active_settings.platform_database_url)
+        yield PlatformRepository(conn)
+    finally:
+        conn.close()
+
+
+def _run_response(run: Any, artifacts: ArtifactStore) -> ReviewRunResponse:
+    artifact_paths = artifacts.metadata_for_run(run.run_id)
+    for key in ("review_response_path", "run_summary_path", "publish_result_path"):
+        value = getattr(run, key, "")
+        if value:
+            artifact_paths[key] = value
+    return ReviewRunResponse.model_validate(
+        {
+            **run.model_dump(),
+            "artifact_paths": artifact_paths,
+        }
+    )
 
 
 @app.exception_handler(HTTPException)

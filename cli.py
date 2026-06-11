@@ -27,6 +27,9 @@ from src.integrations.github_publisher import (
     resolve_github_token,
 )
 from src.orchestrator.agent_loop import AgentOrchestrator
+from src.platform.db import connect, init_db
+from src.platform.repositories import PlatformRepository
+from src.platform.worker import PlatformWorker
 
 T = TypeVar("T")
 
@@ -267,6 +270,55 @@ def _load_changed_lines(path: Path) -> dict[str, set[int]]:
 @main.group("github-advisory")
 def github_advisory() -> None:
     """Publish MergeWarden advisory checks and PR comments."""
+
+
+@main.group("platform")
+def platform() -> None:
+    """Manage the local platform MVP database and worker."""
+
+
+@platform.command("init-db")
+def platform_init_db() -> None:
+    """Initialize platform MVP database tables."""
+    settings = get_settings()
+    conn = connect(settings.platform_database_url)
+    try:
+        init_db(conn)
+    finally:
+        conn.close()
+    click.echo(f"Platform database initialized: {settings.platform_database_url}")
+
+
+@platform.command("worker")
+@click.option("--once", is_flag=True, help="Process at most one queued run and exit.")
+@click.option(
+    "--poll-interval",
+    type=float,
+    default=None,
+    help="Seconds between queue polls. Defaults to PLATFORM_WORKER_POLL_INTERVAL_SECONDS.",
+)
+def platform_worker(once: bool, poll_interval: float | None) -> None:
+    """Run the minimal DB-polling review worker."""
+    settings = get_settings()
+    conn = connect(settings.platform_database_url)
+    try:
+        init_db(conn)
+        worker = PlatformWorker(
+            PlatformRepository(conn),
+            settings=settings,
+        )
+        if once:
+            processed = worker.run_once()
+            click.echo("Processed one platform run." if processed else "No queued platform runs.")
+            return
+        click.echo(
+            "Starting platform worker "
+            f"(single_worker={settings.platform_worker_single_worker}, "
+            f"poll_interval={poll_interval or settings.platform_worker_poll_interval_seconds:g}s)"
+        )
+        worker.run_forever(poll_interval_seconds=poll_interval)
+    finally:
+        conn.close()
 
 
 @github_advisory.command("publish")
