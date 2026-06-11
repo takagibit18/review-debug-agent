@@ -195,7 +195,10 @@ def platform_health() -> PlatformHealthResponse:
 def platform_installations() -> list[InstallationResponse]:
     settings = get_settings()
     with _platform_repo(settings) as repo:
-        return [InstallationResponse.model_validate(item) for item in repo.list_installations()]
+        return [
+            InstallationResponse.model_validate(item.model_dump())
+            for item in repo.list_installations()
+        ]
 
 
 @app.get("/platform/repositories", response_model=list[RepositoryResponse])
@@ -205,7 +208,7 @@ def platform_repositories(
     settings = get_settings()
     with _platform_repo(settings) as repo:
         return [
-            RepositoryResponse.model_validate(item)
+            RepositoryResponse.model_validate(item.model_dump())
             for item in repo.list_repositories(installation_id=installation_id)
         ]
 
@@ -241,7 +244,7 @@ def platform_run_detail(run_id: str) -> ReviewRunDetailResponse:
         return ReviewRunDetailResponse(
             **base.model_dump(),
             usage_records=[
-                UsageRecordResponse.model_validate(item)
+                UsageRecordResponse.model_validate(item.model_dump())
                 for item in repo.list_usage_records(run_id=run_id)
             ],
         )
@@ -267,7 +270,7 @@ def platform_deliveries(
     settings = get_settings()
     with _platform_repo(settings) as repo:
         return [
-            WebhookDeliveryResponse.model_validate(item)
+            WebhookDeliveryResponse.model_validate(item.model_dump())
             for item in repo.list_deliveries(status=status)
         ]
 
