@@ -84,9 +84,10 @@ def _bool_value(
     installation_config: TenantConfigRecord | None,
     default: bool,
 ) -> bool:
-    for record in (repository_config, installation_config):
-        if record is not None:
-            return bool(getattr(record, field_name))
+    if repository_config is not None:
+        return bool(getattr(repository_config, field_name))
+    if installation_config is not None:
+        return bool(getattr(installation_config, field_name))
     return bool(default)
 
 

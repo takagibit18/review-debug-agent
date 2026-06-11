@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any
 
 from src.config import Settings
@@ -182,7 +183,7 @@ class WebhookIngestionService:
         )
 
     def _upsert_installation_if_present(self, fields: PullRequestWebhookFields):
-        github_installation_id = fields.github_installation_id or 0
+        github_installation_id = fields.github_installation_id or _synthetic_installation_id(fields)
         account_login = fields.account_login or fields.repo_owner or "unknown"
         account_type = fields.account_type or "unknown"
         return self.repo.upsert_installation(
@@ -294,3 +295,10 @@ def _int_or_none(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _synthetic_installation_id(fields: PullRequestWebhookFields) -> int:
+    """Build a stable negative id for token-mode webhooks without installation ids."""
+    scope = fields.repo_full_name or fields.account_login or fields.repo_owner or "unknown"
+    digest = sha256(scope.encode("utf-8")).hexdigest()[:12]
+    return -int(digest, 16)

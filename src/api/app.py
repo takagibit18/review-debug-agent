@@ -41,6 +41,7 @@ from src.platform.services import WebhookIngestionService
 
 app = FastAPI(title="MergeWarden API", version=__version__)
 logger = logging.getLogger(__name__)
+_initialized_platform_databases: set[str] = set()
 
 
 @app.on_event("startup")
@@ -52,6 +53,7 @@ def platform_startup() -> None:
     conn = connect(settings.platform_database_url)
     try:
         init_db(conn)
+        _initialized_platform_databases.add(settings.platform_database_url)
     finally:
         conn.close()
     logger.warning(
@@ -163,7 +165,7 @@ async def github_webhook(
             "run_id": result.run_id,
         },
     )
-    return result.model_dump(exclude_none=True)
+    return result.model_dump(exclude_none=True, exclude_defaults=True)
 
 
 @app.get("/platform/health", response_model=PlatformHealthResponse)
@@ -304,11 +306,23 @@ def _resolve_event_log_path(log_dir: str, run_id: str) -> str:
 @contextmanager
 def _platform_repo(settings: Any | None = None) -> Iterator[PlatformRepository]:
     active_settings = settings or get_settings()
+    _ensure_platform_db_initialized(active_settings)
     conn = connect(active_settings.platform_database_url)
     try:
-        if active_settings.platform_init_db_on_startup:
-            init_db(conn)
         yield PlatformRepository(conn)
+    finally:
+        conn.close()
+
+
+def _ensure_platform_db_initialized(settings: Any) -> None:
+    if not settings.platform_init_db_on_startup:
+        return
+    if settings.platform_database_url in _initialized_platform_databases:
+        return
+    conn = connect(settings.platform_database_url)
+    try:
+        init_db(conn)
+        _initialized_platform_databases.add(settings.platform_database_url)
     finally:
         conn.close()
 
