@@ -14,11 +14,17 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def _platform_env(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("PLATFORM_DATABASE_URL", f"sqlite:///{tmp_path / 'platform.db'}")
+    monkeypatch.setenv("PLATFORM_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("PLATFORM_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("PLATFORM_PUBLISH_COMMENTS", "true")
+
+
 def test_github_webhook_accepts_valid_ping_signature(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
 
     response = _post_webhook(api_app.app, "ping", "delivery-ping", {"zen": "ok"})
@@ -71,9 +77,7 @@ def test_github_webhook_rejects_missing_signature(monkeypatch) -> None:  # type:
 
 def test_github_webhook_unsupported_event_is_ignored(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
 
     response = _post_webhook(api_app.app, "issues", "delivery-issues", {"action": "opened"})
@@ -85,41 +89,25 @@ def test_github_webhook_unsupported_event_is_ignored(monkeypatch) -> None:  # ty
 
 def test_github_webhook_pull_request_opened_triggers_review(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
     monkeypatch.setenv("GITHUB_AUTH_MODE", "app")
-    seen: list[dict[str, object]] = []
-
-    async def _record(trigger):  # type: ignore[no-untyped-def]
-        seen.append(trigger.model_dump())
-
-    monkeypatch.setattr(api_app, "process_github_pull_request_review", _record)
 
     response = _post_webhook(api_app.app, "pull_request", "delivery-opened", _pr_payload("opened"))
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
-    assert seen[0]["owner_repo"] == "owner/repo"
-    assert seen[0]["pull_number"] == 7
-    assert seen[0]["head_sha"] == "head-sha"
-    assert seen[0]["installation_id"] == 123
+    assert response.json()["status"] == "queued"
+    assert response.json()["owner_repo"] == "owner/repo"
+    assert response.json()["pull_number"] == 7
+    assert response.json()["head_sha"] == "head-sha"
+    assert response.json()["run_id"]
 
 
 def test_github_webhook_pull_request_synchronize_triggers_review(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
     monkeypatch.setenv("GITHUB_AUTH_MODE", "app")
-    seen: list[str] = []
-
-    async def _record(trigger):  # type: ignore[no-untyped-def]
-        seen.append(trigger.action)
-
-    monkeypatch.setattr(api_app, "process_github_pull_request_review", _record)
 
     response = _post_webhook(
         api_app.app,
@@ -129,36 +117,25 @@ def test_github_webhook_pull_request_synchronize_triggers_review(monkeypatch) ->
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
-    assert seen == ["synchronize"]
+    assert response.json()["status"] == "queued"
+    assert response.json()["run_id"]
 
 
 def test_github_webhook_unsupported_pull_request_action_is_ignored(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
-    seen: list[str] = []
-
-    async def _record(trigger):  # type: ignore[no-untyped-def]
-        seen.append(trigger.action)
-
-    monkeypatch.setattr(api_app, "process_github_pull_request_review", _record)
 
     response = _post_webhook(api_app.app, "pull_request", "delivery-edited", _pr_payload("edited"))
 
     assert response.status_code == 200
     assert response.json()["status"] == "ignored"
     assert response.json()["reason"] == "unsupported_action:edited"
-    assert seen == []
 
 
 def test_github_webhook_app_mode_skips_missing_installation_id(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
     monkeypatch.setenv("GITHUB_AUTH_MODE", "app")
     payload = _pr_payload("opened")
@@ -173,9 +150,7 @@ def test_github_webhook_app_mode_skips_missing_installation_id(monkeypatch) -> N
 
 def test_github_webhook_draft_pull_request_is_ignored(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
     monkeypatch.setenv("GITHUB_AUTH_MODE", "app")
     payload = _pr_payload("opened")
@@ -190,26 +165,18 @@ def test_github_webhook_draft_pull_request_is_ignored(monkeypatch) -> None:  # t
 
 def test_github_webhook_duplicate_delivery_does_not_trigger_twice(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
-    from src.integrations.github_webhook import webhook_idempotency_store
 
-    webhook_idempotency_store.clear()
     monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
     monkeypatch.setenv("GITHUB_AUTH_MODE", "app")
-    seen: list[str] = []
-
-    async def _record(trigger):  # type: ignore[no-untyped-def]
-        seen.append(trigger.delivery_id)
-
-    monkeypatch.setattr(api_app, "process_github_pull_request_review", _record)
     payload = _pr_payload("opened")
 
     first = _post_webhook(api_app.app, "pull_request", "delivery-dup", payload)
     second = _post_webhook(api_app.app, "pull_request", "delivery-dup", payload)
 
-    assert first.json()["status"] == "accepted"
+    assert first.json()["status"] == "queued"
     assert second.json()["status"] == "duplicate"
     assert second.json()["reason"] == "duplicate_delivery"
-    assert seen == ["delivery-dup"]
+    assert len(TestClient(api_app.app).get("/platform/runs").json()) == 1
 
 
 def _pr_payload(action: str) -> dict[str, Any]:

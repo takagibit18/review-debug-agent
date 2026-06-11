@@ -34,6 +34,7 @@ class GitHubPublishRequest(BaseModel):
     response: ReviewResponse
     changed_lines: dict[str, list[int]] = Field(default_factory=dict)
     dry_run: bool = True
+    publish_comments: bool = True
 
 
 class CommentMetadata(BaseModel):
@@ -242,13 +243,20 @@ class GitHubPublisher:
         candidates = [
             _build_pending_comment(item, request.response.run_id, request.head_sha)
             for item in advisory.inline_comments
-        ]
-        lifecycle = build_comment_lifecycle_plan(
-            candidates=candidates,
-            existing_comments=existing_comments or [],
-            run_id=request.response.run_id,
-            head_sha=request.head_sha,
-            summary_only_count=len(advisory.summary_only_issues),
+        ] if request.publish_comments else []
+        lifecycle = (
+            build_comment_lifecycle_plan(
+                candidates=candidates,
+                existing_comments=existing_comments or [],
+                run_id=request.response.run_id,
+                head_sha=request.head_sha,
+                summary_only_count=len(advisory.summary_only_issues),
+            )
+            if request.publish_comments
+            else CommentLifecyclePlan(
+                summary_only_count=len(advisory.summary_only_issues)
+                + len(advisory.inline_comments)
+            )
         )
         return GitHubPublishResult(
             status="dry_run" if request.dry_run else "planned",
@@ -265,13 +273,22 @@ class GitHubPublisher:
         """Publish or dry-run the advisory."""
         if request.dry_run:
             return self.build_publish_plan(request)
-        existing_comments = await self._client.list_review_comments(
-            request.owner_repo,
-            request.pr_number,
+        existing_comments = (
+            await self._client.list_review_comments(
+                request.owner_repo,
+                request.pr_number,
+            )
+            if request.publish_comments
+            else []
         )
         result = self.build_publish_plan(request, existing_comments=existing_comments)
         check_run = await self._client.create_check_run(request.owner_repo, result.check_run)
         records: list[PublishedCommentRecord] = []
+        if not request.publish_comments:
+            result.status = "published"
+            result.check_run = check_run
+            result.inline_comment_records = records
+            return result
         for create_item in result.lifecycle_plan.create:
             created = await self._client.create_review_comment(
                 request.owner_repo,

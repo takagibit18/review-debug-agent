@@ -124,6 +124,16 @@ uvicorn src.api.app:app --reload
 - `POST /debug`
 - `GET /runs/{run_id}/summary`
 
+### Platform MVP
+
+GitHub App mode now has a minimal persistent backend layer: SQLite-backed
+installations/repositories/runs, DB webhook idempotency, a polling worker,
+local run artifacts, tenant config resolution, and `/platform/*` management
+APIs for local/internal validation.
+
+See [docs/platform_mvp.md](docs/platform_mvp.md) for setup, worker commands,
+mock webhook testing, artifact paths, and current production gaps.
+
 ## 10 分钟接入 GitHub Action 自托管审查
 
 这是面向中文用户的推荐 happy path：目标仓库只需要复制一个 workflow，配置一个 secret 和一个 repository variable，不需要把 MergeWarden 源码 vendoring 到业务仓库。

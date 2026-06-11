@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.review_failures import find_blocking_review_error
-from src.analyzer.schemas import ReviewRequest
+from src.analyzer.schemas import ReviewRequest, ReviewResponse
 from src.integrations.github_auth import GitHubAuthProvider, get_github_auth_provider
-from src.integrations.github_publisher import GitHubApiClient, GitHubPublishRequest, GitHubPublisher
+from src.integrations.github_publisher import (
+    GitHubApiClient,
+    GitHubPublishRequest,
+    GitHubPublisher,
+)
 from src.orchestrator.agent_loop import AgentOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -43,12 +48,37 @@ class GitHubPullRequestReviewResult(BaseModel):
     check_run_id: int | None = None
 
 
+class GitHubPullRequestReviewExecution(BaseModel):
+    """Full execution payload used by the platform worker for artifact capture."""
+
+    result: GitHubPullRequestReviewResult
+    review_response: ReviewResponse
+    publish_result: Any
+    diff_text: str = ""
+    changed_lines: dict[str, list[int]]
+
+
 async def run_github_pull_request_review(
     trigger: GitHubPullRequestReviewTrigger,
     *,
     auth_provider: GitHubAuthProvider | None = None,
 ) -> GitHubPullRequestReviewResult:
     """Review and publish one GitHub pull request using the configured auth mode."""
+    execution = await execute_github_pull_request_review(
+        trigger,
+        auth_provider=auth_provider,
+    )
+    return execution.result
+
+
+async def execute_github_pull_request_review(
+    trigger: GitHubPullRequestReviewTrigger,
+    *,
+    auth_provider: GitHubAuthProvider | None = None,
+    publish_comments: bool = True,
+    model_name: str | None = None,
+) -> GitHubPullRequestReviewExecution:
+    """Run the GitHub PR review flow and return full artifacts for persistence."""
     provider = auth_provider or get_github_auth_provider()
     token = await provider.get_token(trigger.installation_id)
     client = GitHubApiClient(token)
@@ -74,7 +104,12 @@ async def run_github_pull_request_review(
         )
 
         response = await AgentOrchestrator().run_review(
-            ReviewRequest(repo_path=".", diff_mode=True, diff_text=diff_text)
+            ReviewRequest(
+                repo_path=".",
+                diff_mode=True,
+                diff_text=diff_text,
+                model_name=model_name,
+            )
         )
         blocking_error = find_blocking_review_error(response)
         if blocking_error:
@@ -88,6 +123,7 @@ async def run_github_pull_request_review(
                 response=response,
                 changed_lines=changed_lines,
                 dry_run=False,
+                publish_comments=publish_comments,
             )
         )
         logger.info(
@@ -118,7 +154,13 @@ async def run_github_pull_request_review(
                 "issues_count": result.issues_count,
             },
         )
-        return result
+        return GitHubPullRequestReviewExecution(
+            result=result,
+            review_response=response,
+            publish_result=publish_result,
+            diff_text=diff_text,
+            changed_lines=changed_lines,
+        )
     except Exception:
         logger.exception(
             "review failed",
