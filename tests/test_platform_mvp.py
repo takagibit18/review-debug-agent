@@ -19,7 +19,8 @@ def test_webhook_delivery_idempotency_creates_one_queued_run(monkeypatch, tmp_pa
 
     first = _post_webhook(app, "pull_request", "delivery-1", _pr_payload("opened"))
     second = _post_webhook(app, "pull_request", "delivery-1", _pr_payload("opened"))
-    runs = TestClient(app).get("/platform/runs").json()
+    client = TestClient(app)
+    runs = client.get("/platform/runs", headers=_tenant_headers(client)).json()
 
     assert first.status_code == 200
     assert first.json()["status"] == "queued"
@@ -45,7 +46,8 @@ def test_webhook_repo_pr_head_idempotency_reuses_existing_run(monkeypatch, tmp_p
     assert second.json()["status"] == "duplicate"
     assert second.json()["reason"] == "duplicate_review_head"
     assert second.json()["run_id"] == first.json()["run_id"]
-    assert len(TestClient(app).get("/platform/runs").json()) == 1
+    client = TestClient(app)
+    assert len(client.get("/platform/runs", headers=_tenant_headers(client)).json()) == 1
 
 
 def test_ignored_event_and_draft_pr_are_recorded(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -58,14 +60,14 @@ def test_ignored_event_and_draft_pr_are_recorded(monkeypatch, tmp_path) -> None:
 
     ignored_event = _post_webhook(app, "issues", "delivery-issues", {"action": "opened"})
     draft = _post_webhook(app, "pull_request", "delivery-draft", draft_payload)
-    deliveries = TestClient(app).get("/platform/deliveries").json()
+    client = TestClient(app)
+    deliveries = client.get("/platform/deliveries", headers=_tenant_headers(client)).json()
 
     assert ignored_event.json()["status"] == "ignored"
     assert ignored_event.json()["reason"] == "unsupported_event:issues"
     assert draft.json()["status"] == "ignored"
     assert draft.json()["reason"] == "draft_pull_request"
     assert {(item["delivery_id"], item["status"], item["reason"]) for item in deliveries} == {
-        ("delivery-issues", "ignored", "unsupported_event:issues"),
         ("delivery-draft", "ignored", "draft_pull_request"),
     }
 
@@ -220,9 +222,14 @@ def test_platform_runs_query_detail_and_retry(monkeypatch, tmp_path) -> None:  #
         repo.mark_run_failed(run_id, error_type="RuntimeError", error_message="boom")
 
     client = TestClient(app)
-    failed_runs = client.get("/platform/runs", params={"status": "failed"}).json()
-    detail = client.get(f"/platform/runs/{run_id}").json()
-    retry = client.post(f"/platform/runs/{run_id}/retry")
+    headers = _tenant_headers(client)
+    failed_runs = client.get(
+        "/platform/runs",
+        params={"status": "failed"},
+        headers=headers,
+    ).json()
+    detail = client.get(f"/platform/runs/{run_id}", headers=headers).json()
+    retry = client.post(f"/platform/runs/{run_id}/retry", headers=headers)
 
     assert failed_runs[0]["run_id"] == run_id
     assert detail["run_id"] == run_id
@@ -303,6 +310,12 @@ def _post_webhook(app, event: str, delivery: str, payload: dict[str, Any]):  # t
             "X-Hub-Signature-256": _signature(body, "secret"),
         },
     )
+
+
+def _tenant_headers(client) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    tenants = client.get("/platform/installations").json()
+    assert tenants
+    return {"X-MergeWarden-Tenant": str(tenants[0]["id"])}
 
 
 def _signature(body: bytes, secret: str) -> str:

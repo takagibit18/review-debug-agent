@@ -11,6 +11,7 @@ It is a deployable MVP shape, not a complete SaaS product.
 - A run state machine: `queued`, `running`, `succeeded`, `failed`, `cancelled`, `skipped`.
 - Local artifact storage under `.mergewarden/platform-artifacts/<run_id>/` by default.
 - Basic management APIs for health, installations, repositories, runs, retries, and deliveries.
+- Request-scoped tenant context for core management APIs using `X-MergeWarden-Tenant`.
 - Tenant config resolution with priority: repository config, installation config, global settings.
 - Advisory-only GitHub publishing. `publish_comments=false` still allows the neutral check path while suppressing inline comments.
 
@@ -34,6 +35,7 @@ PLATFORM_ARTIFACT_ROOT=.mergewarden/platform-artifacts
 PLATFORM_INIT_DB_ON_STARTUP=true
 PLATFORM_REVIEW_ENABLED=true
 PLATFORM_PUBLISH_COMMENTS=true
+PLATFORM_DEFAULT_TENANT_ID=
 PLATFORM_WORKER_POLL_INTERVAL_SECONDS=2.0
 GITHUB_REVIEW_DRAFT_PRS=false
 GITHUB_WEBHOOK_SECRET=<github webhook secret>
@@ -78,12 +80,25 @@ worker process below or queued runs will remain queued.
 Useful endpoints:
 
 - `GET /platform/health`
+- `GET /platform/tenant`
 - `GET /platform/installations`
 - `GET /platform/repositories?installation_id=1`
 - `GET /platform/runs?repo_full_name=owner/repo&pr_number=7&status=queued`
 - `GET /platform/runs/{run_id}`
 - `POST /platform/runs/{run_id}/retry`
 - `GET /platform/deliveries?status=ignored`
+
+Core management endpoints for repositories, runs, retries, and deliveries require
+tenant context. Send the internal installation id as:
+
+```text
+X-MergeWarden-Tenant: <installations.id>
+```
+
+`GET /platform/tenant` shows whether the current request resolved a tenant and
+which source was used. For local development only, `PLATFORM_DEFAULT_TENANT_ID`
+can supply a fallback tenant id when the header is omitted. Leave it empty in
+shared deployments so missing tenant context fails closed.
 
 `POST /platform/runs/{run_id}/retry` creates a new queued run instead of mutating the old run. This keeps the failed run as an immutable audit record.
 
@@ -145,10 +160,10 @@ POST http://localhost:8000/github/webhook
 Then inspect:
 
 ```bash
-curl http://localhost:8000/platform/runs
-curl http://localhost:8000/platform/deliveries
+curl -H "X-MergeWarden-Tenant: <tenant_id>" http://localhost:8000/platform/runs
+curl -H "X-MergeWarden-Tenant: <tenant_id>" http://localhost:8000/platform/deliveries
 python cli.py platform worker --once
-curl http://localhost:8000/platform/runs/<run_id>
+curl -H "X-MergeWarden-Tenant: <tenant_id>" http://localhost:8000/platform/runs/<run_id>
 ```
 
 ## Database Tables
@@ -181,7 +196,18 @@ Possible files:
 
 ## Tenant Boundaries
 
-The MVP separates installations, repositories, runs, webhook deliveries, configs, and usage records in the database. Webhook decisions resolve config with this order:
+The MVP treats `installations.id` as the tenant id and `installations.account_login`
+as the tenant name. GitHub App webhooks resolve tenant from the installation
+payload and persist it onto repositories, review runs, usage, and tenant-scoped
+deliveries. Management requests resolve tenant from `X-MergeWarden-Tenant` or,
+for local development only, `PLATFORM_DEFAULT_TENANT_ID`.
+
+Core management reads and writes fail closed when tenant context is missing or
+invalid. Tenant-scoped lists/details/retries filter by `installation_id`, and the
+active-run duplicate key is tenant-local, so two tenants can process the same
+`repo/pr/head_sha` without blocking each other.
+
+Webhook decisions resolve config with this order:
 
 ```text
 repository config > installation config > global settings

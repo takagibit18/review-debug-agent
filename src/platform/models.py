@@ -60,6 +60,7 @@ class ReviewRunRecord(BaseModel):
 class WebhookDeliveryRecord(BaseModel):
     id: int
     delivery_id: str
+    installation_id: int | None = None
     event: str = ""
     action: str = ""
     repo_full_name: str = ""

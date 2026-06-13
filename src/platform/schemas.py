@@ -31,6 +31,22 @@ class PlatformHealthResponse(BaseModel):
     artifact_root: str
 
 
+class TenantSummaryResponse(BaseModel):
+    id: int
+    name: str
+    github_installation_id: int
+    account_login: str = ""
+    account_type: str = ""
+    status: str = "active"
+
+
+class TenantContextResponse(BaseModel):
+    resolved: bool
+    source: str
+    header_name: str
+    tenant: TenantSummaryResponse | None = None
+
+
 class InstallationResponse(InstallationRecord):
     pass
 

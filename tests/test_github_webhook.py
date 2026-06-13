@@ -176,7 +176,8 @@ def test_github_webhook_duplicate_delivery_does_not_trigger_twice(monkeypatch) -
     assert first.json()["status"] == "queued"
     assert second.json()["status"] == "duplicate"
     assert second.json()["reason"] == "duplicate_delivery"
-    assert len(TestClient(api_app.app).get("/platform/runs").json()) == 1
+    client = TestClient(api_app.app)
+    assert len(client.get("/platform/runs", headers=_tenant_headers(client)).json()) == 1
 
 
 def _pr_payload(action: str) -> dict[str, Any]:
@@ -205,6 +206,12 @@ def _post_webhook(app, event: str, delivery: str, payload: dict[str, Any]):  # t
             "X-Hub-Signature-256": _signature(body, "secret"),
         },
     )
+
+
+def _tenant_headers(client) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    tenants = client.get("/platform/installations").json()
+    assert tenants
+    return {"X-MergeWarden-Tenant": str(tenants[0]["id"])}
 
 
 def _body(payload: dict[str, Any]) -> bytes:
