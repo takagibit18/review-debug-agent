@@ -48,6 +48,7 @@ class WebhookIngestionService:
         fields = parse_pull_request_webhook_fields(payload)
         delivery, duplicate_delivery = self.repo.insert_webhook_delivery(
             delivery_id=delivery_id or "",
+            installation_id=None,
             event=event_name,
             action=fields.action,
             repo_full_name=fields.repo_full_name,
@@ -70,7 +71,11 @@ class WebhookIngestionService:
             return WebhookIngestionResponse(status="ok", reason="ping", delivery_id=delivery_id)
 
         if event_name in {"installation", "installation_repositories"}:
-            self._upsert_installation_if_present(fields)
+            installation = self._upsert_installation_if_present(fields)
+            self.repo.update_delivery_tenant(
+                delivery_id,
+                installation_id=installation.id,
+            )
             self.repo.update_delivery_status(
                 delivery_id,
                 status="ignored",
@@ -111,6 +116,7 @@ class WebhookIngestionService:
             )
 
         installation = self._upsert_installation_if_present(fields)
+        self.repo.update_delivery_tenant(delivery_id, installation_id=installation.id)
         repository = self._upsert_repository_if_present(fields, installation.id)
         if not repository.enabled:
             return self._ignore(delivery_id, reason="repository_disabled", fields=fields)
@@ -127,6 +133,7 @@ class WebhookIngestionService:
             return self._ignore(delivery_id, reason="draft_pull_request", fields=fields)
 
         existing = self.repo.find_active_run(
+            installation_id=installation.id,
             repo_full_name=fields.repo_full_name,
             pr_number=fields.pr_number,
             head_sha=fields.head_sha,
@@ -153,6 +160,7 @@ class WebhookIngestionService:
             )
         except sqlite3.IntegrityError:
             existing = self.repo.find_active_run(
+                installation_id=installation.id,
                 repo_full_name=fields.repo_full_name,
                 pr_number=fields.pr_number,
                 head_sha=fields.head_sha,

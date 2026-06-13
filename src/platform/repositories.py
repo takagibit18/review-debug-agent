@@ -137,6 +137,7 @@ class PlatformRepository:
         self,
         *,
         delivery_id: str,
+        installation_id: int | None = None,
         event: str,
         action: str,
         repo_full_name: str,
@@ -147,11 +148,20 @@ class PlatformRepository:
             self.conn.execute(
                 """
                 INSERT INTO webhook_deliveries (
-                    delivery_id, event, action, repo_full_name, pr_number, head_sha, status
+                    delivery_id, installation_id, event, action, repo_full_name,
+                    pr_number, head_sha, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'received')
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'received')
                 """,
-                (delivery_id, event, action, repo_full_name, pr_number, head_sha),
+                (
+                    delivery_id,
+                    installation_id,
+                    event,
+                    action,
+                    repo_full_name,
+                    pr_number,
+                    head_sha,
+                ),
             )
             self.conn.commit()
             row = self._delivery_by_id(delivery_id)
@@ -167,6 +177,25 @@ class PlatformRepository:
             row = self._delivery_by_id(delivery_id)
             assert row is not None
             return row, True
+
+    def update_delivery_tenant(
+        self,
+        delivery_id: str,
+        *,
+        installation_id: int,
+    ) -> WebhookDeliveryRecord:
+        self.conn.execute(
+            """
+            UPDATE webhook_deliveries
+            SET installation_id = ?
+            WHERE delivery_id = ?
+            """,
+            (installation_id, delivery_id),
+        )
+        self.conn.commit()
+        row = self._delivery_by_id(delivery_id)
+        assert row is not None
+        return row
 
     def update_delivery_status(
         self,
@@ -192,21 +221,22 @@ class PlatformRepository:
     def list_deliveries(
         self,
         *,
+        installation_id: int | None = None,
         status: str | None = None,
     ) -> list[WebhookDeliveryRecord]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if installation_id is not None:
+            clauses.append("installation_id = ?")
+            params.append(installation_id)
         if status:
-            rows = self.conn.execute(
-                """
-                SELECT * FROM webhook_deliveries
-                WHERE status = ?
-                ORDER BY received_at DESC, id DESC
-                """,
-                (status,),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM webhook_deliveries ORDER BY received_at DESC, id DESC"
-            ).fetchall()
+            clauses.append("status = ?")
+            params.append(status)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM webhook_deliveries{where} ORDER BY received_at DESC, id DESC",
+            tuple(params),
+        ).fetchall()
         return [_delivery(row) for row in rows]
 
     def create_review_run(
@@ -251,6 +281,7 @@ class PlatformRepository:
     def find_active_run(
         self,
         *,
+        installation_id: int,
         repo_full_name: str,
         pr_number: int,
         head_sha: str,
@@ -259,12 +290,21 @@ class PlatformRepository:
         row = self._fetchone(
             f"""
             SELECT * FROM review_runs
-            WHERE repo_full_name = ? AND pr_number = ? AND head_sha = ?
+            WHERE installation_id = ?
+              AND repo_full_name = ?
+              AND pr_number = ?
+              AND head_sha = ?
               AND status IN ({placeholders})
             ORDER BY id DESC
             LIMIT 1
             """,
-            (repo_full_name, pr_number, head_sha, *ACTIVE_RUN_STATUSES),
+            (
+                installation_id,
+                repo_full_name,
+                pr_number,
+                head_sha,
+                *ACTIVE_RUN_STATUSES,
+            ),
         )
         return _run(row) if row is not None else None
 
@@ -361,19 +401,34 @@ class PlatformRepository:
         assert row is not None
         return row
 
-    def get_run(self, run_id: str) -> ReviewRunRecord | None:
-        row = self._fetchone("SELECT * FROM review_runs WHERE run_id = ?", (run_id,))
+    def get_run(
+        self,
+        run_id: str,
+        *,
+        installation_id: int | None = None,
+    ) -> ReviewRunRecord | None:
+        if installation_id is None:
+            row = self._fetchone("SELECT * FROM review_runs WHERE run_id = ?", (run_id,))
+        else:
+            row = self._fetchone(
+                "SELECT * FROM review_runs WHERE run_id = ? AND installation_id = ?",
+                (run_id, installation_id),
+            )
         return _run(row) if row is not None else None
 
     def list_runs(
         self,
         *,
+        installation_id: int | None = None,
         repo_full_name: str | None = None,
         pr_number: int | None = None,
         status: str | None = None,
     ) -> list[ReviewRunRecord]:
         clauses: list[str] = []
         params: list[object] = []
+        if installation_id is not None:
+            clauses.append("installation_id = ?")
+            params.append(installation_id)
         if repo_full_name:
             clauses.append("repo_full_name = ?")
             params.append(repo_full_name)
@@ -390,13 +445,19 @@ class PlatformRepository:
         ).fetchall()
         return [_run(row) for row in rows]
 
-    def retry_run(self, run_id: str) -> ReviewRunRecord:
-        original = self.get_run(run_id)
+    def retry_run(
+        self,
+        run_id: str,
+        *,
+        installation_id: int | None = None,
+    ) -> ReviewRunRecord:
+        original = self.get_run(run_id, installation_id=installation_id)
         if original is None:
             raise KeyError(run_id)
         if original.status not in {"failed", "cancelled", "skipped"}:
             raise ValueError("only failed, cancelled, or skipped runs can be retried")
         active = self.find_active_run(
+            installation_id=original.installation_id,
             repo_full_name=original.repo_full_name,
             pr_number=original.pr_number,
             head_sha=original.head_sha,

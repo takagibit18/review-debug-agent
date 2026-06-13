@@ -55,16 +55,13 @@ CREATE TABLE IF NOT EXISTS review_runs (
     CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'skipped'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_review_runs_active_head
-ON review_runs(repo_full_name, pr_number, head_sha)
-WHERE status IN ('queued', 'running', 'succeeded');
-
 CREATE INDEX IF NOT EXISTS idx_review_runs_status_created
 ON review_runs(status, created_at, id);
 
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     delivery_id TEXT NOT NULL UNIQUE,
+    installation_id INTEGER REFERENCES installations(id) ON DELETE SET NULL,
     event TEXT NOT NULL DEFAULT '',
     action TEXT NOT NULL DEFAULT '',
     repo_full_name TEXT NOT NULL DEFAULT '',
@@ -116,6 +113,17 @@ CREATE TABLE IF NOT EXISTS usage_records (
 );
 """
 
+POST_SCHEMA_SQL = """
+DROP INDEX IF EXISTS idx_review_runs_active_head;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_runs_active_head_tenant
+ON review_runs(installation_id, repo_full_name, pr_number, head_sha)
+WHERE status IN ('queued', 'running', 'succeeded');
+
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_installation_received
+ON webhook_deliveries(installation_id, received_at, id);
+"""
+
 
 def connect(database_url: str) -> sqlite3.Connection:
     """Open a SQLite connection from a sqlite:/// URL."""
@@ -131,6 +139,13 @@ def connect(database_url: str) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     """Create all platform tables and indexes if they do not exist."""
     conn.executescript(SCHEMA_SQL)
+    _ensure_column(
+        conn,
+        "webhook_deliveries",
+        "installation_id",
+        "INTEGER REFERENCES installations(id) ON DELETE SET NULL",
+    )
+    conn.executescript(POST_SCHEMA_SQL)
     conn.commit()
 
 
@@ -146,3 +161,17 @@ def sqlite_path(database_url: str) -> str:
     if value:
         return value
     return ".mergewarden/platform.db"
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_sql: str,
+) -> None:
+    existing = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in existing:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")

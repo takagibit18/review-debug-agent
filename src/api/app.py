@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import json
 import logging
@@ -32,12 +32,21 @@ from src.platform.schemas import (
     PlatformHealthResponse,
     RepositoryResponse,
     RetryRunResponse,
+    TenantContextResponse,
+    TenantSummaryResponse,
     ReviewRunDetailResponse,
     ReviewRunResponse,
     UsageRecordResponse,
     WebhookDeliveryResponse,
 )
 from src.platform.services import WebhookIngestionService
+from src.platform.tenancy import (
+    TENANT_HEADER,
+    TenantContext,
+    TenantResolutionError,
+    parse_tenant_id,
+    tenant_context_from_installation,
+)
 
 app = FastAPI(title="MergeWarden API", version=__version__)
 logger = logging.getLogger(__name__)
@@ -191,6 +200,21 @@ def platform_health() -> PlatformHealthResponse:
     )
 
 
+@app.get("/platform/tenant", response_model=TenantContextResponse)
+def platform_tenant(request: Request) -> TenantContextResponse:
+    settings = get_settings()
+    with _platform_repo(settings) as repo:
+        tenant = _resolve_tenant_context(request, repo, required=False, settings=settings)
+    if tenant is None:
+        return TenantContextResponse(
+            resolved=False,
+            source="missing",
+            header_name=TENANT_HEADER,
+            tenant=None,
+        )
+    return _tenant_context_response(tenant)
+
+
 @app.get("/platform/installations", response_model=list[InstallationResponse])
 def platform_installations() -> list[InstallationResponse]:
     settings = get_settings()
@@ -203,18 +227,26 @@ def platform_installations() -> list[InstallationResponse]:
 
 @app.get("/platform/repositories", response_model=list[RepositoryResponse])
 def platform_repositories(
+    request: Request,
     installation_id: int | None = Query(default=None),
 ) -> list[RepositoryResponse]:
     settings = get_settings()
     with _platform_repo(settings) as repo:
+        tenant = _require_tenant_context(request, repo, settings=settings)
+        if installation_id is not None and installation_id != tenant.id:
+            raise HTTPException(
+                status_code=403,
+                detail={"message": "tenant mismatch", "run_id": ""},
+            )
         return [
             RepositoryResponse.model_validate(item.model_dump())
-            for item in repo.list_repositories(installation_id=installation_id)
+            for item in repo.list_repositories(installation_id=tenant.id)
         ]
 
 
 @app.get("/platform/runs", response_model=list[ReviewRunResponse])
 def platform_runs(
+    request: Request,
     repo_full_name: str | None = Query(default=None),
     pr_number: int | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -222,9 +254,11 @@ def platform_runs(
     settings = get_settings()
     artifacts = ArtifactStore(settings.platform_artifact_root)
     with _platform_repo(settings) as repo:
+        tenant = _require_tenant_context(request, repo, settings=settings)
         return [
             _run_response(run, artifacts)
             for run in repo.list_runs(
+                installation_id=tenant.id,
                 repo_full_name=repo_full_name,
                 pr_number=pr_number,
                 status=status,
@@ -233,11 +267,12 @@ def platform_runs(
 
 
 @app.get("/platform/runs/{run_id}", response_model=ReviewRunDetailResponse)
-def platform_run_detail(run_id: str) -> ReviewRunDetailResponse:
+def platform_run_detail(request: Request, run_id: str) -> ReviewRunDetailResponse:
     settings = get_settings()
     artifacts = ArtifactStore(settings.platform_artifact_root)
     with _platform_repo(settings) as repo:
-        run = repo.get_run(run_id)
+        tenant = _require_tenant_context(request, repo, settings=settings)
+        run = repo.get_run(run_id, installation_id=tenant.id)
         if run is None:
             raise HTTPException(status_code=404, detail={"message": "run not found", "run_id": run_id})
         base = _run_response(run, artifacts)
@@ -251,11 +286,12 @@ def platform_run_detail(run_id: str) -> ReviewRunDetailResponse:
 
 
 @app.post("/platform/runs/{run_id}/retry", response_model=RetryRunResponse)
-def platform_retry_run(run_id: str) -> RetryRunResponse:
+def platform_retry_run(request: Request, run_id: str) -> RetryRunResponse:
     settings = get_settings()
     with _platform_repo(settings) as repo:
+        tenant = _require_tenant_context(request, repo, settings=settings)
         try:
-            retry = repo.retry_run(run_id)
+            retry = repo.retry_run(run_id, installation_id=tenant.id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail={"message": "run not found", "run_id": run_id}) from exc
         except ValueError as exc:
@@ -265,13 +301,15 @@ def platform_retry_run(run_id: str) -> RetryRunResponse:
 
 @app.get("/platform/deliveries", response_model=list[WebhookDeliveryResponse])
 def platform_deliveries(
+    request: Request,
     status: str | None = Query(default=None),
 ) -> list[WebhookDeliveryResponse]:
     settings = get_settings()
     with _platform_repo(settings) as repo:
+        tenant = _require_tenant_context(request, repo, settings=settings)
         return [
             WebhookDeliveryResponse.model_validate(item.model_dump())
-            for item in repo.list_deliveries(status=status)
+            for item in repo.list_deliveries(installation_id=tenant.id, status=status)
         ]
 
 
@@ -320,6 +358,72 @@ def _platform_repo(settings: Any | None = None) -> Iterator[PlatformRepository]:
         yield PlatformRepository(conn)
     finally:
         conn.close()
+
+
+def _resolve_tenant_context(
+    request: Request,
+    repo: PlatformRepository,
+    *,
+    required: bool = True,
+    settings: Any | None = None,
+) -> TenantContext | None:
+    active_settings = settings or get_settings()
+    raw_header = request.headers.get(TENANT_HEADER)
+    source: Literal["header", "default"] = "header"
+    try:
+        tenant_id = parse_tenant_id(raw_header)
+    except TenantResolutionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "run_id": ""},
+        ) from exc
+
+    if tenant_id is None and active_settings.platform_default_tenant_id is not None:
+        tenant_id = active_settings.platform_default_tenant_id
+        source = "default"
+
+    if tenant_id is None:
+        if required:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "tenant required", "run_id": ""},
+            )
+        return None
+
+    installation = repo.get_installation(tenant_id)
+    if installation is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"message": "tenant not found", "run_id": ""},
+        )
+    return tenant_context_from_installation(installation, source=source)
+
+
+def _require_tenant_context(
+    request: Request,
+    repo: PlatformRepository,
+    *,
+    settings: Any | None = None,
+) -> TenantContext:
+    tenant = _resolve_tenant_context(request, repo, settings=settings)
+    assert tenant is not None
+    return tenant
+
+
+def _tenant_context_response(tenant: TenantContext) -> TenantContextResponse:
+    return TenantContextResponse(
+        resolved=True,
+        source=tenant.source,
+        header_name=TENANT_HEADER,
+        tenant=TenantSummaryResponse(
+            id=tenant.id,
+            name=tenant.name,
+            github_installation_id=tenant.github_installation_id,
+            account_login=tenant.account_login,
+            account_type=tenant.account_type,
+            status=tenant.status,
+        ),
+    )
 
 
 def _run_response(run: Any, artifacts: ArtifactStore) -> ReviewRunResponse:

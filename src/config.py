@@ -47,6 +47,17 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes"}
 
 
+def _parse_optional_positive_int_env(name: str) -> int | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _parse_allowed_commands(raw: str | None) -> tuple[str, ...]:
     if raw is None or not raw.strip():
         return _DEFAULT_EXECUTE_ALLOWED_COMMANDS
@@ -433,6 +444,15 @@ class Settings(BaseModel):
     platform_publish_comments: bool = Field(
         default_factory=lambda: _parse_bool_env("PLATFORM_PUBLISH_COMMENTS", True),
         description="Global default for publishing GitHub inline comments.",
+    )
+    platform_default_tenant_id: int | None = Field(
+        default_factory=lambda: _parse_optional_positive_int_env(
+            "PLATFORM_DEFAULT_TENANT_ID",
+        ),
+        description=(
+            "Optional development tenant id used when platform management requests "
+            "omit the tenant header."
+        ),
     )
     platform_worker_poll_interval_seconds: float = Field(
         default_factory=lambda: float(
