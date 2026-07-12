@@ -75,6 +75,12 @@ def test_eval_git_ssl_backend_is_normalized(monkeypatch) -> None:
     assert get_settings().eval_git_ssl_backend == "openssl"
 
 
+def test_eval_workspace_cache_root_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_WORKSPACE_CACHE_DIR", "eval/outputs/fresh-cache")
+
+    assert get_settings().eval_workspace_cache_dir == "eval/outputs/fresh-cache"
+
+
 def test_eval_performance_defaults_are_bounded(monkeypatch) -> None:
     monkeypatch.delenv("EVAL_CONCURRENCY", raising=False)
     monkeypatch.delenv("EVAL_FIXTURE_CONCURRENCY", raising=False)

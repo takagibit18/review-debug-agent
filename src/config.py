@@ -324,6 +324,14 @@ class Settings(BaseModel):
         default_factory=_default_eval_git_ssl_backend,
         description="Per-command TLS backend for Eval Git operations.",
     )
+    eval_workspace_cache_dir: str = Field(
+        default_factory=lambda: os.getenv(
+            "EVAL_WORKSPACE_CACHE_DIR", "eval/outputs/workspace_cache"
+        ).strip()
+        or "eval/outputs/workspace_cache",
+        min_length=1,
+        description="Root directory for reusable Eval Git workspace mirrors.",
+    )
     eval_offline_workspace_cache: bool = Field(
         default_factory=lambda: _parse_bool_env("EVAL_OFFLINE_WORKSPACE_CACHE", False),
         description="Use only existing local Git mirrors for eval fixture workspaces.",

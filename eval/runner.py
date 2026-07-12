@@ -146,6 +146,16 @@ def _checkout_git_workspace(
     if cache_root is not None:
         try:
             _run_git(["clone", "--quiet", "--shared", str(cache_root), str(target_root)])
+            # A shared clone only inherits object alternates.  It does not inherit
+            # the cache's promisor-remote configuration, so filtered cache entries
+            # cannot lazily retrieve their trees/blobs during checkout.
+            _run_git(["remote", "set-url", "origin", workspace.repo_url], cwd=target_root)
+            _run_git(["config", "remote.origin.promisor", "true"], cwd=target_root)
+            _run_git(
+                ["config", "remote.origin.partialclonefilter", "blob:none"],
+                cwd=target_root,
+            )
+            _run_git(["config", "extensions.partialClone", "origin"], cwd=target_root)
         except subprocess.CalledProcessError:
             shutil.rmtree(target_root) if target_root.exists() else None
             if offline:
@@ -219,23 +229,28 @@ def _ensure_git_workspace_cache(
             return cache_root
         if not (cache_root / "objects").is_dir():
             tmp_root = cache_root.with_name(f"{cache_root.name}.tmp")
-            if tmp_root.exists():
-                shutil.rmtree(tmp_root)
-            try:
-                _run_git(
-                    [
-                        "clone",
-                        "--mirror",
-                        "--quiet",
-                        workspace.repo_url,
-                        str(tmp_root),
-                    ]
-                )
+            if (tmp_root / "objects").is_dir() and (tmp_root / "config").is_file():
+                if workspace.checkout_sha:
+                    _fetch_cache_ref(tmp_root, workspace.checkout_sha)
                 tmp_root.replace(cache_root)
-            except Exception:
-                if tmp_root.exists():
-                    shutil.rmtree(tmp_root)
-                raise
+            elif tmp_root.exists():
+                shutil.rmtree(tmp_root)
+            if not (cache_root / "objects").is_dir():
+                try:
+                    _run_git(
+                        [
+                            "clone",
+                            "--mirror",
+                            "--quiet",
+                            workspace.repo_url,
+                            str(tmp_root),
+                        ]
+                    )
+                    tmp_root.replace(cache_root)
+                except Exception:
+                    if tmp_root.exists():
+                        shutil.rmtree(tmp_root)
+                    raise
         if workspace.checkout_sha:
             _fetch_cache_ref(cache_root, workspace.checkout_sha)
         return cache_root
@@ -245,7 +260,7 @@ def _fetch_cache_ref(cache_root: Path, ref: str) -> None:
     try:
         _run_git(["cat-file", "-e", f"{ref}^{{commit}}"], cwd=cache_root)
         return
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, RuntimeError):
         pass
     _run_git(
         ["fetch", "--quiet", "--depth=1", "origin", ref],
@@ -303,7 +318,7 @@ async def run_single(
                 _prepare_fixture_workspace,
                 fixture,
                 Path(tmp_dir) / "repo",
-                workspace_cache_dir=EVAL_WORKSPACE_CACHE_DIR,
+                workspace_cache_dir=Path(get_settings().eval_workspace_cache_dir),
             )
             diff_workspace_errors = await asyncio.to_thread(
                 _validate_diff_added_lines_against_workspace,

@@ -63,7 +63,12 @@ def test_run_git_uses_configured_timeout(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
 
     assert _run_git(["status"], cwd=tmp_path) == "ok"
-    assert captured["args"] == ["git", "status"]
+    assert captured["args"] == [
+        "git",
+        "-c",
+        f"safe.directory={tmp_path.resolve()}",
+        "status",
+    ]
     assert captured["timeout"] == 7.0
 
 
@@ -126,6 +131,30 @@ def test_offline_cache_miss_has_actionable_error(tmp_path: Path) -> None:
         raise AssertionError("Expected an offline cache miss")
 
 
+def test_workspace_cache_resumes_valid_partial_mirror(monkeypatch, tmp_path: Path) -> None:
+    workspace = FixtureWorkspace(
+        repo_url="https://example.test/acme/repo.git",
+        checkout_sha="abc123",
+    )
+    cache_root = tmp_path / runner_module._workspace_cache_key(workspace.repo_url)
+    partial_root = cache_root.with_name(f"{cache_root.name}.tmp")
+    (partial_root / "objects").mkdir(parents=True)
+    (partial_root / "config").write_text("[core]\nrepositoryformatversion = 0\n")
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
+        calls.append(args)
+        if args[0] == "cat-file":
+            raise RuntimeError("missing commit")
+        return ""
+
+    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+
+    assert runner_module._ensure_git_workspace_cache(workspace, tmp_path) == cache_root
+    assert not any(args[0] == "clone" for args in calls)
+    assert ["fetch", "--quiet", "--depth=1", "origin", "abc123"] in calls
+
+
 def test_local_smoke_fixture_is_file_backed_and_not_golden() -> None:
     fixture_path = Path("eval/fixtures/local_smoke_pytest_approx_pr8513.json")
     fixture = Fixture.model_validate_json(fixture_path.read_text(encoding="utf-8"))
@@ -184,6 +213,7 @@ def _build_source_repo(tmp_path: Path) -> tuple[Path, str, str, str]:
     _git(source, "init")
     _git(source, "config", "user.email", "eval@example.com")
     _git(source, "config", "user.name", "Eval Test")
+    _git(source, "config", "commit.gpgsign", "false")
     package_dir = source / "pkg"
     package_dir.mkdir()
     (package_dir / "module.py").write_text(
@@ -552,6 +582,50 @@ def test_checkout_git_workspace_uses_shallow_partial_clone_without_cache(
         "https://github.com/example/repo.git",
         str(tmp_path / "workspace"),
     ]
+
+
+def test_checkout_git_workspace_configures_cached_partial_clone(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = FixtureWorkspace(
+        repo_url="https://github.com/example/repo.git",
+        checkout_sha="head",
+    )
+    cache_root = tmp_path / "cache.git"
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        runner_module,
+        "_ensure_git_workspace_cache",
+        lambda *args, **kwargs: cache_root,
+    )
+
+    def fake_run_git(args: list[str], *, cwd: Path | None = None) -> str:
+        calls.append(args)
+        if args[0] == "clone":
+            Path(args[-1]).mkdir(parents=True)
+            return ""
+        if args[:2] == ["checkout", "--quiet"]:
+            return ""
+        if args == ["rev-parse", "HEAD"]:
+            return "head"
+        if args[0] in {"remote", "config"}:
+            return ""
+        raise AssertionError(f"Unexpected git args: {args}")
+
+    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+
+    _checkout_git_workspace(
+        workspace,
+        tmp_path / "workspace",
+        workspace_cache_dir=tmp_path / "cache-root",
+    )
+
+    assert ["remote", "set-url", "origin", workspace.repo_url] in calls
+    assert ["config", "remote.origin.promisor", "true"] in calls
+    assert ["config", "remote.origin.partialclonefilter", "blob:none"] in calls
+    assert ["config", "extensions.partialClone", "origin"] in calls
 
 
 def test_prepare_fixture_workspace_reuses_git_workspace_cache(tmp_path: Path) -> None:
