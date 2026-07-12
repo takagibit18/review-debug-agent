@@ -1,0 +1,15 @@
+{
+  "suite": "golden",
+  "generated_at": "2026-05-18T15:17:19.058171+00:00",
+  "fixture_count": 6,
+  "metrics": {
+    "schema_validity_rate": 1.0,
+    "hit_rate": 0.75,
+    "false_positive_rate": 0.0,
+    "p95_latency_seconds": 74.23587930000213,
+    "p95_total_tokens": 33748.0,
+    "evidence_binding_rate": 1.0
+  },
+  "results": [],
+  "sampled_results": []
+}

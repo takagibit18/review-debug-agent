@@ -530,8 +530,114 @@ def test_analyze_logs_length_finish_reason_even_without_trace_detail(monkeypatch
         if event_type == EventType.ERROR and phase == "analyze"
     ]
     assert length_events
-    assert length_events[-1]["reason"] == "model_finish_reason_length"
-    assert length_events[-1]["iteration"] == 2
+    length_event = next(
+        event
+        for event in length_events
+        if event["reason"] == "model_finish_reason_length"
+    )
+    assert length_event["iteration"] == 2
+
+
+def test_analyze_marks_length_finish_without_output_incomplete(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+
+    async def _length_response(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+        client.calls.append(messages)
+        client.configs.append(config)
+        client.tools.append(tools)
+        return ModelResponse(
+            content="",
+            tool_calls=[],
+            usage=TokenUsage(prompt_tokens=100, completion_tokens=2048, total_tokens=2148),
+            model="deepseek-v4-pro",
+            finish_reason="length",
+            reasoning_content="x" * 1000,
+        )
+
+    client.chat = _length_response  # type: ignore[method-assign]
+    events: list[tuple[EventType, str, dict[str, Any]]] = []
+    engine = InferenceEngine(
+        model_client=client,  # type: ignore[arg-type]
+        trace_event_writer=lambda event_type, phase, payload: events.append(
+            (event_type, phase, payload)
+        ),
+    )
+
+    plan, _, _ = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            iteration=2,
+        )
+    )
+
+    assert plan.incomplete_reason == "model_finish_reason_length_no_output"
+    incomplete_events = [
+        payload
+        for event_type, phase, payload in events
+        if event_type == EventType.ERROR
+        and phase == "analyze"
+        and payload.get("reason") == "model_finish_reason_length_no_output"
+    ]
+    assert incomplete_events
+
+
+def test_regular_review_disables_deepseek_thinking(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    client.default_config = client.default_config.model_copy(update={"model": "deepseek-v4-pro"})
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+            iteration=0,
+            near_last_iteration=False,
+            force_submit=False,
+        )
+    )
+
+    config = client.configs[-1]
+    assert config.extra_body == {"thinking": {"type": "disabled"}}
+
+
+def test_analyze_records_context_telemetry_without_content(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    events: list[tuple[EventType, str, dict[str, Any]]] = []
+    engine = InferenceEngine(
+        model_client=client,  # type: ignore[arg-type]
+        trace_event_writer=lambda event_type, phase, payload: events.append(
+            (event_type, phase, payload)
+        ),
+    )
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+            diff_text="diff --git a/src/app.py b/src/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+            file_contents={"src/app.py": "print('new')\n"},
+            prompt_input_token_budget=4096,
+        )
+    )
+
+    telemetry = next(
+        payload
+        for event_type, phase, payload in events
+        if event_type == EventType.CONTEXT_TELEMETRY and phase == "analyze"
+    )
+    assert telemetry["tool_schema_count"] == 1
+    assert telemetry["selected"]["tokens"] > 0
+    assert telemetry["selected"]["by_kind"]["diff_hunk"]["chars"] > 0
+    assert "print('new')" not in json.dumps(telemetry)
 
 
 def test_normalize_review_payload_canonicalizes_location() -> None:

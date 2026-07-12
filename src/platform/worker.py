@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
+import socket
 import time
+from datetime import UTC, datetime
+from uuid import uuid4
 from pathlib import Path
 from collections.abc import Coroutine
 from typing import Any, Awaitable, Callable, Literal, cast
@@ -54,15 +58,27 @@ class PlatformWorker:
         settings: Settings,
         pipeline: ReviewPipeline | None = None,
         artifact_store: ArtifactStore | None = None,
+        worker_id: str | None = None,
     ) -> None:
         self.repo = repo
         self.settings = settings
         self.pipeline = pipeline or self._default_pipeline
         self.artifact_store = artifact_store or ArtifactStore(settings.platform_artifact_root)
+        self.worker_id = worker_id or (
+            f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
+        )
 
     def run_once(self) -> bool:
         """Process one queued run if available."""
-        run = self.repo.claim_next_queued_run()
+        if self.settings.run_checkpoints_enabled:
+            self.repo.requeue_expired_runs(
+                datetime.now(UTC),
+                ordered_steps=("review_pipeline", "persist_artifacts"),
+            )
+        run = self.repo.claim_next_queued_run(
+            worker_id=self.worker_id,
+            lease_seconds=self.settings.run_lease_seconds,
+        )
         if run is None:
             return False
         try:
@@ -72,8 +88,50 @@ class PlatformWorker:
                 installation_id=run.installation_id,
                 repository_id=run.repository_id,
             )
-            result = self._execute_pipeline(run, config)
+            completed = {
+                item.step_id: item for item in self.repo.list_checkpoints(run.run_id)
+                if item.status == "completed"
+            }
+            pipeline_checkpoint = completed.get("review_pipeline")
+            if pipeline_checkpoint and pipeline_checkpoint.output_artifact_path:
+                result = ReviewPipelineResult.model_validate(
+                    self.artifact_store.load_pipeline_result(
+                        pipeline_checkpoint.output_artifact_path
+                    )
+                )
+            elif self.settings.run_checkpoints_enabled:
+                self.repo.start_checkpoint(
+                    run.run_id,
+                    "review_pipeline",
+                    attempt=run.attempt,
+                    input_digest=f"{run.repo_full_name}:{run.pr_number}:{run.head_sha}",
+                )
+                result = self._execute_pipeline(run, config)
+                pipeline_path = self.artifact_store.save_pipeline_result(run.run_id, result)
+                self.repo.complete_checkpoint(
+                    run.run_id,
+                    "review_pipeline",
+                    attempt=run.attempt,
+                    output_artifact_path=pipeline_path,
+                )
+            else:
+                result = self._execute_pipeline(run, config)
+            persist_checkpoint = completed.get("persist_artifacts")
+            if self.settings.run_checkpoints_enabled and persist_checkpoint is None:
+                self.repo.start_checkpoint(
+                    run.run_id,
+                    "persist_artifacts",
+                    attempt=run.attempt,
+                    input_digest=str(result.total_tokens),
+                )
             paths = self.artifact_store.save_review_artifacts(run.run_id, result)
+            if self.settings.run_checkpoints_enabled and persist_checkpoint is None:
+                self.repo.complete_checkpoint(
+                    run.run_id,
+                    "persist_artifacts",
+                    attempt=run.attempt,
+                    output_artifact_path=paths.get("review_response_path", ""),
+                )
             publish_status = _publish_status(result.publish_result)
             total_tokens = result.total_tokens or _summary_total_tokens(result.run_summary)
             self.repo.mark_run_succeeded(
@@ -93,10 +151,24 @@ class PlatformWorker:
                 completion_tokens=result.completion_tokens,
                 total_tokens=total_tokens or 0,
                 duration_ms=result.duration_ms,
+                attempt=run.attempt,
             )
             return True
         except Exception as exc:  # noqa: BLE001
             logger.exception("platform worker run failed", extra={"run_id": run.run_id})
+            if self.settings.run_checkpoints_enabled:
+                running = [
+                    item for item in self.repo.list_checkpoints(run.run_id)
+                    if item.attempt == run.attempt and item.status == "running"
+                ]
+                for checkpoint in running:
+                    self.repo.fail_checkpoint(
+                        run.run_id,
+                        checkpoint.step_id,
+                        attempt=run.attempt,
+                        error_type=exc.__class__.__name__,
+                        error_message=str(exc)[:1000],
+                    )
             self.repo.mark_run_failed(
                 run.run_id,
                 error_type=exc.__class__.__name__,
@@ -117,12 +189,40 @@ class PlatformWorker:
         run: ReviewRunRecord,
         config: EffectiveTenantConfig,
     ) -> ReviewPipelineResult:
-        result = self.pipeline(run, config)
-        if inspect.isawaitable(result):
-            result = asyncio.run(cast(Coroutine[Any, Any, Any], result))
+        result = asyncio.run(self._execute_pipeline_with_heartbeat(run, config))
         if isinstance(result, ReviewPipelineResult):
             return result
         return ReviewPipelineResult.model_validate(result)
+
+    async def _execute_pipeline_with_heartbeat(
+        self,
+        run: ReviewRunRecord,
+        config: EffectiveTenantConfig,
+    ) -> Any:
+        async def invoke() -> Any:
+            if self.settings.run_checkpoints_enabled and not inspect.iscoroutinefunction(self.pipeline):
+                raise TypeError("leased worker requires an async review pipeline")
+            if inspect.iscoroutinefunction(self.pipeline):
+                return await cast(Any, self.pipeline)(run, config)
+            value = await asyncio.to_thread(self.pipeline, run, config)
+            if inspect.isawaitable(value):
+                return await cast(Coroutine[Any, Any, Any], value)
+            return value
+
+        task = asyncio.create_task(invoke())
+        interval = max(1, self.settings.run_heartbeat_seconds)
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=interval)
+            if task in done:
+                return task.result()
+            renewed = self.repo.heartbeat_run(
+                run.run_id,
+                self.worker_id,
+                lease_seconds=self.settings.run_lease_seconds,
+            )
+            if not renewed:
+                task.cancel()
+                raise RuntimeError("worker lease lost while pipeline was running")
 
     async def _default_pipeline(
         self,

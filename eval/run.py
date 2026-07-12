@@ -330,7 +330,7 @@ async def _evaluate(
     samples: int = 1,
     concurrency: int = 1,
     fixture_concurrency: int = 1,
-    review_max_iterations: int = 1,
+    review_max_iterations: int | None = None,
     temperature: float = 0.0,
     output_json: str | None = None,
     repo_filters: tuple[str, ...] = (),

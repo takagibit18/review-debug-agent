@@ -166,9 +166,18 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | `TOKEN_HARD_BUDGET` | 单次运行累计 token 用量硬上限（hard cap） | 默认 `36000`，对应 `Settings.token_hard_budget`；不低于 `TOKEN_BUDGET` |
 | `PROMPT_INPUT_TOKEN_BUDGET` | 首轮用户消息中 **可截断上下文块**（meta、diff hunk、文件、结构等）的估算 token 上限 | 默认 `32000`，对应 `Settings.prompt_input_token_budget`；与 `TOKEN_BUDGET` 语义分离，见 [analyzer_dev_plan.md](./analyzer_dev_plan.md) §2.3 |
 | `MODEL_MAX_TOKENS` | 非 finalize 模型调用的最大输出 token | 默认 `2048`，对应 `Settings.model_max_tokens` |
+
+GitHub advisory workflows should set `MODEL_MAX_TOKENS` explicitly, with
+`8192` as the current CI default, because the global runtime default remains
+conservative for local runs. CI should also keep `PROMPT_INPUT_TOKEN_BUDGET`
+and automatic file-context caps bounded so large PRs prefer targeted tools such
+as `get_changed_context` / `find_symbol_context` over large preloaded prompts.
 | `MODEL_REQUEST_TIMEOUT_SECONDS` | 单次模型 provider 调用的硬超时 | 默认 `60`，对应 `Settings.model_request_timeout_seconds` |
 | `MODEL_MAX_RETRIES` | 单次逻辑模型调用的最大尝试次数 | 默认 `1`，对应 `Settings.model_max_retries` |
 | `AGENT_RUN_TIMEOUT_SECONDS` | 单次编排运行的总墙钟截止线 | 默认 `170`，对应 `Settings.agent_run_timeout_seconds` |
+| `FINDING_VERIFIER_MODE` | Finding 语义验证模式 | `off` / `shadow` / `enforce`；v0.2.0 默认 `enforce`，Warning/Critical 无有效 verdict 时不发布 |
+| `VERIFIER_MAX_REPAIR_ROUNDS` | `needs_evidence` 的最大补证据复验轮数 | `0..1`，默认 `1` |
+| `REVIEW_WORKFLOW_ENFORCEMENT` | Review required-step 门控模式 | `off` / `warn` / `enforce`；v0.2.0 默认 `enforce` |
 | `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.mergewarden/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
 | `GITHUB_TOKEN` / `GH_TOKEN` / `github_token` | GitHub API token | GitHub Actions publish mode needs `checks:write` and `pull-requests:write`; dry-run does not need a token |
 | `GITHUB_ADVISORY_DRY_RUN` | GitHub advisory default publish mode | Default `true`; CLI `--publish` can override and perform real GitHub writes |
@@ -185,6 +194,9 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | `EXECUTE_DOCKER_NETWORK` | Docker execute 网络模式 | 默认 `none` |
 | `EXECUTE_DOCKER_MEMORY_MB` | Docker execute 内存限制 | 默认 `0`，表示不设置限制 |
 | `EXECUTE_DOCKER_CPUS` | Docker execute CPU 限制 | 默认 `0`，表示不设置限制 |
+| `RUN_CHECKPOINTS_ENABLED` | Platform worker checkpoint 开关 | 默认 `true` |
+| `RUN_LEASE_SECONDS` | worker run lease 时长 | 默认 `180`，范围 `30..3600` 秒 |
+| `RUN_HEARTBEAT_SECONDS` | worker 续租间隔 | 默认 `30`，范围 `1..300` 秒 |
 
 新增全局配置项时，应更新 `Settings`、`.env.example`（如有）及本文档或 README。
 
@@ -200,6 +212,9 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | 记录内容 | 工具调用序列、关键中间结果、耗时、token 用量 |
 | 输入快照 | 是否落盘脱敏后的 prompt/输出以便复盘（路径与保留策略） |
 | `RunSummary` | Runtime summary in `src/analyzer/run_summary.py`; includes event-log status, model/token, tool counts, budget/stop state, submit validation errors, and publish status |
+| Finding verification | `FindingCandidate` 使用稳定 digest id；风险 finding 的 verifier verdict、reason code 和 evidence repair round 写入 event log |
+| Review Workflow | required/completed/missing step、reprompt count 和 enforcement mode 写入 `workflow_summary` |
+| Worker recovery | `review_runs` 保存 lease/heartbeat/attempt；`run_checkpoints` 保存步骤 attempt 和 artifact 路径 |
 | `RunArtifactSummary` | Artifact-facing CLI/API summary for response JSON, publish result JSON, event log, and related paths |
 
 具体字段若在代码中以 `RunContext` 等模型出现，应在该类型旁或本文档交叉引用。
@@ -246,3 +261,4 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | 2026-05-10 | docs-audit：对齐文档与代码现状 — golden 样本分布（4正/2负）、FastAPI 已实现、load_diff 用 `git diff HEAD`、eval gate 仍处于过渡期 |
 | 2026-05-16 | 恢复 MVP+ 真实 eval gate：`schema_validity_rate >= 1.0`、`hit_rate >= 0.6`、`false_positive_rate <= 0.5` |
 | 2026-05-18 | MVP+ eval closure baseline：`eval/outputs/20260518_151719_report.json` 达到 schema validity `1.0`、hit rate `0.75`、false positive rate `0.0`；详见 `docs/mvp_plus_eval_closure.md`。 |
+| 2026-07-11 | v0.2.0：增加 Finding 语义 verifier、required-step Review Workflow、worker lease/checkpoint/recovery、Eval 过程指标和 baseline comparison。 |

@@ -25,8 +25,11 @@ load_dotenv(_REPO_ROOT / ".env", override=True)
 _base_url_adapter = TypeAdapter(AnyHttpUrl)
 PermissionMode = Literal["default", "plan"]
 TraceDetailMode = Literal["off", "compact", "full"]
+FindingVerifierMode = Literal["off", "shadow", "enforce"]
+ReviewWorkflowEnforcement = Literal["off", "warn", "enforce"]
 ExecuteBackend = Literal["subprocess", "docker"]
 GitHubAuthMode = Literal["token", "app"]
+EvalGitSslBackend = Literal["system", "openssl", "schannel"]
 
 _DEFAULT_EXECUTE_ALLOWED_COMMANDS: tuple[str, ...] = (
     "python",
@@ -81,6 +84,13 @@ def _default_github_auth_mode() -> GitHubAuthMode:
     if _parse_bool_env("GITHUB_APP_MODE", False):
         return "app"
     return "token"
+
+
+def _default_eval_git_ssl_backend() -> EvalGitSslBackend:
+    raw = str(os.getenv("EVAL_GIT_SSL_BACKEND", "system")).strip().lower()
+    if raw in {"system", "openssl", "schannel"}:
+        return cast(EvalGitSslBackend, raw)
+    return "system"
 
 
 def _normalize_private_key_env(raw: str) -> str:
@@ -231,6 +241,23 @@ class Settings(BaseModel):
         le=3,
         description="Maximum provider attempts for one logical model call.",
     )
+    finding_verifier_mode: FindingVerifierMode = Field(
+        default_factory=lambda: cast(
+            FindingVerifierMode,
+            os.getenv("FINDING_VERIFIER_MODE", "enforce").strip().lower(),
+        ),
+    )
+    verifier_max_repair_rounds: int = Field(
+        default_factory=lambda: int(os.getenv("VERIFIER_MAX_REPAIR_ROUNDS", "1")),
+        ge=0,
+        le=1,
+    )
+    review_workflow_enforcement: ReviewWorkflowEnforcement = Field(
+        default_factory=lambda: cast(
+            ReviewWorkflowEnforcement,
+            os.getenv("REVIEW_WORKFLOW_ENFORCEMENT", "enforce").strip().lower(),
+        ),
+    )
     agent_run_timeout_seconds: float = Field(
         default_factory=lambda: float(os.getenv("AGENT_RUN_TIMEOUT_SECONDS", "170")),
         gt=0.0,
@@ -292,6 +319,22 @@ class Settings(BaseModel):
         gt=0.0,
         le=1800.0,
         description="Hard wall-clock timeout for eval fixture git operations.",
+    )
+    eval_git_ssl_backend: EvalGitSslBackend = Field(
+        default_factory=_default_eval_git_ssl_backend,
+        description="Per-command TLS backend for Eval Git operations.",
+    )
+    eval_workspace_cache_dir: str = Field(
+        default_factory=lambda: os.getenv(
+            "EVAL_WORKSPACE_CACHE_DIR", "eval/outputs/workspace_cache"
+        ).strip()
+        or "eval/outputs/workspace_cache",
+        min_length=1,
+        description="Root directory for reusable Eval Git workspace mirrors.",
+    )
+    eval_offline_workspace_cache: bool = Field(
+        default_factory=lambda: _parse_bool_env("EVAL_OFFLINE_WORKSPACE_CACHE", False),
+        description="Use only existing local Git mirrors for eval fixture workspaces.",
     )
     eval_fixture_concurrency: int = Field(
         default_factory=lambda: int(os.getenv("EVAL_FIXTURE_CONCURRENCY", "3")),
@@ -465,6 +508,20 @@ class Settings(BaseModel):
     platform_worker_single_worker: bool = Field(
         default_factory=lambda: _parse_bool_env("PLATFORM_WORKER_SINGLE_WORKER", True),
         description="Documented MVP guard: SQLite worker is intended for a single local worker.",
+    )
+    run_checkpoints_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env("RUN_CHECKPOINTS_ENABLED", True),
+        description="Persist worker pipeline checkpoints for crash recovery.",
+    )
+    run_lease_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("RUN_LEASE_SECONDS", "180")),
+        ge=30,
+        le=3600,
+    )
+    run_heartbeat_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("RUN_HEARTBEAT_SECONDS", "30")),
+        ge=1,
+        le=300,
     )
 
     @field_validator("openai_api_key", "model_name", mode="before")

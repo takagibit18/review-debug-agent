@@ -948,6 +948,48 @@ def test_review_diff_first_prefetch_reads_changed_files_before_model(
     assert prefetch_event["payload"]["selected_files"] == ["src/module.py"]
 
 
+def test_review_prefetch_override_completes_context_before_model(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo"
+    changed = repo / "src" / "module.py"
+    changed.parent.mkdir(parents=True)
+    changed.write_text("print('changed')\n", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.register(FileReadTool())
+    orchestrator = AgentOrchestrator(
+        registry=registry,
+        review_diff_first_changed_files=True,
+        review_workflow_enforcement="enforce",
+    )
+    observed: list[str] = []
+
+    async def _assert_prefetched_context(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append(
+            orchestrator._review_workflow.states["inspect_changed_context"].status  # noqa: SLF001
+        )
+        return AnalysisPlan(draft_review=ReviewReport(summary="No issues found."))
+
+    monkeypatch.setattr(orchestrator, "analyze", _assert_prefetched_context)
+    diff_text = (
+        "diff --git a/src/module.py b/src/module.py\n"
+        "--- a/src/module.py\n"
+        "+++ b/src/module.py\n"
+        "@@ -1 +1 @@\n"
+        "+print('changed')\n"
+    )
+
+    asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(repo_path=str(repo), diff_mode=True, diff_text=diff_text)
+        )
+    )
+
+    assert observed == ["completed"]
+
+
 def test_review_mode_registers_review_context_tools_from_diff_text(
     tmp_path,
     monkeypatch,
@@ -1283,6 +1325,52 @@ def test_model_timeout_still_skips_extra_finalize(tmp_path, monkeypatch) -> None
         and item["phase"] == "analyze"
     )
     assert error_event["payload"]["error_type"] == "ModelTimeoutError"
+
+
+def test_length_truncated_empty_model_response_skips_extra_finalize(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "3")
+
+    orchestrator = AgentOrchestrator()
+    analyze_calls: list[bool] = []
+
+    async def _truncated_empty_plan(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        force_submit = bool(kwargs.get("force_submit"))
+        analyze_calls.append(force_submit)
+        plan = AnalysisPlan(
+            needs_tools=False,
+            tool_calls=[],
+            incomplete_reason="model_finish_reason_length_no_output",
+        )
+        orchestrator._latest_tokens = 2148  # noqa: SLF001
+        return plan
+
+    monkeypatch.setattr(orchestrator, "analyze", _truncated_empty_plan)
+
+    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+
+    assert analyze_calls == [False]
+    assert response.context.decisions[-1].result == "stop:model_incomplete"
+    assert any(
+        error.category == "runtime" and "length" in error.message
+        for error in response.context.errors
+    )
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    finalize_event = next(
+        item
+        for item in events
+        if item["event_type"] == EventType.DECISION.value
+        and item["phase"] == "finalize"
+    )
+    assert finalize_event["payload"]["finalize_attempt"] is False
+    assert finalize_event["payload"]["skip_reason"] == "model_incomplete"
 
 
 def test_negative_fixture_fallback_emits_no_fabricated_high_confidence_issues(

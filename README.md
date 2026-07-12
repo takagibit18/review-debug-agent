@@ -204,6 +204,17 @@ python -m eval.run trend --inputs "eval/outputs/*_report.json"
 
 它通过当前稳定门槛 `schema_validity_rate >= 1.0`、`hit_rate >= 0.6`、`false_positive_rate <= 0.5`。细节见 [docs/mvp_plus_eval_closure.md](docs/mvp_plus_eval_closure.md)。
 
+## v0.2.0：语义验真与可恢复审查
+
+v0.2.0 在现有 advisory review 链路上增加四项保障：
+
+- Warning/Critical 先形成稳定 `FindingCandidate`，再由独立 verifier 逐条给出 `accepted/rejected/needs_evidence/downgraded`。GA 默认 `FINDING_VERIFIER_MODE=enforce`，无有效 verdict 时 fail closed。
+- `ReviewWorkflowTracker` 强制完成 diff、changed context、draft validation、semantic verification 和 finalize；缺失上下文最多补救一次，仍缺失时不发布风险 finding。
+- Platform worker 使用 SQLite lease、heartbeat 和 step checkpoint；过期 `running` run 可回收到队列，GitHub check 使用稳定 `external_id` 更新而非重复创建。
+- Eval 报告增加证据绑定率、verifier 接受/拒绝率、required-step 完成率、重复工具调用率和每条 accepted finding 的 token 成本，并可与冻结 baseline 比较。
+
+完整版本与验收规划见 [docs/v0.2.0_reliability_quality_plan.md](docs/v0.2.0_reliability_quality_plan.md)。
+
 ## 项目结构
 
 ```text

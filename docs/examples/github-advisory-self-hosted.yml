@@ -102,7 +102,11 @@ jobs:
           EVENT_LOG_DIR: ${{ github.workspace }}/artifacts/mergewarden/event_logs
           REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '4' }}
           TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '88000' }}
-          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '88000' }}
+          PROMPT_INPUT_TOKEN_BUDGET: ${{ vars.PROMPT_INPUT_TOKEN_BUDGET || '32000' }}
+          MODEL_MAX_TOKENS: ${{ vars.MODEL_MAX_TOKENS || '8192' }}
+          FILE_CONTEXT_MAX_FILES: ${{ vars.FILE_CONTEXT_MAX_FILES || '8' }}
+          FILE_CONTEXT_MAX_CHARS_PER_FILE: ${{ vars.FILE_CONTEXT_MAX_CHARS_PER_FILE || '6000' }}
+          FILE_CONTEXT_MAX_CHARS_TOTAL: ${{ vars.FILE_CONTEXT_MAX_CHARS_TOTAL || '32000' }}
         run: |
           python "$GITHUB_WORKSPACE/.mergewarden/runtime/cli.py" review . \
             --diff \
@@ -119,7 +123,8 @@ jobs:
             --response-json "$REVIEW_RESPONSE_JSON" \
             --changed-lines-json "$CHANGED_LINES_JSON" \
             --dry-run \
-            --output-json "$PUBLISH_DRY_RUN_JSON"
+            --output-json "$PUBLISH_DRY_RUN_JSON" \
+            --summary-json "$RUN_SUMMARY_JSON"
 
       - name: 发布 GitHub advisory
         if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name == github.repository
@@ -133,7 +138,8 @@ jobs:
             --response-json "$REVIEW_RESPONSE_JSON" \
             --changed-lines-json "$CHANGED_LINES_JSON" \
             --publish \
-            --output-json "$PUBLISH_RESULT_JSON"
+            --output-json "$PUBLISH_RESULT_JSON" \
+            --summary-json "$RUN_SUMMARY_JSON"
 
       - name: 保留 fork PR 的 dry-run 结果
         if: steps.review-credentials.outputs.has_key == 'true' && github.event.pull_request.head.repo.full_name != github.repository

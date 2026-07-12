@@ -10,11 +10,18 @@ import click
 
 @click.command()
 @click.option("--report", "report_path", required=True, type=click.Path(exists=True))
+@click.option(
+    "--comparison",
+    "comparison_path",
+    required=False,
+    type=click.Path(exists=True),
+)
 @click.option("--schema-validity-min", default=1.0, type=float)
 @click.option("--hit-rate-min", default=0.8, type=float)
 @click.option("--false-positive-rate-max", default=0.5, type=float)
 def main(
     report_path: str,
+    comparison_path: str | None,
     schema_validity_min: float,
     hit_rate_min: float,
     false_positive_rate_max: float,
@@ -31,6 +38,20 @@ def main(
     )
 
     failures: list[str] = []
+    bad_logs = [
+        item.get("fixture_id", "unknown") for item in payload.get("results", [])
+        if item.get("event_log_path")
+        and (item.get("process_metrics") or {}).get("event_log_status") != "ok"
+    ]
+    if bad_logs:
+        failures.append("invalid event logs: " + ", ".join(str(item) for item in bad_logs))
+    if comparison_path:
+        comparison = json.loads(Path(comparison_path).read_text(encoding="utf-8"))
+        if comparison.get("passed") is not True:
+            reasons = comparison.get("failures", []) or ["unspecified_regression"]
+            failures.append(
+                "Baseline comparison failed: " + ", ".join(str(item) for item in reasons)
+            )
     if schema_validity < schema_validity_min:
         failures.append(
             f"schema_validity_rate={schema_validity:.3f} < {schema_validity_min:.3f}"

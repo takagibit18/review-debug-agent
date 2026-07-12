@@ -13,6 +13,7 @@ def find_blocking_review_error(response: ReviewResponse) -> str | None:
             "Model analysis failed:" in message
             or "Authentication failed" in message
             or "auth_failed" in message
+            or "Model response incomplete" in message
             or "Token budget exhausted" in message
         ):
             return message

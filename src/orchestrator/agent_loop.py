@@ -13,18 +13,23 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
+from src.analyzer.finding_verifier import (
+    FindingVerifier, apply_verifications, build_candidates, validate_verifications,
+)
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
 from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.output_formatter import ReviewReport
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
+from src.analyzer.schemas import FindingVerificationBatch
 from src.analyzer.trace import TraceRecorder
 from src.analyzer.result_processor import ResultProcessor
 from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError, ModelTimeoutError
 from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
+from src.orchestrator.review_workflow import ReviewWorkflowTracker
 from src.tools import create_default_registry
 from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
@@ -44,6 +49,10 @@ class AgentOrchestrator:
         review_max_iterations: int | None = None,
         debug_max_iterations: int | None = None,
         review_min_tool_iterations: int | None = None,
+        finding_verifier: Any | None = None,
+        finding_verifier_mode: Literal["off", "shadow", "enforce"] | None = None,
+        review_workflow_enforcement: Literal["off", "warn", "enforce"] | None = None,
+        review_diff_first_changed_files: bool | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -80,11 +89,32 @@ class AgentOrchestrator:
         self._run_started_at = 0.0
         self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
         self._model_timeout_seen = False
+        self._model_incomplete_seen = False
         self._pre_budget_submit_attempted = False
         self._temperature = temperature
         self._review_max_iterations_override = review_max_iterations
         self._debug_max_iterations_override = debug_max_iterations
         self._review_min_tool_iterations = max(0, review_min_tool_iterations or 0)
+        self._finding_verifier = finding_verifier
+        self._finding_verifier_mode = (
+            finding_verifier_mode or self._settings.finding_verifier_mode
+        )
+        self._workflow_enforcement = (
+            review_workflow_enforcement or self._settings.review_workflow_enforcement
+        )
+        self._review_diff_first_changed_files = (
+            self._settings.review_diff_first_changed_files
+            if review_diff_first_changed_files is None
+            else bool(review_diff_first_changed_files)
+        )
+        self._review_workflow = ReviewWorkflowTracker()
+        self._workflow_reprompt_count = 0
+        self._model_raw_issue_count = 0
+        self._verifier_candidate_count = 0
+        self._verifier_accepted_count = 0
+        self._verifier_rejected_count = 0
+        self._verifier_needs_evidence_count = 0
+        self._verifier_downgraded_count = 0
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
             max_chars=self._settings.agent_trace_max_chars,
@@ -108,12 +138,22 @@ class AgentOrchestrator:
             )
         state = self.prepare_context(request)
         await self._maybe_prefetch_review_changed_files(state, request)
+        if self._workflow_enforcement != "off":
+            if request.diff_mode:
+                self._complete_workflow_step("inspect_diff")
+            else:
+                self._skip_workflow_step("inspect_diff", "full_repo_review")
+                self._skip_workflow_step(
+                    "inspect_changed_context", "full_repo_review"
+                )
         response: ReviewResponse | DebugResponse | None = None
         while True:
             tool_specs = [] if self._permission_mode == "plan" else self._registry.list_specs()
             plan = await self.analyze(state, request, tool_specs)
             self._last_plan = plan
+            self._observe_incomplete_plan(plan, state)
             tool_results = await self.execute_tools(plan, self._registry, state)
+            self._observe_workflow_tools(plan, tool_results)
             response = self.format_result(state, tool_results)
             if not self.should_continue(state, response):
                 break
@@ -122,14 +162,400 @@ class AgentOrchestrator:
                 self._record_pre_budget_submit("attempt", state)
                 submit_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
                 self._last_plan = submit_plan
+                self._observe_incomplete_plan(submit_plan, state)
                 response = self.format_result(state, tool_results=[])
                 self._record_pre_budget_submit("completed", state, submit_plan)
                 break
             self._iteration += 1
         response = await self._maybe_force_submit_review(state, request, response)
         assert isinstance(response, ReviewResponse)
+        response = await self._maybe_recover_review_workflow(response, request, state)
+        response = await self._verify_review_response(response, request, state)
+        response = self._finalize_review_workflow(response, state)
         self._close_event_log()
         return response
+
+    async def _verify_review_response(
+        self,
+        response: ReviewResponse,
+        request: ReviewRequest,
+        state: ContextState,
+    ) -> ReviewResponse:
+        candidates = build_candidates(response.report, iteration=self._iteration)
+        self._model_raw_issue_count = len(response.report.issues)
+        self._verifier_candidate_count = len(candidates)
+        evidence_bound_count = sum(
+            1
+            for item in candidates
+            if item.issue.evidence.strip() and item.issue.location.strip()
+        )
+        self._record_event(
+            EventType.FINDING_CANDIDATES_BUILT,
+            "verify_findings",
+            {
+                "candidate_count": len(candidates),
+                "model_raw_issue_count": self._model_raw_issue_count,
+                "verifier_candidate_count": self._verifier_candidate_count,
+                "evidence_bound_count": evidence_bound_count,
+                "mode": self._finding_verifier_mode,
+            },
+        )
+        if self._workflow_enforcement != "off":
+            if candidates:
+                self._complete_workflow_step("validate_candidate_draft")
+            else:
+                self._skip_workflow_step(
+                    "validate_candidate_draft", "no_candidate_findings"
+                )
+                self._skip_workflow_step(
+                    "semantic_verify_findings", "no_risk_candidates"
+                )
+        if not candidates or self._finding_verifier_mode == "off":
+            if candidates and self._workflow_enforcement != "off":
+                self._fail_workflow_step(
+                    "semantic_verify_findings", "finding_verifier_disabled"
+                )
+            return response
+        verifier = self._finding_verifier
+        if verifier is None and self._model_client is not None:
+            verifier = FindingVerifier(self._model_client)
+        if verifier is None:
+            self._record_event(
+                EventType.FINDING_VERIFICATION_FAILED,
+                "verify_findings",
+                {
+                    "candidate_count": len(candidates),
+                    "mode": self._finding_verifier_mode,
+                    "reason": "verifier_unavailable",
+                },
+            )
+            if self._finding_verifier_mode == "enforce":
+                response.report = apply_verifications(
+                    response.report,
+                    FindingVerificationBatch(),
+                    mode="enforce",
+                )
+            if self._workflow_enforcement != "off":
+                self._fail_workflow_step(
+                    "semantic_verify_findings", "verifier_unavailable"
+                )
+            return response
+        try:
+            batch = await verifier.verify(candidates, request, state)
+            batch = validate_verifications(candidates, batch, request)
+            self._consume_verifier_tokens(verifier)
+        except Exception as exc:  # noqa: BLE001
+            self._record_event(
+                EventType.FINDING_VERIFICATION_FAILED,
+                "verify_findings",
+                {
+                    "candidate_count": len(candidates),
+                    "mode": self._finding_verifier_mode,
+                    "reason": exc.__class__.__name__,
+                    "message": str(exc)[:500],
+                },
+            )
+            batch = FindingVerificationBatch()
+        first_pass_accept_count = sum(item.status == "accepted" for item in batch.results)
+        needs_evidence_ids = {
+            item.candidate_id
+            for item in batch.results
+            if item.status == "needs_evidence"
+        }
+        if needs_evidence_ids and self._settings.verifier_max_repair_rounds > 0:
+            repair_candidates = [
+                item for item in candidates if item.candidate_id in needs_evidence_ids
+            ]
+            state.constraints.append(
+                "verifier_needs_evidence:"
+                + ",".join(sorted(needs_evidence_ids))
+            )
+            try:
+                repaired = await verifier.verify(repair_candidates, request, state)
+                repaired = validate_verifications(repair_candidates, repaired, request)
+                self._consume_verifier_tokens(verifier)
+            except Exception as exc:  # noqa: BLE001
+                repaired = FindingVerificationBatch()
+                self._record_event(
+                    EventType.FINDING_VERIFICATION_FAILED,
+                    "verify_findings",
+                    {
+                        "candidate_count": len(repair_candidates),
+                        "mode": self._finding_verifier_mode,
+                        "reason": exc.__class__.__name__,
+                        "stage": "evidence_repair",
+                    },
+                )
+            repaired_by_id = {item.candidate_id: item for item in repaired.results}
+            batch = FindingVerificationBatch(
+                results=[
+                    repaired_by_id.get(item.candidate_id, item)
+                    if item.candidate_id in needs_evidence_ids
+                    else item
+                    for item in batch.results
+                ]
+            )
+            self._record_event(
+                EventType.FINDING_EVIDENCE_REPAIR_COMPLETED,
+                "verify_findings",
+                {
+                    "round": 1,
+                    "candidate_count": len(repair_candidates),
+                    "resolved_count": sum(
+                        item.status in {"accepted", "rejected", "downgraded"}
+                        for item in repaired.results
+                    ),
+                },
+            )
+        accepted = sum(item.status == "accepted" for item in batch.results)
+        rejected = sum(item.status == "rejected" for item in batch.results)
+        needs_evidence = sum(item.status == "needs_evidence" for item in batch.results)
+        downgraded = sum(item.status == "downgraded" for item in batch.results)
+        self._verifier_accepted_count = accepted
+        self._verifier_rejected_count = rejected
+        self._verifier_needs_evidence_count = needs_evidence
+        self._verifier_downgraded_count = downgraded
+        self._record_event(
+            EventType.FINDING_VERIFICATION_COMPLETED,
+            "verify_findings",
+            {
+                "candidate_count": len(candidates),
+                "model_raw_issue_count": self._model_raw_issue_count,
+                "verifier_candidate_count": self._verifier_candidate_count,
+                "accepted_count": accepted,
+                "verifier_accepted_count": accepted,
+                "rejected_count": rejected,
+                "verifier_rejected_count": rejected,
+                "needs_evidence_count": needs_evidence,
+                "verifier_needs_evidence_count": needs_evidence,
+                "downgraded_count": downgraded,
+                "verifier_downgraded_count": downgraded,
+                "first_pass_accept_count": first_pass_accept_count,
+                "mode": self._finding_verifier_mode,
+                "reason_codes": [
+                    code for item in batch.results for code in item.reason_codes
+                ],
+            },
+        )
+        if self._workflow_enforcement != "off":
+            terminal_ids = {
+                item.candidate_id for item in batch.results
+                if item.status in {"accepted", "rejected", "downgraded"}
+            }
+            if all(item.candidate_id in terminal_ids for item in candidates):
+                self._complete_workflow_step("semantic_verify_findings")
+            else:
+                self._fail_workflow_step(
+                    "semantic_verify_findings", "missing_verifier_verdict"
+                )
+        response.report = apply_verifications(
+            response.report,
+            batch,
+            mode=self._finding_verifier_mode,
+        )
+        return response
+
+    async def _maybe_recover_review_workflow(
+        self,
+        response: ReviewResponse,
+        request: ReviewRequest,
+        state: ContextState,
+    ) -> ReviewResponse:
+        if self._workflow_enforcement != "enforce":
+            return response
+        has_candidates = bool(response.report.issues)
+        has_risk = any(
+            issue.severity.value in {"critical", "warning"}
+            for issue in response.report.issues
+        )
+        missing = self._review_workflow.missing_required(
+            has_candidates=has_candidates,
+            has_risk_candidates=has_risk,
+        )
+        recoverable = [
+            item
+            for item in missing
+            if item.step_id in {"inspect_diff", "inspect_changed_context"}
+        ]
+        if not recoverable or self._workflow_reprompt_count >= 1:
+            return response
+        if any(item.step_id == "inspect_changed_context" for item in recoverable):
+            await self._maybe_prefetch_review_changed_files(
+                state,
+                request,
+                force=True,
+                trigger="workflow_recovery",
+            )
+            missing = self._review_workflow.missing_required(
+                has_candidates=has_candidates,
+                has_risk_candidates=has_risk,
+            )
+            recoverable = [
+                item
+                for item in missing
+                if item.step_id in {"inspect_diff", "inspect_changed_context"}
+            ]
+            if not recoverable:
+                return response
+        self._workflow_reprompt_count += 1
+        state.constraints.append(
+            "workflow_missing_required:"
+            + ",".join(item.step_id for item in recoverable)
+        )
+        recovery_plan = await self.analyze(
+            state,
+            request,
+            self._registry.list_specs(),
+        )
+        self._total_tokens += self._latest_tokens
+        self._budget_state = self._result_processor.budget_state(self._total_tokens)
+        self._budget_exhausted = self._budget_state != "none"
+        recovery_results = await self.execute_tools(
+            recovery_plan,
+            self._registry,
+            state,
+        )
+        self._observe_workflow_tools(recovery_plan, recovery_results)
+        return response
+
+    def _consume_verifier_tokens(self, verifier: Any) -> None:
+        raw_tokens = getattr(verifier, "last_call_tokens", 0)
+        try:
+            tokens = max(0, int(raw_tokens or 0))
+        except (TypeError, ValueError):
+            tokens = 0
+        self._total_tokens += tokens
+        self._budget_state = self._result_processor.budget_state(self._total_tokens)
+        self._budget_exhausted = self._budget_state != "none"
+
+    def _finalize_review_workflow(
+        self,
+        response: ReviewResponse,
+        state: ContextState,
+    ) -> ReviewResponse:
+        if self._workflow_enforcement == "off":
+            return response
+        self._complete_workflow_step("finalize_review")
+        has_candidates = bool(response.report.issues)
+        has_risk = any(
+            issue.severity.value in {"critical", "warning"}
+            for issue in response.report.issues
+        )
+        summary = self._review_workflow.summary(
+            has_candidates=has_candidates,
+            has_risk_candidates=has_risk,
+        )
+        summary.update(
+            {
+                "reprompt_count": self._workflow_reprompt_count,
+                "enforcement": self._workflow_enforcement,
+            }
+        )
+        raw_missing = summary.get("missing_required_steps", [])
+        missing = (
+            [str(item) for item in raw_missing]
+            if isinstance(raw_missing, list)
+            else []
+        )
+        workflow_filtered_issue_count = 0
+        workflow_invalid = bool(missing)
+        if missing and self._workflow_enforcement == "enforce":
+            before_filter_count = len(response.report.issues)
+            response.report.issues = [
+                issue
+                for issue in response.report.issues
+                if issue.severity.value not in {"critical", "warning"}
+            ]
+            workflow_filtered_issue_count = before_filter_count - len(response.report.issues)
+            state.errors.append(
+                ErrorDetail(
+                    file="",
+                    message="Review workflow incomplete: " + ", ".join(missing),
+                    category="runtime",
+                )
+            )
+            self._last_decision_reason = "workflow_incomplete"
+        response.workflow_invalid = workflow_invalid
+        response.workflow_missing_steps = missing
+        summary.update(
+            {
+                "model_raw_issue_count": self._model_raw_issue_count,
+                "verifier_candidate_count": self._verifier_candidate_count,
+                "verifier_accepted_count": self._verifier_accepted_count,
+                "verifier_rejected_count": self._verifier_rejected_count,
+                "verifier_needs_evidence_count": self._verifier_needs_evidence_count,
+                "verifier_downgraded_count": self._verifier_downgraded_count,
+                "workflow_filtered_issue_count": workflow_filtered_issue_count,
+                "final_effective_issue_count": len(response.report.issues),
+                "workflow_invalid": workflow_invalid,
+            }
+        )
+        self._record_event(EventType.WORKFLOW_SUMMARY, "workflow", summary)
+        return response
+
+    def _observe_workflow_tools(
+        self,
+        plan: AnalysisPlan,
+        results: list[ToolResult],
+    ) -> None:
+        if self._workflow_enforcement == "off":
+            return
+        successful_names = {
+            self._parse_tool_call(raw)["name"]
+            for raw, result in zip(plan.tool_calls, results)
+            if result.ok
+        }
+        if successful_names & {
+            "read_file",
+            "changed_context",
+            "get_changed_context",
+            "symbol_context",
+            "find_symbol_context",
+            "grep",
+            "glob",
+            "list_dir",
+        }:
+            self._complete_workflow_step("inspect_changed_context")
+        if "validate_review_draft" in successful_names:
+            self._complete_workflow_step("validate_candidate_draft")
+
+    def _complete_workflow_step(self, step_id: str) -> None:
+        state = self._review_workflow.states[step_id]
+        if state.status == "completed":
+            return
+        self._review_workflow.complete(step_id)
+        self._record_event(
+            EventType.WORKFLOW_STEP_COMPLETED,
+            "workflow",
+            {"step_id": step_id, "attempts": state.attempts},
+        )
+
+    def _skip_workflow_step(self, step_id: str, reason: str) -> None:
+        state = self._review_workflow.states[step_id]
+        if state.status in {"completed", "skipped"}:
+            return
+        self._review_workflow.skip(step_id, reason, condition_not_applicable=True)
+        self._record_event(
+            EventType.WORKFLOW_STEP_SKIPPED,
+            "workflow",
+            {"step_id": step_id, "reason": reason},
+        )
+
+    def _fail_workflow_step(self, step_id: str, reason: str) -> None:
+        state = self._review_workflow.states[step_id]
+        if state.status == "pending":
+            try:
+                self._review_workflow.start(step_id)
+            except ValueError:
+                state.status = "in_progress"
+                state.attempts = max(1, state.attempts)
+        if state.status == "in_progress":
+            self._review_workflow.fail(step_id, reason)
+        self._record_event(
+            EventType.WORKFLOW_STEP_FAILED,
+            "workflow",
+            {"step_id": step_id, "reason": reason, "attempts": state.attempts},
+        )
 
     async def run_debug(self, request: DebugRequest) -> DebugResponse:
         """Run debug mode through the orchestrator loop."""
@@ -148,6 +574,7 @@ class AgentOrchestrator:
             tool_specs = [] if self._permission_mode == "plan" else self._registry.list_specs()
             plan = await self.analyze(state, request, tool_specs)
             self._last_plan = plan
+            self._observe_incomplete_plan(plan, state)
             tool_results = await self.execute_tools(plan, self._registry, state)
             response = self.format_result(state, tool_results)
             if not self.should_continue(state, response):
@@ -157,6 +584,7 @@ class AgentOrchestrator:
                 self._record_pre_budget_submit("attempt", state)
                 submit_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
                 self._last_plan = submit_plan
+                self._observe_incomplete_plan(submit_plan, state)
                 response = self.format_result(state, tool_results=[])
                 self._record_pre_budget_submit("completed", state, submit_plan)
                 break
@@ -188,6 +616,7 @@ class AgentOrchestrator:
             return response
         finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
         self._last_plan = finalize_plan
+        self._observe_incomplete_plan(finalize_plan, state)
         response = self.format_result(state, tool_results=[])
         self._record_event(
             EventType.DECISION,
@@ -221,6 +650,7 @@ class AgentOrchestrator:
             return response
         finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
         self._last_plan = finalize_plan
+        self._observe_incomplete_plan(finalize_plan, state)
         response = self.format_result(state, tool_results=[])
         self._record_event(
             EventType.DECISION,
@@ -673,12 +1103,21 @@ class AgentOrchestrator:
             and self._permission_mode != "plan"
         )
         self._model_completed = (
-            not has_pending_tools and not self._blocking_error and not defer_review_submit
+            not has_pending_tools
+            and not self._blocking_error
+            and not defer_review_submit
+            and not self._model_incomplete_seen
         )
         reached_limit = (self._iteration + 1) >= self._max_iterations
         run_timed_out = self._run_timeout_exceeded()
 
-        stop = self._model_completed or reached_limit or self._budget_exhausted or run_timed_out
+        stop = (
+            self._model_incomplete_seen
+            or self._model_completed
+            or reached_limit
+            or self._budget_exhausted
+            or run_timed_out
+        )
         if self._budget_exhausted:
             state.errors.append(
                 ErrorDetail(
@@ -700,6 +1139,8 @@ class AgentOrchestrator:
             reason = "budget_hard_capped"
         elif self._budget_state == "soft_capped":
             reason = "budget_soft_capped"
+        elif self._model_incomplete_seen:
+            reason = "model_incomplete"
         elif run_timed_out:
             reason = "run_timeout"
         elif reached_limit:
@@ -724,6 +1165,7 @@ class AgentOrchestrator:
                 "max_iterations": self._max_iterations,
                 "has_pending_tools": has_pending_tools,
                 "model_completed": self._model_completed,
+                "model_incomplete": self._model_incomplete_seen,
                 "reached_limit": reached_limit,
                 "run_timed_out": run_timed_out,
                 "elapsed_ms": int(self._run_elapsed_seconds() * 1000),
@@ -767,7 +1209,16 @@ class AgentOrchestrator:
         self._run_started_at = perf_counter()
         self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
         self._model_timeout_seen = False
+        self._model_incomplete_seen = False
         self._pre_budget_submit_attempted = False
+        self._review_workflow = ReviewWorkflowTracker()
+        self._workflow_reprompt_count = 0
+        self._model_raw_issue_count = 0
+        self._verifier_candidate_count = 0
+        self._verifier_accepted_count = 0
+        self._verifier_rejected_count = 0
+        self._verifier_needs_evidence_count = 0
+        self._verifier_downgraded_count = 0
         self._record_event(
             EventType.PHASE_START,
             "prepare",
@@ -781,7 +1232,7 @@ class AgentOrchestrator:
                 "agent_tool_timeout_seconds": self._settings.agent_tool_timeout_seconds,
                 "model_max_tokens": self._settings.model_max_tokens,
                 "pre_budget_submit_token_ratio": self._settings.pre_budget_submit_token_ratio,
-                "review_diff_first_changed_files": self._settings.review_diff_first_changed_files,
+                "review_diff_first_changed_files": self._review_diff_first_changed_files,
                 "review_diff_first_changed_files_max": self._settings.review_diff_first_changed_files_max,
             },
         )
@@ -855,6 +1306,8 @@ class AgentOrchestrator:
     def _finalize_skip_reason(self) -> str:
         if self._model_timeout_seen:
             return "model_timeout"
+        if self._model_incomplete_seen:
+            return "model_incomplete"
         if self._pre_budget_submit_attempted:
             return "pre_budget_submit_attempted"
         if self._budget_state != "none":
@@ -883,12 +1336,39 @@ class AgentOrchestrator:
             },
         )
 
+    def _observe_incomplete_plan(
+        self,
+        plan: AnalysisPlan,
+        state: ContextState,
+    ) -> None:
+        reason = str(getattr(plan, "incomplete_reason", "") or "").strip()
+        if not reason or self._model_incomplete_seen:
+            return
+        self._model_incomplete_seen = True
+        message = (
+            "Model response incomplete: finish_reason=length produced no draft "
+            f"or tool calls ({reason})."
+        )
+        state.errors.append(ErrorDetail(file="", message=message, category="runtime"))
+        self._record_event(
+            EventType.ERROR,
+            "analyze",
+            {
+                "iteration": self._iteration,
+                "reason": reason,
+                "message": message,
+            },
+        )
+
     async def _maybe_prefetch_review_changed_files(
         self,
         state: ContextState,
         request: ReviewRequest,
+        *,
+        force: bool = False,
+        trigger: str = "initial",
     ) -> None:
-        if not self._settings.review_diff_first_changed_files:
+        if not force and not self._review_diff_first_changed_files:
             return
         if self._permission_mode == "plan" or not request.diff_mode:
             return
@@ -900,6 +1380,8 @@ class AgentOrchestrator:
             {
                 "iteration": self._iteration,
                 "enabled": True,
+                "forced": force,
+                "trigger": trigger,
                 "selected_files": selected_files,
                 "max_files": self._settings.review_diff_first_changed_files_max,
             },
@@ -924,7 +1406,8 @@ class AgentOrchestrator:
                 for index, path in enumerate(selected_files)
             ],
         )
-        await self.execute_tools(plan, self._registry, state)
+        results = await self.execute_tools(plan, self._registry, state)
+        self._observe_workflow_tools(plan, results)
 
     def _select_changed_files_for_prefetch(self, diff_text: str) -> list[str]:
         selected: list[str] = []

@@ -12,7 +12,7 @@ from typing import Any, TypeVar
 import click
 
 from src.analyzer.output_formatter import ReviewIssue, triage_review_report
-from src.analyzer.run_summary import summarize_run_artifacts
+from src.analyzer.run_summary import PublishStatus, summarize_run_artifacts
 from src import __version__
 from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.analyzer.review_failures import find_blocking_review_error
@@ -267,6 +267,51 @@ def _load_changed_lines(path: Path) -> dict[str, set[int]]:
     return changed
 
 
+def _publish_status_from_result(result: GitHubPublishResult) -> PublishStatus:
+    if result.status == "published":
+        return "published"
+    if result.status == "dry_run":
+        return "dry_run"
+    return "failed"
+
+
+def _write_publish_run_summary(
+    *,
+    summary_json: str | None,
+    response: ReviewResponse,
+    response_json: str,
+    publish_result_json: str | None,
+    publish_status: PublishStatus,
+) -> None:
+    if not summary_json:
+        return
+    summary_path = Path(summary_json)
+    existing_event_log_path: str | None = None
+    existing_advisory_json_path: str | None = None
+    if summary_path.exists():
+        try:
+            existing = json.loads(summary_path.read_text(encoding="utf-8"))
+            artifact_paths = existing.get("artifact_paths")
+            if isinstance(artifact_paths, dict):
+                event_log = artifact_paths.get("event_log")
+                advisory_json = artifact_paths.get("advisory_json")
+                existing_event_log_path = str(event_log) if event_log else None
+                existing_advisory_json_path = str(advisory_json) if advisory_json else None
+        except json.JSONDecodeError:
+            existing_event_log_path = None
+            existing_advisory_json_path = None
+    summary = summarize_run_artifacts(
+        run_id=response.run_id,
+        event_log_path=existing_event_log_path,
+        response_json_path=response_json,
+        advisory_json_path=existing_advisory_json_path,
+        publish_result_json_path=publish_result_json,
+        publish_status=publish_status,
+    )
+    summary_path.write_text(summary.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    click.echo(f"Run summary saved to: {summary_path.as_posix()}")
+
+
 @main.group("github-advisory")
 def github_advisory() -> None:
     """Publish MergeWarden advisory checks and PR comments."""
@@ -367,6 +412,12 @@ def platform_worker(once: bool, poll_interval: float | None) -> None:
     type=click.Path(exists=False),
     help="Optional output path. Defaults to stdout.",
 )
+@click.option(
+    "--summary-json",
+    default=None,
+    type=click.Path(exists=False),
+    help="Optional path to rewrite the compact run artifact summary JSON.",
+)
 def github_advisory_publish(
     owner_repo: str,
     pr_number: int,
@@ -376,6 +427,7 @@ def github_advisory_publish(
     dry_run: bool,
     token: str | None,
     output_json: str | None,
+    summary_json: str | None,
 ) -> None:
     """Publish a GitHub soft check and advisory comments for a review response."""
     response = ReviewResponse.model_validate_json(
@@ -405,10 +457,25 @@ def github_advisory_publish(
         "github-advisory publish",
     )
     output = result.model_dump_json(indent=2)
+    publish_status = _publish_status_from_result(result)
     if output_json:
         Path(output_json).write_text(output + "\n", encoding="utf-8")
         click.echo(f"GitHub advisory publish result saved to: {Path(output_json).as_posix()}")
+        _write_publish_run_summary(
+            summary_json=summary_json,
+            response=response,
+            response_json=response_json,
+            publish_result_json=output_json,
+            publish_status=publish_status,
+        )
         return
+    _write_publish_run_summary(
+        summary_json=summary_json,
+        response=response,
+        response_json=response_json,
+        publish_result_json=None,
+        publish_status=publish_status,
+    )
     click.echo(output)
 
 

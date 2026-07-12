@@ -105,6 +105,15 @@ The CI gate uses the stable MVP+ numeric target:
 python -m eval.gate --report eval/outputs/ci_report.json --schema-validity-min 1.0 --hit-rate-min 0.6 --false-positive-rate-max 0.5
 ```
 
+v0.2.0 can additionally compare a candidate report against a frozen baseline:
+
+```bash
+python -m eval.compare --baseline eval/baselines/v0.2.0-alpha.1.json --candidate eval/outputs/ci_report.json --output-json eval/outputs/ci_comparison.json
+python -m eval.gate --report eval/outputs/ci_report.json --comparison eval/outputs/ci_comparison.json --schema-validity-min 1.0 --hit-rate-min 0.6 --false-positive-rate-max 0.5
+```
+
+The comparison fails when hit rate drops by more than `0.05`, false-positive rate increases, p95 latency grows by more than `60%`, or p95 token usage grows by more than `50%`. Process metrics include evidence binding, verifier accept/reject, first-pass acceptance, required-step completion, duplicate tool calls, and token cost per accepted finding.
+
 - `schema_validity_rate >= 1.0`: every response must be valid structured output.
 - `hit_rate >= 0.6`: at least 60% of positive golden fixtures must be matched.
 - `false_positive_rate <= 0.5`: false positives above 50% fail the gate.

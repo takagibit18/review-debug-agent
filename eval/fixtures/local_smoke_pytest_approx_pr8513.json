@@ -1,0 +1,43 @@
+{
+  "id": "local_smoke_pytest_approx_pr8513",
+  "type": "review",
+  "source": {
+    "repo_full_name": "pytest-dev/pytest",
+    "pr_number": 8513,
+    "url": "https://github.com/pytest-dev/pytest/pull/8513",
+    "title": "Local sparse smoke fixture for Decimal/float approx review"
+  },
+  "input": {
+    "diff_text": "diff --git a/src/_pytest/python_api.py b/src/_pytest/python_api.py\nindex 1531d2fe3..5595fc898 100644\n--- a/src/_pytest/python_api.py\n+++ b/src/_pytest/python_api.py\n@@ -273,8 +273,21 @@ class ApproxScalar(ApproxBase):\n         if math.isinf(abs(self.expected)):  # type: ignore[arg-type]\n             return False\n \n-        # Return true if the two numbers are within the tolerance.\n-        result: bool = abs(self.expected - actual) <= self.tolerance\n+        # Return true if the two numbers are within the tolerance.  In order to\n+        # be flexible about which types are supported, try making the\n+        # comparison in two ways.  The first requires that the actual value can\n+        # be subtracted from the expected value.  This is necessary for complex\n+        # numbers, which don't implement comparison operators.  The second\n+        # requires that the actual and expected values can be compared.  This\n+        # is necessary for comparing Decimals with floats, see #8495.\n+        result: bool\n+        try:\n+            result = abs(self.expected - actual) <= self.tolerance\n+        except TypeError:\n+            low = self.expected - self.tolerance\n+            high = self.expected + self.tolerance\n+            result = low <= actual <= high\n+\n         return result\n \n     # Ignore type because of https://github.com/python/mypy/issues/4266.\ndiff --git a/testing/python/approx.py b/testing/python/approx.py\nindex cb1d9b7c8..323a9adf7 100644\n--- a/testing/python/approx.py\n+++ b/testing/python/approx.py\n@@ -276,15 +276,20 @@ class TestApprox:\n \n     def test_decimal(self):\n         within_1e6 = [\n-            (Decimal(\"1.000001\"), Decimal(\"1.0\")),\n-            (Decimal(\"-1.000001\"), Decimal(\"-1.0\")),\n+            (Decimal(\"1.0000005\"), Decimal(\"1.0\"), Decimal),\n+            (Decimal(\"-1.0000005\"), Decimal(\"-1.0\"), Decimal),\n+            (Decimal(\"1.0000005\"), 1.0, float),\n+            (Decimal(\"-1.0000005\"), -1.0, float),\n         ]\n-        for a, x in within_1e6:\n+        for a, x, T in within_1e6:\n+            # Need to test the default values here, because some code is needed\n+            # to account for the fact that you can't add floats to decimals.\n             assert a == approx(x)\n-            assert a == approx(x, rel=Decimal(\"5e-6\"), abs=0)\n-            assert a != approx(x, rel=Decimal(\"5e-7\"), abs=0)\n-            assert approx(x, rel=Decimal(\"5e-6\"), abs=0) == a\n-            assert approx(x, rel=Decimal(\"5e-7\"), abs=0) != a\n+\n+            assert a == approx(x, rel=T(\"1e-6\"), abs=0)\n+            assert a != approx(x, rel=T(\"1e-7\"), abs=0)\n+            assert approx(x, rel=T(\"1e-6\"), abs=0) == a\n+            assert approx(x, rel=T(\"1e-7\"), abs=0) != a\n \n     def test_fraction(self):\n         within_1e6 = [\n",
+    "files": {
+      "src/_pytest/python_api.py": "import math\n\nclass ApproxScalar:\n    def __eq__(self, actual):\n        # Sparse local context: the authoritative changed-line locations are in the diff.\n        result: bool\n        try:\n            result = abs(self.expected - actual) <= self.tolerance\n        except TypeError:\n            low = self.expected - self.tolerance\n            high = self.expected + self.tolerance\n            result = low <= actual <= high\n        return result\n",
+      "testing/python/approx.py": "from decimal import Decimal\n\ndef test_decimal():\n    within_1e6 = [\n        (Decimal(\"1.0000005\"), Decimal(\"1.0\"), Decimal),\n        (Decimal(\"1.0000005\"), 1.0, float),\n    ]\n    for a, x, T in within_1e6:\n        assert a == approx(x, rel=T(\"1e-6\"), abs=0)\n"
+    },
+    "error_log": null,
+    "workspace": null
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "src/_pytest/python_api.py",
+        "path": "src/_pytest/python_api.py",
+        "line": 285,
+        "end_line": 288,
+        "category": "precision",
+        "description": "The TypeError fallback silently changes pytest.approx semantics for mixed Decimal/float values by treating them as supported through range comparison."
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 1,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "local_smoke",
+    "tags": ["local", "smoke", "diff-only", "pytest", "precision"],
+    "difficulty": "hard",
+    "annotated_by": "manual",
+    "reviewed": true,
+    "created_at": "2026-07-12T00:00:00+00:00"
+  }
+}

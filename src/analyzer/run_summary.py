@@ -30,6 +30,23 @@ class RunSummary(BaseModel):
     model_names: list[str] = Field(default_factory=list)
     total_tokens: int = 0
     publish_status: PublishStatus = "not_requested"
+    finding_verifier_mode: str = "off"
+    model_raw_issue_count: int = 0
+    verifier_candidate_count: int = 0
+    finding_candidate_count: int = 0
+    finding_accepted_count: int = 0
+    finding_rejected_count: int = 0
+    finding_needs_evidence_count: int = 0
+    finding_downgraded_count: int = 0
+    finding_reason_codes: dict[str, int] = Field(default_factory=dict)
+    workflow_enforcement: str = "off"
+    workflow_required_step_count: int = 0
+    workflow_completed_required_step_count: int = 0
+    workflow_missing_steps: list[str] = Field(default_factory=list)
+    workflow_reprompt_count: int = 0
+    workflow_filtered_issue_count: int = 0
+    final_effective_issue_count: int = 0
+    workflow_invalid: bool = False
 
 
 class RunArtifactSummary(BaseModel):
@@ -170,3 +187,65 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         reason = str(payload.get("reason", "") or "").strip()
         if reason and reason not in summary.finish_reasons:
             summary.finish_reasons.append(reason)
+
+    if event_type == "finding_candidates_built":
+        summary.finding_verifier_mode = str(payload.get("mode", "off") or "off")
+        summary.model_raw_issue_count = int(
+            payload.get("model_raw_issue_count", summary.model_raw_issue_count) or 0
+        )
+        summary.verifier_candidate_count = int(
+            payload.get("verifier_candidate_count", payload.get("candidate_count", 0))
+            or 0
+        )
+        summary.finding_candidate_count = int(payload.get("candidate_count", 0) or 0)
+
+    if event_type == "finding_verification_completed":
+        summary.model_raw_issue_count = int(
+            payload.get("model_raw_issue_count", summary.model_raw_issue_count) or 0
+        )
+        summary.verifier_candidate_count = int(
+            payload.get("verifier_candidate_count", summary.verifier_candidate_count)
+            or 0
+        )
+        summary.finding_accepted_count = int(payload.get("accepted_count", 0) or 0)
+        summary.finding_rejected_count = int(payload.get("rejected_count", 0) or 0)
+        summary.finding_needs_evidence_count = int(
+            payload.get("needs_evidence_count", 0) or 0
+        )
+        summary.finding_downgraded_count = int(payload.get("downgraded_count", 0) or 0)
+        reason_codes = payload.get("reason_codes", [])
+        if isinstance(reason_codes, list):
+            for raw_code in reason_codes:
+                code = str(raw_code).strip()
+                if code:
+                    summary.finding_reason_codes[code] = (
+                        summary.finding_reason_codes.get(code, 0) + 1
+                    )
+
+    if event_type == "workflow_summary":
+        summary.workflow_enforcement = str(payload.get("enforcement", "off") or "off")
+        summary.workflow_required_step_count = int(
+            payload.get("required_step_count", 0) or 0
+        )
+        summary.workflow_completed_required_step_count = int(
+            payload.get("completed_required_step_count", 0) or 0
+        )
+        missing = payload.get("missing_required_steps", [])
+        summary.workflow_missing_steps = (
+            [str(item) for item in missing] if isinstance(missing, list) else []
+        )
+        summary.workflow_reprompt_count = int(payload.get("reprompt_count", 0) or 0)
+        summary.workflow_filtered_issue_count = int(
+            payload.get("workflow_filtered_issue_count", 0) or 0
+        )
+        summary.final_effective_issue_count = int(
+            payload.get("final_effective_issue_count", 0) or 0
+        )
+        summary.workflow_invalid = bool(payload.get("workflow_invalid", False))
+        summary.workflow_filtered_issue_count = int(
+            payload.get("workflow_filtered_issue_count", 0) or 0
+        )
+        summary.final_effective_issue_count = int(
+            payload.get("final_effective_issue_count", 0) or 0
+        )
+        summary.workflow_invalid = bool(payload.get("workflow_invalid", False))

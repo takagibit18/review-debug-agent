@@ -21,6 +21,7 @@ DiagnosticReason = Literal[
     "fp_negative",
     "event_log_missing",
     "event_log_parse_error",
+    "workflow_invalid",
 ]
 
 
@@ -70,6 +71,8 @@ def diagnose_result(result: EvalResult) -> EvalFixtureDiagnosis:
         reasons.append("event_log_missing")
     if run_summary.event_log_status == "parse_error":
         reasons.append("event_log_parse_error")
+    if result.workflow_invalid or run_summary.workflow_invalid:
+        reasons.append("workflow_invalid")
 
     if result.expected_count == 0 and result.false_positive_count > 0:
         reasons.append("fp_negative")
@@ -127,6 +130,10 @@ def _build_note(result: EvalResult, reasons: list[DiagnosticReason]) -> str:
         return "Expected issue matched."
     if "fp_negative" in reasons:
         return "Negative fixture produced effective issues."
+    if "workflow_invalid" in reasons:
+        missing = result.workflow_missing_steps or run_summary.workflow_missing_steps
+        suffix = f": {', '.join(missing)}" if missing else ""
+        return "Required review workflow was incomplete" + suffix + "."
     if "miss_filtered_issue" in reasons:
         return "Model produced issues, but none counted as a matched effective issue."
     if "miss_no_issue" in reasons:

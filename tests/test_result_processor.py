@@ -399,4 +399,10 @@ def test_format_review_keeps_review_response_contract_shape() -> None:
     response, blocking_error = processor.format_review(plan, [], ContextState())
 
     assert blocking_error is False
-    assert set(response.model_dump().keys()) == {"run_id", "report", "context"}
+    assert set(response.model_dump().keys()) == {
+        "run_id",
+        "report",
+        "context",
+        "workflow_invalid",
+        "workflow_missing_steps",
+    }

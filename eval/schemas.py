@@ -99,6 +99,44 @@ class EvalIssueMatch(BaseModel):
     matched_actual_index: int | None = None
 
 
+class ReviewProcessMetrics(BaseModel):
+    """Process-level evidence collected from one review run timeline."""
+
+    model_raw_issue_count: int = Field(default=0, ge=0)
+    verifier_candidate_count: int = Field(default=0, ge=0)
+    candidate_issue_count: int = Field(default=0, ge=0)
+    evidence_bound_issue_count: int = Field(default=0, ge=0)
+    verifier_accepted_count: int = Field(default=0, ge=0)
+    verifier_rejected_count: int = Field(default=0, ge=0)
+    verifier_needs_evidence_count: int = Field(default=0, ge=0)
+    verifier_downgraded_count: int = Field(default=0, ge=0)
+    first_pass_accept_count: int = Field(default=0, ge=0)
+    required_step_count: int = Field(default=0, ge=0)
+    completed_required_step_count: int = Field(default=0, ge=0)
+    workflow_filtered_issue_count: int = Field(default=0, ge=0)
+    final_effective_issue_count: int = Field(default=0, ge=0)
+    workflow_invalid: bool = False
+    workflow_missing_steps: list[str] = Field(default_factory=list)
+    duplicate_tool_call_count: int = Field(default=0, ge=0)
+    event_log_status: Literal["ok", "missing", "parse_error"] = "missing"
+
+    @property
+    def evidence_binding_rate(self) -> float:
+        return (
+            self.evidence_bound_issue_count / self.candidate_issue_count
+            if self.candidate_issue_count
+            else 1.0
+        )
+
+    @property
+    def required_step_completion_rate(self) -> float:
+        return (
+            self.completed_required_step_count / self.required_step_count
+            if self.required_step_count
+            else 1.0
+        )
+
+
 class EvalResult(BaseModel):
     """Per-fixture evaluation result."""
 
@@ -128,6 +166,9 @@ class EvalResult(BaseModel):
     budget_exhausted: bool = Field(default=False)
     budget_state: str = Field(default="none")
     finish_reasons: list[str] = Field(default_factory=list)
+    workflow_invalid: bool = Field(default=False)
+    workflow_missing_steps: list[str] = Field(default_factory=list)
+    process_metrics: ReviewProcessMetrics = Field(default_factory=ReviewProcessMetrics)
 
 
 class SampledFixtureResult(BaseModel):
@@ -164,6 +205,22 @@ class MetricSummary(BaseModel):
     avg_total_tokens: float = Field(default=0.0, ge=0.0)
     p50_total_tokens: float = Field(default=0.0, ge=0.0)
     p95_total_tokens: float = Field(default=0.0, ge=0.0)
+    evidence_binding_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    verifier_accept_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    verifier_reject_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    first_pass_accept_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    required_step_completion_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    duplicate_tool_call_rate: float = Field(default=0.0, ge=0.0)
+    cost_per_accepted_finding: float = Field(default=0.0, ge=0.0)
+    model_raw_issue_count: int = Field(default=0, ge=0)
+    verifier_candidate_count: int = Field(default=0, ge=0)
+    verifier_accepted_count: int = Field(default=0, ge=0)
+    verifier_rejected_count: int = Field(default=0, ge=0)
+    verifier_needs_evidence_count: int = Field(default=0, ge=0)
+    verifier_downgraded_count: int = Field(default=0, ge=0)
+    workflow_filtered_issue_count: int = Field(default=0, ge=0)
+    final_effective_issue_count: int = Field(default=0, ge=0)
+    workflow_invalid_run_count: int = Field(default=0, ge=0)
     human_acceptability_note: str = Field(
         default="Manual review template generated; scores are filled offline."
     )
@@ -193,6 +250,7 @@ class MetricSummary(BaseModel):
 
         latencies = [item.latency_seconds for item in results]
         token_values = [float(item.total_tokens) for item in results]
+        process = _aggregate_process_metrics(results)
 
         return cls(
             schema_validity_rate=valid_count / len(results),
@@ -215,6 +273,7 @@ class MetricSummary(BaseModel):
             avg_total_tokens=float(mean(token_values)),
             p50_total_tokens=cls._percentile(token_values, 0.5),
             p95_total_tokens=cls._percentile(token_values, 0.95),
+            **process,
         )
 
     @classmethod
@@ -235,6 +294,7 @@ class MetricSummary(BaseModel):
 
         latencies = [run.latency_seconds for run in all_runs]
         token_values = [float(run.total_tokens) for run in all_runs]
+        process = _aggregate_process_metrics(all_runs)
 
         return cls(
             schema_validity_rate=float(mean(schema_valid_values)),
@@ -255,6 +315,7 @@ class MetricSummary(BaseModel):
             avg_total_tokens=float(mean(token_values)) if token_values else 0.0,
             p50_total_tokens=cls._percentile(token_values, 0.5),
             p95_total_tokens=cls._percentile(token_values, 0.95),
+            **process,
         )
 
 
@@ -262,6 +323,61 @@ def _sampled_expected_count(item: SampledFixtureResult) -> int:
     if item.expected_count > 0:
         return item.expected_count
     return max((run.expected_count for run in item.runs), default=0)
+
+
+def _aggregate_process_metrics(
+    results: list[EvalResult],
+) -> dict[str, int | float]:
+    raw_issues = sum(item.process_metrics.model_raw_issue_count for item in results)
+    verifier_candidates = sum(
+        item.process_metrics.verifier_candidate_count for item in results
+    )
+    candidates = sum(item.process_metrics.candidate_issue_count for item in results)
+    evidence_bound = sum(
+        item.process_metrics.evidence_bound_issue_count for item in results
+    )
+    accepted = sum(item.process_metrics.verifier_accepted_count for item in results)
+    rejected = sum(item.process_metrics.verifier_rejected_count for item in results)
+    first_pass = sum(item.process_metrics.first_pass_accept_count for item in results)
+    required = sum(item.process_metrics.required_step_count for item in results)
+    completed = sum(
+        item.process_metrics.completed_required_step_count for item in results
+    )
+    needs_evidence = sum(
+        item.process_metrics.verifier_needs_evidence_count for item in results
+    )
+    downgraded = sum(
+        item.process_metrics.verifier_downgraded_count for item in results
+    )
+    filtered = sum(
+        item.process_metrics.workflow_filtered_issue_count for item in results
+    )
+    final_effective = sum(
+        item.process_metrics.final_effective_issue_count for item in results
+    )
+    invalid_runs = sum(1 for item in results if item.process_metrics.workflow_invalid)
+    duplicates = sum(
+        item.process_metrics.duplicate_tool_call_count for item in results
+    )
+    tokens = sum(item.total_tokens for item in results)
+    return {
+        "model_raw_issue_count": raw_issues,
+        "verifier_candidate_count": verifier_candidates,
+        "verifier_accepted_count": accepted,
+        "verifier_rejected_count": rejected,
+        "verifier_needs_evidence_count": needs_evidence,
+        "verifier_downgraded_count": downgraded,
+        "workflow_filtered_issue_count": filtered,
+        "final_effective_issue_count": final_effective,
+        "workflow_invalid_run_count": invalid_runs,
+        "evidence_binding_rate": evidence_bound / candidates if candidates else 1.0,
+        "verifier_accept_rate": accepted / candidates if candidates else 0.0,
+        "verifier_reject_rate": rejected / candidates if candidates else 0.0,
+        "first_pass_accept_rate": first_pass / accepted if accepted else 0.0,
+        "required_step_completion_rate": completed / required if required else 1.0,
+        "duplicate_tool_call_rate": duplicates / candidates if candidates else 0.0,
+        "cost_per_accepted_finding": tokens / accepted if accepted else 0.0,
+    }
 
 
 class EvalReport(BaseModel):

@@ -22,9 +22,19 @@ class EventType(str, Enum):
     PHASE_START = "phase_start"
     PHASE_END = "phase_end"
     MODEL_RESPONSE_DETAIL = "model_response_detail"
+    CONTEXT_TELEMETRY = "context_telemetry"
     PLAN_PARSED = "plan_parsed"
     TOOL_IO = "tool_io"
     FORMAT_RESULT = "format_result"
+    FINDING_CANDIDATES_BUILT = "finding_candidates_built"
+    FINDING_VERIFICATION_COMPLETED = "finding_verification_completed"
+    FINDING_VERIFICATION_FAILED = "finding_verification_failed"
+    FINDING_EVIDENCE_REPAIR_COMPLETED = "finding_evidence_repair_completed"
+    WORKFLOW_STEP_STARTED = "workflow_step_started"
+    WORKFLOW_STEP_COMPLETED = "workflow_step_completed"
+    WORKFLOW_STEP_SKIPPED = "workflow_step_skipped"
+    WORKFLOW_STEP_FAILED = "workflow_step_failed"
+    WORKFLOW_SUMMARY = "workflow_summary"
 
 
 class EventEntry(BaseModel):

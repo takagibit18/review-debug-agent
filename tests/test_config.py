@@ -54,6 +54,7 @@ def test_workspace_eval_budget_defaults_are_bounded(monkeypatch) -> None:
     monkeypatch.delenv("AGENT_RUN_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("AGENT_TOOL_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("EVAL_GIT_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("EVAL_GIT_SSL_BACKEND", raising=False)
 
     settings = get_settings()
 
@@ -65,6 +66,19 @@ def test_workspace_eval_budget_defaults_are_bounded(monkeypatch) -> None:
     assert settings.agent_run_timeout_seconds == 170.0
     assert settings.agent_tool_timeout_seconds == 30.0
     assert settings.eval_git_timeout_seconds == 120.0
+    assert settings.eval_git_ssl_backend == "system"
+
+
+def test_eval_git_ssl_backend_is_normalized(monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_GIT_SSL_BACKEND", " OPENSSL ")
+
+    assert get_settings().eval_git_ssl_backend == "openssl"
+
+
+def test_eval_workspace_cache_root_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_WORKSPACE_CACHE_DIR", "eval/outputs/fresh-cache")
+
+    assert get_settings().eval_workspace_cache_dir == "eval/outputs/fresh-cache"
 
 
 def test_eval_performance_defaults_are_bounded(monkeypatch) -> None:
@@ -121,3 +135,27 @@ def test_github_app_mode_switch_and_private_key_newlines(monkeypatch) -> None:
 
     assert settings.github_auth_mode == "app"
     assert settings.github_private_key == "-----BEGIN-----\nabc\n-----END-----"
+
+
+def test_v020_quality_and_recovery_defaults_are_enforced(monkeypatch) -> None:
+    monkeypatch.delenv("FINDING_VERIFIER_MODE", raising=False)
+    monkeypatch.delenv("REVIEW_WORKFLOW_ENFORCEMENT", raising=False)
+    monkeypatch.delenv("RUN_CHECKPOINTS_ENABLED", raising=False)
+    monkeypatch.delenv("RUN_LEASE_SECONDS", raising=False)
+    monkeypatch.delenv("RUN_HEARTBEAT_SECONDS", raising=False)
+    monkeypatch.delenv("VERIFIER_MAX_REPAIR_ROUNDS", raising=False)
+
+    settings = get_settings()
+
+    assert settings.finding_verifier_mode == "enforce"
+    assert settings.review_workflow_enforcement == "enforce"
+    assert settings.run_checkpoints_enabled is True
+    assert settings.run_lease_seconds == 180
+    assert settings.run_heartbeat_seconds == 30
+    assert settings.verifier_max_repair_rounds == 1
+
+
+def test_runtime_version_is_v020() -> None:
+    from src import __version__
+
+    assert __version__ == "0.2.0"

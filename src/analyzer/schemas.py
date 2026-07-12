@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from src.analyzer.context_state import ContextState
-from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.output_formatter import ReviewIssue, ReviewReport
 
 
 class ReviewRequest(BaseModel):
@@ -74,6 +74,14 @@ class ReviewResponse(BaseModel):
     context: ContextState = Field(
         ...,
         description="Session context for audit and debugging",
+    )
+    workflow_invalid: bool = Field(
+        default=False,
+        description="Whether required review workflow steps remained incomplete.",
+    )
+    workflow_missing_steps: list[str] = Field(
+        default_factory=list,
+        description="Required workflow steps that remained incomplete.",
     )
 
 
@@ -173,3 +181,52 @@ class AnalysisPlan(BaseModel):
         default=None,
         description="Optional draft debug result produced by model",
     )
+    incomplete_reason: str = Field(
+        default="",
+        description="Reason the model response was unusable for a trusted final result.",
+    )
+
+
+FindingVerificationStatus = Literal[
+    "accepted",
+    "rejected",
+    "needs_evidence",
+    "downgraded",
+]
+FindingVerificationReason = Literal[
+    "evidence_not_found",
+    "claim_not_supported",
+    "not_introduced_by_diff",
+    "cross_file_context_missing",
+    "suggestion_not_actionable",
+    "severity_overstated",
+    "duplicate_finding",
+    "verified",
+]
+
+
+class FindingCandidate(BaseModel):
+    """One risk finding awaiting independent semantic verification."""
+
+    candidate_id: str
+    issue: ReviewIssue
+    claim: str
+    evidence_locations: list[str] = Field(default_factory=list)
+    originating_iteration: int = Field(ge=0)
+
+
+class FindingVerification(BaseModel):
+    """Independent verdict for one candidate finding."""
+
+    candidate_id: str
+    status: FindingVerificationStatus
+    reason_codes: list[FindingVerificationReason] = Field(default_factory=list)
+    rationale: str
+    verified_evidence: list[str] = Field(default_factory=list)
+    revised_issue: ReviewIssue | None = None
+
+
+class FindingVerificationBatch(BaseModel):
+    """Structured verifier result for a candidate batch."""
+
+    results: list[FindingVerification] = Field(default_factory=list)
