@@ -22,7 +22,7 @@ def test_cli_help(cli_runner: CliRunner) -> None:
 def test_cli_version(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert "0.2.0" in result.output
 
 
 def test_review_help(cli_runner: CliRunner) -> None:
@@ -243,6 +243,54 @@ def test_github_advisory_publish_dry_run_outputs_publish_summary(
     assert payload["pr_number"] == 7
     assert payload["lifecycle_plan"]["create_count"] == 1
     assert payload["check_run"]["conclusion"] == "neutral"
+
+
+def test_github_advisory_publish_updates_run_summary(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    response_path = tmp_path / "response.json"
+    changed_lines_path = tmp_path / "changed.json"
+    output_path = tmp_path / "publish.json"
+    summary_path = tmp_path / "summary.json"
+    response = ReviewResponse(
+        run_id="run-publish-summary",
+        report=ReviewReport(summary="summary"),
+        context=ContextState(),
+    )
+    response_path.write_text(response.model_dump_json(), encoding="utf-8")
+    changed_lines_path.write_text(json.dumps({}), encoding="utf-8")
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "github-advisory",
+            "publish",
+            "--repo",
+            "owner/repo",
+            "--pr-number",
+            "7",
+            "--head-sha",
+            "abc123",
+            "--response-json",
+            str(response_path),
+            "--changed-lines-json",
+            str(changed_lines_path),
+            "--dry-run",
+            "--output-json",
+            str(output_path),
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["run_id"] == "run-publish-summary"
+    assert summary["publish_status"] == "dry_run"
+    assert summary["event_log"]["publish_status"] == "dry_run"
+    assert summary["artifact_paths"]["response_json"] == str(response_path)
+    assert summary["artifact_paths"]["publish_result_json"] == str(output_path)
 
 
 def test_github_advisory_publish_requires_token_when_not_dry_run(
@@ -489,6 +537,54 @@ def test_review_command_fails_after_export_when_budget_hard_caps(
     assert "Token budget exhausted" in result.output
     assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-budget-capped"
     assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-budget-capped"
+
+
+def test_review_command_fails_after_export_when_model_response_incomplete(
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    response_path = tmp_path / "review.json"
+    summary_path = tmp_path / "summary.json"
+
+    async def _run_review(self, request):  # type: ignore[no-untyped-def]
+        return ReviewResponse(
+            run_id="run-length-incomplete",
+            report=ReviewReport(summary="Review pipeline completed with placeholder summary."),
+            context=ContextState(
+                current_files=[request.repo_path],
+                errors=[
+                    ErrorDetail(
+                        file="",
+                        message=(
+                            "Model response incomplete: finish_reason=length produced "
+                            "no draft or tool calls."
+                        ),
+                        category="runtime",
+                    )
+                ],
+            ),
+        )
+
+    monkeypatch.setattr(cli.AgentOrchestrator, "run_review", _run_review)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "review",
+            ".",
+            "--output-json",
+            str(response_path),
+            "--summary-json",
+            str(summary_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "review produced no trusted result" in result.output
+    assert "Model response incomplete" in result.output
+    assert json.loads(response_path.read_text(encoding="utf-8"))["run_id"] == "run-length-incomplete"
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["run_id"] == "run-length-incomplete"
 
 
 def test_review_command_renders_triaged_sections(cli_runner: CliRunner, monkeypatch) -> None:

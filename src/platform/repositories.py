@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ from src.platform.models import (
     InstallationRecord,
     RepositoryRecord,
     ReviewRunRecord,
+    RunCheckpointRecord,
     TenantConfigRecord,
     UsageRecord,
     WebhookDeliveryRecord,
@@ -308,7 +310,12 @@ class PlatformRepository:
         )
         return _run(row) if row is not None else None
 
-    def claim_next_queued_run(self) -> ReviewRunRecord | None:
+    def claim_next_queued_run(
+        self,
+        *,
+        worker_id: str = "legacy-worker",
+        lease_seconds: int = 180,
+    ) -> ReviewRunRecord | None:
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             row = self._fetchone(
@@ -324,19 +331,199 @@ class PlatformRepository:
                 self.conn.commit()
                 return None
             run_id = str(row["run_id"])
+            now = datetime.now(UTC)
+            lease_expires_at = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
             self.conn.execute(
                 """
                 UPDATE review_runs
-                SET status = 'running', started_at = datetime('now'), updated_at = datetime('now')
+                SET status = 'running',
+                    started_at = COALESCE(started_at, datetime('now')),
+                    lease_owner = ?,
+                    lease_expires_at = ?,
+                    heartbeat_at = ?,
+                    attempt = attempt + 1,
+                    updated_at = datetime('now')
                 WHERE run_id = ? AND status = 'queued'
                 """,
-                (run_id,),
+                (worker_id, lease_expires_at, now.isoformat(), run_id),
             )
             self.conn.commit()
             return self.get_run(run_id)
         except Exception:
             self.conn.rollback()
             raise
+
+    def heartbeat_run(
+        self,
+        run_id: str,
+        worker_id: str,
+        *,
+        lease_seconds: int = 180,
+    ) -> bool:
+        now = datetime.now(UTC)
+        lease_expires_at = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        cursor = self.conn.execute(
+            """
+            UPDATE review_runs
+            SET heartbeat_at = ?, lease_expires_at = ?, updated_at = datetime('now')
+            WHERE run_id = ? AND status = 'running' AND lease_owner = ?
+            """,
+            (now.isoformat(), lease_expires_at, run_id, worker_id),
+        )
+        self.conn.commit()
+        return cursor.rowcount == 1
+
+    def requeue_expired_runs(
+        self,
+        now: datetime,
+        *,
+        ordered_steps: tuple[str, ...],
+    ) -> list[str]:
+        self.conn.execute("BEGIN IMMEDIATE")
+        rows = self.conn.execute(
+            """
+            SELECT run_id, lease_owner, lease_expires_at FROM review_runs
+            WHERE status = 'running'
+              AND lease_expires_at IS NOT NULL
+              AND datetime(lease_expires_at) <= datetime(?)
+            ORDER BY id
+            """,
+            (now.isoformat(),),
+        ).fetchall()
+        requeued: list[str] = []
+        for row in rows:
+            run_id = str(row["run_id"])
+            resume_from = self._first_incomplete_step(run_id, ordered_steps)
+            cursor = self.conn.execute(
+                """
+                UPDATE review_runs
+                SET status = 'queued', lease_owner = '', lease_expires_at = NULL,
+                    heartbeat_at = NULL, resume_from_step = ?, updated_at = datetime('now')
+                WHERE run_id = ? AND status = 'running'
+                  AND lease_owner = ? AND lease_expires_at = ?
+                  AND datetime(lease_expires_at) <= datetime(?)
+                """,
+                (resume_from, run_id, row["lease_owner"], row["lease_expires_at"], now.isoformat()),
+            )
+            if cursor.rowcount == 1:
+                self.conn.execute(
+                    """UPDATE run_checkpoints SET status = 'failed',
+                    error_type = 'LeaseExpired', error_message = 'Worker lease expired',
+                    finished_at = datetime('now'), updated_at = datetime('now')
+                    WHERE run_id = ? AND status = 'running'""", (run_id,)
+                )
+                requeued.append(run_id)
+        self.conn.commit()
+        return requeued
+
+    def start_checkpoint(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        attempt: int,
+        input_digest: str = "",
+    ) -> RunCheckpointRecord:
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO run_checkpoints (
+                run_id, step_id, status, attempt, input_digest, started_at
+            ) VALUES (?, ?, 'running', ?, ?, datetime('now'))
+            """,
+            (run_id, step_id, attempt, input_digest),
+        )
+        self.conn.commit()
+        record = self._checkpoint(run_id, step_id, attempt)
+        assert record is not None
+        return record
+
+    def complete_checkpoint(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        attempt: int,
+        output_artifact_path: str = "",
+    ) -> RunCheckpointRecord:
+        self.conn.execute(
+            """
+            UPDATE run_checkpoints
+            SET status = 'completed', output_artifact_path = ?,
+                error_type = '', error_message = '',
+                finished_at = datetime('now'), updated_at = datetime('now')
+            WHERE run_id = ? AND step_id = ? AND attempt = ?
+            """,
+            (output_artifact_path, run_id, step_id, attempt),
+        )
+        self.conn.commit()
+        record = self._checkpoint(run_id, step_id, attempt)
+        assert record is not None
+        return record
+
+    def fail_checkpoint(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        attempt: int,
+        error_type: str,
+        error_message: str,
+    ) -> RunCheckpointRecord:
+        self.conn.execute(
+            """
+            UPDATE run_checkpoints
+            SET status = 'failed', error_type = ?, error_message = ?,
+                finished_at = datetime('now'), updated_at = datetime('now')
+            WHERE run_id = ? AND step_id = ? AND attempt = ?
+            """,
+            (error_type, error_message[:1000], run_id, step_id, attempt),
+        )
+        self.conn.commit()
+        record = self._checkpoint(run_id, step_id, attempt)
+        assert record is not None
+        return record
+
+    def list_checkpoints(self, run_id: str) -> list[RunCheckpointRecord]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM run_checkpoints
+            WHERE run_id = ? ORDER BY id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [_run_checkpoint(row) for row in rows]
+
+    def _checkpoint(
+        self,
+        run_id: str,
+        step_id: str,
+        attempt: int,
+    ) -> RunCheckpointRecord | None:
+        row = self._fetchone(
+            """
+            SELECT * FROM run_checkpoints
+            WHERE run_id = ? AND step_id = ? AND attempt = ?
+            """,
+            (run_id, step_id, attempt),
+        )
+        return _run_checkpoint(row) if row is not None else None
+
+    def _first_incomplete_step(
+        self,
+        run_id: str,
+        ordered_steps: tuple[str, ...],
+    ) -> str:
+        completed = {
+            str(row["step_id"])
+            for row in self.conn.execute(
+                """
+                SELECT step_id FROM run_checkpoints
+                WHERE run_id = ? AND status IN ('completed', 'skipped')
+                """,
+                (run_id,),
+            ).fetchall()
+        }
+        return next((step for step in ordered_steps if step not in completed), "")
 
     def mark_run_succeeded(
         self,
@@ -360,6 +547,9 @@ class PlatformRepository:
                 publish_status = ?,
                 error_type = '',
                 error_message = '',
+                lease_owner = '',
+                lease_expires_at = NULL,
+                heartbeat_at = NULL,
                 updated_at = datetime('now')
             WHERE run_id = ?
             """,
@@ -391,6 +581,9 @@ class PlatformRepository:
                 finished_at = datetime('now'),
                 error_type = ?,
                 error_message = ?,
+                lease_owner = '',
+                lease_expires_at = NULL,
+                heartbeat_at = NULL,
                 updated_at = datetime('now')
             WHERE run_id = ?
             """,
@@ -577,14 +770,23 @@ class PlatformRepository:
         completion_tokens: int = 0,
         total_tokens: int = 0,
         duration_ms: int = 0,
+        attempt: int = 0,
     ) -> UsageRecord:
+        if attempt > 0:
+            existing = self._fetchone(
+                "SELECT * FROM usage_records WHERE run_id = ? AND attempt = ?",
+                (run_id, attempt),
+            )
+            if existing is not None:
+                return _usage(existing)
         self.conn.execute(
             """
             INSERT INTO usage_records (
                 run_id, installation_id, repository_id, model_name,
                 prompt_tokens, completion_tokens, total_tokens, duration_ms
+                , attempt
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -595,6 +797,7 @@ class PlatformRepository:
                 completion_tokens,
                 total_tokens,
                 duration_ms,
+                attempt,
             ),
         )
         self.conn.commit()
@@ -650,3 +853,7 @@ def _tenant_config(row: sqlite3.Row) -> TenantConfigRecord:
 
 def _usage(row: sqlite3.Row) -> UsageRecord:
     return UsageRecord.model_validate(dict(row))
+
+
+def _run_checkpoint(row: sqlite3.Row) -> RunCheckpointRecord:
+    return RunCheckpointRecord.model_validate(dict(row))

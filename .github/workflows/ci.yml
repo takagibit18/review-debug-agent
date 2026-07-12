@@ -34,3 +34,31 @@ jobs:
 
       - name: Run tests
         run: pytest -v
+
+      - name: Run v0.2 golden eval
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FINDING_VERIFIER_MODE: enforce
+          REVIEW_WORKFLOW_ENFORCEMENT: enforce
+        run: python -m eval.run eval --suite golden --samples 3 --output-json eval/outputs/ci_report.json
+
+      - name: Compare v0.2 eval to frozen MVP+ baseline
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: python -m eval.compare --baseline eval/baselines/v0.2.0-alpha.1.json --candidate eval/outputs/ci_report.json --output-json eval/outputs/ci_comparison.json
+
+      - name: Gate v0.2 eval quality
+        if: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: python -m eval.gate --report eval/outputs/ci_report.json --comparison eval/outputs/ci_comparison.json --schema-validity-min 1.0 --hit-rate-min 0.6 --false-positive-rate-max 0.5
+
+      - name: Upload v0.2 eval evidence
+        if: ${{ always() && secrets.OPENAI_API_KEY != '' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: mergewarden-v020-eval
+          path: |
+            eval/outputs/ci_report.json
+            eval/outputs/ci_comparison.json
+            eval/outputs/*_diagnostics.json
+            eval/outputs/*_run_summaries.json
+            eval/outputs/event_logs/*.jsonl

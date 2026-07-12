@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_compressor import ContextCompressor
 from src.analyzer.context_priority import (
+    SUMMARY_LABEL_PREFIX,
     assemble_debug_payload,
     assemble_review_payload,
     build_debug_context_parts,
@@ -118,6 +119,7 @@ def build_review_messages(
     prompt_token_budget: int | None = None,
     context_builder: ContextBuilder | None = None,
     project_structure: str | None = None,
+    telemetry_sink: dict[str, Any] | None = None,
 ) -> list[Message]:
     """Build review-mode messages with optional priority truncation of payload parts."""
     cb = context_builder or ContextBuilder()
@@ -129,6 +131,7 @@ def build_review_messages(
     else:
         selected = all_parts
     payload = assemble_review_payload(request, context, all_parts, selected)
+    _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     return [
         Message(role="system", content=SYSTEM_PROMPT_REVIEW),
         Message(
@@ -151,6 +154,7 @@ async def build_review_messages_async(
     summary_enabled: bool = False,
     summary_max_tokens_per_part: int = 1000,
     summary_model_name: str = "",
+    telemetry_sink: dict[str, Any] | None = None,
 ) -> list[Message]:
     """Build review-mode messages with optional second-layer summary compaction."""
     cb = context_builder or ContextBuilder()
@@ -170,6 +174,7 @@ async def build_review_messages_async(
     else:
         selected = cb.truncate_context(all_parts, prompt_token_budget)
     payload = assemble_review_payload(request, context, all_parts, selected)
+    _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     return [
         Message(role="system", content=SYSTEM_PROMPT_REVIEW),
         Message(
@@ -188,6 +193,7 @@ def build_debug_messages(
     prompt_token_budget: int | None = None,
     context_builder: ContextBuilder | None = None,
     project_structure: str | None = None,
+    telemetry_sink: dict[str, Any] | None = None,
 ) -> list[Message]:
     """Build debug-mode messages with optional priority truncation of payload parts."""
     cb = context_builder or ContextBuilder()
@@ -199,6 +205,7 @@ def build_debug_messages(
     else:
         selected = all_parts
     payload = assemble_debug_payload(request, context, all_parts, selected)
+    _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     return [
         Message(role="system", content=SYSTEM_PROMPT_DEBUG),
         Message(
@@ -221,6 +228,7 @@ async def build_debug_messages_async(
     summary_enabled: bool = False,
     summary_max_tokens_per_part: int = 1000,
     summary_model_name: str = "",
+    telemetry_sink: dict[str, Any] | None = None,
 ) -> list[Message]:
     """Build debug-mode messages with optional second-layer summary compaction."""
     cb = context_builder or ContextBuilder()
@@ -240,6 +248,7 @@ async def build_debug_messages_async(
     else:
         selected = cb.truncate_context(all_parts, prompt_token_budget)
     payload = assemble_debug_payload(request, context, all_parts, selected)
+    _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     return [
         Message(role="system", content=SYSTEM_PROMPT_DEBUG),
         Message(
@@ -247,3 +256,78 @@ async def build_debug_messages_async(
             content=USER_PREFIX_DEBUG + json.dumps(payload, ensure_ascii=True),
         ),
     ]
+
+
+def _populate_context_telemetry(
+    sink: dict[str, Any] | None,
+    builder: ContextBuilder,
+    all_parts: list[Any],
+    selected: list[Any],
+) -> None:
+    if sink is None:
+        return
+    selected_labels = {part.label for part in selected}
+    available_labels = {part.label for part in all_parts}
+    dropped_count = len(
+        [
+            label
+            for label in available_labels
+            if label not in selected_labels
+            and f"{SUMMARY_LABEL_PREFIX}{label}" not in selected_labels
+        ]
+    )
+    sink.clear()
+    sink.update(
+        {
+            "available": _measure_context_parts(builder, all_parts),
+            "selected": _measure_context_parts(builder, selected),
+            "dropped_part_count": dropped_count,
+            "summarized_part_count": len(
+                [part for part in selected if str(part.label).startswith(SUMMARY_LABEL_PREFIX)]
+            ),
+        }
+    )
+
+
+def _measure_context_parts(
+    builder: ContextBuilder,
+    parts: list[Any],
+) -> dict[str, Any]:
+    by_kind: dict[str, dict[str, int | float]] = {}
+    total_chars = 0
+    total_tokens = 0
+    for part in parts:
+        chars = len(part.content)
+        tokens = int(part.token_count or builder.estimate_tokens(part.content))
+        kind = _context_part_kind(str(part.label))
+        bucket = by_kind.setdefault(kind, {"parts": 0, "chars": 0, "tokens": 0})
+        bucket["parts"] = int(bucket["parts"]) + 1
+        bucket["chars"] = int(bucket["chars"]) + chars
+        bucket["tokens"] = int(bucket["tokens"]) + tokens
+        total_chars += chars
+        total_tokens += tokens
+    for bucket in by_kind.values():
+        bucket["char_ratio"] = (
+            round(int(bucket["chars"]) / total_chars, 4) if total_chars else 0.0
+        )
+        bucket["token_ratio"] = (
+            round(int(bucket["tokens"]) / total_tokens, 4) if total_tokens else 0.0
+        )
+    return {
+        "parts": len(parts),
+        "chars": total_chars,
+        "tokens": total_tokens,
+        "by_kind": by_kind,
+    }
+
+
+def _context_part_kind(label: str) -> str:
+    if label.startswith(SUMMARY_LABEL_PREFIX):
+        label = label[len(SUMMARY_LABEL_PREFIX) :]
+    if label.startswith("diff_hunk_"):
+        return "diff_hunk"
+    if label.startswith("file:"):
+        return "file"
+    if label in {"meta", "structure", "error_log"}:
+        return label
+    return "other"

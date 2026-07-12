@@ -53,6 +53,27 @@ class ReviewRunRecord(BaseModel):
     publish_result_path: str = ""
     total_tokens: int | None = None
     publish_status: str = ""
+    lease_owner: str = ""
+    lease_expires_at: str | None = None
+    heartbeat_at: str | None = None
+    resume_from_step: str = ""
+    attempt: int = Field(default=0, ge=0)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class RunCheckpointRecord(BaseModel):
+    id: int
+    run_id: str
+    step_id: str
+    status: Literal["pending", "running", "completed", "failed", "skipped"]
+    attempt: int = Field(default=1, ge=1)
+    input_digest: str = ""
+    output_artifact_path: str = ""
+    error_type: str = ""
+    error_message: str = ""
+    started_at: str | None = None
+    finished_at: str | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -96,4 +117,5 @@ class UsageRecord(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     duration_ms: int = 0
+    attempt: int = Field(default=0, ge=0)
     created_at: str = ""

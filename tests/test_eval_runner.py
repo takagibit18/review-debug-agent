@@ -27,7 +27,13 @@ from eval.runner import (
     load_fixtures,
     run_suite,
 )
-from eval.schemas import EvalResult, Fixture, MetricSummary, SampledFixtureResult
+from eval.schemas import (
+    EvalResult,
+    Fixture,
+    FixtureWorkspace,
+    MetricSummary,
+    SampledFixtureResult,
+)
 from src.analyzer.context_state import ContextState
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import ReviewResponse
@@ -59,6 +65,77 @@ def test_run_git_uses_configured_timeout(monkeypatch, tmp_path: Path) -> None:
     assert _run_git(["status"], cwd=tmp_path) == "ok"
     assert captured["args"] == ["git", "status"]
     assert captured["timeout"] == 7.0
+
+
+def test_run_git_uses_configured_ssl_backend(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("EVAL_GIT_SSL_BACKEND", "openssl")
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = args
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+
+    assert _run_git(["status"], cwd=tmp_path) == "ok"
+    assert captured["args"] == [
+        "git",
+        "-c",
+        "http.sslBackend=openssl",
+        "-c",
+        f"safe.directory={tmp_path.resolve()}",
+        "status",
+    ]
+
+
+def test_offline_cache_uses_existing_mirror_without_remote_update(
+    monkeypatch, tmp_path: Path
+) -> None:
+    workspace = FixtureWorkspace(
+        repo_url="https://example.test/acme/repo.git",
+        checkout_sha="abc123",
+    )
+    cache_root = tmp_path / runner_module._workspace_cache_key(workspace.repo_url)
+    (cache_root / "objects").mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+
+    assert runner_module._ensure_git_workspace_cache(
+        workspace, tmp_path, offline=True
+    ) == cache_root
+    assert calls == [["cat-file", "-e", "abc123^{commit}"]]
+
+
+def test_offline_cache_miss_has_actionable_error(tmp_path: Path) -> None:
+    workspace = FixtureWorkspace(
+        repo_url="https://example.test/acme/repo.git",
+        checkout_sha="abc123",
+    )
+
+    try:
+        runner_module._ensure_git_workspace_cache(workspace, tmp_path, offline=True)
+    except RuntimeError as exc:
+        assert "offline cache miss" in str(exc)
+        assert workspace.repo_url in str(exc)
+    else:
+        raise AssertionError("Expected an offline cache miss")
+
+
+def test_local_smoke_fixture_is_file_backed_and_not_golden() -> None:
+    fixture_path = Path("eval/fixtures/local_smoke_pytest_approx_pr8513.json")
+    fixture = Fixture.model_validate_json(fixture_path.read_text(encoding="utf-8"))
+
+    assert fixture.metadata.suite == "local_smoke"
+    assert fixture.input.workspace is None
+    assert set(fixture.input.files) == {
+        "src/_pytest/python_api.py",
+        "testing/python/approx.py",
+    }
 
 
 def test_run_git_timeout_has_explicit_error(monkeypatch, tmp_path: Path) -> None:

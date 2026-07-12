@@ -72,7 +72,7 @@ class ModelClient:
         if not messages:
             raise ModelClientError("messages must not be empty")
 
-        runtime_config = config or self._default_config
+        runtime_config = self._with_forced_tool_compat(config or self._default_config)
         payload: dict[str, Any] = {
             "model": runtime_config.model,
             "messages": self._serialize_messages(messages),
@@ -166,6 +166,29 @@ class ModelClient:
                 raise last_error
 
         raise ModelClientError("Model request failed after retries", code="max_retries")
+
+    def _with_forced_tool_compat(self, config: ModelConfig) -> ModelConfig:
+        """Return a provider-compatible copy for forced structured tool calls."""
+        if not self._is_forced_tool_choice(config.tool_choice):
+            return config
+        model = config.model.strip().lower()
+        base_url = str(self._settings.openai_base_url).strip().lower()
+        override: dict[str, Any] = {}
+        if model.startswith("deepseek") or "deepseek" in base_url:
+            override = {"thinking": {"type": "disabled"}}
+        elif "dashscope" in base_url or model.startswith(("qwen", "glm")):
+            override = {"enable_thinking": False}
+        if not override:
+            return config
+        updated = config.model_copy(deep=True)
+        updated.extra_body = {**(updated.extra_body or {}), **override}
+        return updated
+
+    @staticmethod
+    def _is_forced_tool_choice(value: str | dict[str, Any] | None) -> bool:
+        if isinstance(value, dict):
+            return value.get("type") == "function"
+        return value == "required"
 
     async def close(self) -> None:
         """Close underlying HTTP resources."""

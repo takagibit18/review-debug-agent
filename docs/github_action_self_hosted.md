@@ -44,7 +44,11 @@ cp path/to/mergewarden/docs/examples/github-advisory-self-hosted.yml \
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | 使用兼容 OpenAI API 的其他服务 |
 | `REVIEW_MAX_ITERATIONS` | `4` | 控制审查循环次数 |
 | `TOKEN_BUDGET` | `88000` | 控制 finalize-only 前的软预算 |
-| `PROMPT_INPUT_TOKEN_BUDGET` | `88000` | 控制 prompt 输入截断预算 |
+| `PROMPT_INPUT_TOKEN_BUDGET` | `32000` | 控制 prompt 输入截断预算 |
+| `MODEL_MAX_TOKENS` | `8192` | CI 默认非 finalize 输出上限，降低 length 截断后重复 finalize 的风险 |
+| `FILE_CONTEXT_MAX_FILES` | `8` | CI 默认自动装载 changed-file context 的文件数上限 |
+| `FILE_CONTEXT_MAX_CHARS_PER_FILE` | `6000` | CI 默认单文件自动上下文字符上限 |
+| `FILE_CONTEXT_MAX_CHARS_TOTAL` | `32000` | CI 默认自动文件上下文总字符上限 |
 
 如果 MergeWarden runtime 仓库是私有仓库，还需要添加 `MERGEWARDEN_REPOSITORY_TOKEN` secret，并授予它读取 runtime 仓库的权限。
 

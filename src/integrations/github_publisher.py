@@ -121,6 +121,20 @@ class GitHubPublisherClient(Protocol):
 
     async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
+    async def list_check_runs(
+        self,
+        owner_repo: str,
+        head_sha: str,
+        check_name: str,
+    ) -> list[dict[str, Any]]: ...
+
+    async def update_check_run(
+        self,
+        owner_repo: str,
+        check_run_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
     async def create_review_comment(
         self,
         owner_repo: str,
@@ -164,10 +178,16 @@ class GitHubApiClient:
 
     async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]:
         path = f"/repos/{owner_repo}/pulls/{pr_number}/comments"
-        resp = await self._client.get(path, params={"per_page": 100})
-        self._raise_api_error(resp, path)
-        payload = resp.json()
-        return payload if isinstance(payload, list) else []
+        output: list[dict[str, Any]] = []
+        for page in range(1, 101):
+            resp = await self._client.get(path, params={"per_page": 100, "page": page})
+            self._raise_api_error(resp, path)
+            payload = resp.json()
+            values = payload if isinstance(payload, list) else []
+            output.extend(item for item in values if isinstance(item, dict))
+            if len(values) < 100:
+                break
+        return output
 
     async def get_pull_request(self, owner_repo: str, pr_number: int) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/pulls/{pr_number}"
@@ -188,6 +208,40 @@ class GitHubApiClient:
     async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/check-runs"
         resp = await self._client.post(path, json=payload)
+        self._raise_api_error(resp, path)
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    async def list_check_runs(
+        self,
+        owner_repo: str,
+        head_sha: str,
+        check_name: str,
+    ) -> list[dict[str, Any]]:
+        path = f"/repos/{owner_repo}/commits/{head_sha}/check-runs"
+        output: list[dict[str, Any]] = []
+        for page in range(1, 101):
+            resp = await self._client.get(
+                path, params={"check_name": check_name, "per_page": 100, "page": page}
+            )
+            self._raise_api_error(resp, path)
+            payload = resp.json()
+            runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+            values = runs if isinstance(runs, list) else []
+            output.extend(item for item in values if isinstance(item, dict))
+            if len(values) < 100:
+                break
+        return output
+
+    async def update_check_run(
+        self,
+        owner_repo: str,
+        check_run_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        path = f"/repos/{owner_repo}/check-runs/{check_run_id}"
+        update_payload = {key: value for key, value in payload.items() if key != "head_sha"}
+        resp = await self._client.patch(path, json=update_payload)
         self._raise_api_error(resp, path)
         data = resp.json()
         return data if isinstance(data, dict) else {}
@@ -282,7 +336,7 @@ class GitHubPublisher:
             else []
         )
         result = self.build_publish_plan(request, existing_comments=existing_comments)
-        check_run = await self._client.create_check_run(request.owner_repo, result.check_run)
+        check_run = await self._upsert_check_run(request, result.check_run)
         records: list[PublishedCommentRecord] = []
         if not request.publish_comments:
             result.status = "published"
@@ -343,6 +397,33 @@ class GitHubPublisher:
         result.check_run = check_run
         result.inline_comment_records = records
         return result
+
+    async def _upsert_check_run(
+        self,
+        request: GitHubPublishRequest,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        external_id = str(payload.get("external_id", ""))
+        list_method = getattr(self._client, "list_check_runs", None)
+        update_method = getattr(self._client, "update_check_run", None)
+        if callable(list_method) and callable(update_method):
+            existing = await list_method(
+                request.owner_repo,
+                request.head_sha,
+                str(payload.get("name", "MergeWarden advisory")),
+            )
+            for item in existing:
+                if str(item.get("external_id", "")) != external_id:
+                    continue
+                check_run_id = int(item.get("id", 0) or 0)
+                if check_run_id:
+                    updated = await update_method(
+                        request.owner_repo,
+                        check_run_id,
+                        payload,
+                    )
+                    return updated if isinstance(updated, dict) else {}
+        return await self._client.create_check_run(request.owner_repo, payload)
 
     def publish_sync(self, request: GitHubPublishRequest) -> GitHubPublishResult:
         """Synchronous wrapper for Click tests and commands."""
@@ -501,6 +582,9 @@ def _build_check_run_payload(
 ) -> dict[str, Any]:
     return {
         "name": "MergeWarden advisory",
+        "external_id": (
+            f"mergewarden:{request.owner_repo}:{request.pr_number}:{request.head_sha}"
+        ),
         "head_sha": request.head_sha,
         "status": "completed",
         "conclusion": "neutral",

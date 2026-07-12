@@ -34,6 +34,10 @@ class ReviewIssue(BaseModel):
     confidence: float = Field(
         default=0.0, ge=0.0, le=1.0, description="Model confidence"
     )
+    candidate_id: str = Field(
+        default="",
+        description="Stable semantic-verification identifier for this finding",
+    )
 
 
 class ReviewReport(BaseModel):

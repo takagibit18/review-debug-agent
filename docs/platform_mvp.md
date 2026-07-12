@@ -171,9 +171,12 @@ curl -H "X-MergeWarden-Tenant: <tenant_id>" http://localhost:8000/platform/runs/
 - `installations`: GitHub installation/account identity and status.
 - `repositories`: repositories attached to an installation and whether they are enabled.
 - `review_runs`: durable review queue, status machine, errors, artifact paths, publish status, and token totals.
+- `run_checkpoints`: per-run step attempts, input digests, terminal status, failure details, and output artifact paths.
 - `webhook_deliveries`: delivery audit and duplicate/ignored troubleshooting records.
 - `tenant_configs`: installation-level and repository-level review/publish/model/budget settings.
 - `usage_records`: per-run usage audit extracted from worker results or run summaries.
+
+`review_runs` also stores `lease_owner`, `lease_expires_at`, `heartbeat_at`, `resume_from_step`, and `attempt`. The worker renews the lease while an async pipeline is active and requeues expired runs before claiming new work. Completed checkpoints are not treated as in-memory state; they remain available after process restart.
 
 ## Artifacts
 
@@ -230,7 +233,7 @@ Before treating this as a production SaaS backend, add:
 
 - Authentication and authorization for all `/platform/*` management APIs.
 - PostgreSQL migrations and transaction/locking semantics designed for multiple API and worker replicas.
-- A real queue or robust DB job leasing with stale-run recovery.
+- PostgreSQL-grade distributed queue semantics for multi-region or high-concurrency worker fleets; the current SQLite lease/checkpoint implementation targets local and single-host deployments.
 - Object storage for artifacts and lifecycle/retention policies.
 - Tenant onboarding, account ownership, and audit-log access controls.
 - Quotas, billing, and abuse controls.

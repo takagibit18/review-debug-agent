@@ -84,6 +84,7 @@ class InferenceEngine:
             else get_settings().prompt_input_token_budget
         )
         cb = ContextBuilder()
+        context_telemetry: dict[str, Any] = {}
         if isinstance(request, ReviewRequest):
             if get_settings().context_summary_enabled:
                 messages = await build_review_messages_async(
@@ -98,6 +99,7 @@ class InferenceEngine:
                     summary_max_tokens_per_part=get_settings().summary_max_tokens_per_part,
                     summary_model_name=request.model_name or get_settings().model_name,
                     project_structure=project_structure,
+                    telemetry_sink=context_telemetry,
                 )
             else:
                 messages = build_review_messages(
@@ -108,6 +110,7 @@ class InferenceEngine:
                     prompt_token_budget=budget,
                     context_builder=cb,
                     project_structure=project_structure,
+                    telemetry_sink=context_telemetry,
                 )
         else:
             if get_settings().context_summary_enabled:
@@ -123,6 +126,7 @@ class InferenceEngine:
                     summary_max_tokens_per_part=get_settings().summary_max_tokens_per_part,
                     summary_model_name=request.model_name or get_settings().model_name,
                     project_structure=project_structure,
+                    telemetry_sink=context_telemetry,
                 )
             else:
                 messages = build_debug_messages(
@@ -133,6 +137,7 @@ class InferenceEngine:
                     prompt_token_budget=budget,
                     context_builder=cb,
                     project_structure=project_structure,
+                    telemetry_sink=context_telemetry,
                 )
 
         window_iterations = {
@@ -185,6 +190,12 @@ class InferenceEngine:
             if submit_only
             else tool_schemas or []
         )
+        self._record_context_telemetry(
+            context_telemetry=context_telemetry,
+            tools=tools,
+            iteration=iteration,
+            prompt_input_token_budget=budget,
+        )
         config = None
         if submit_only:
             config = self._build_submit_config(request)
@@ -195,13 +206,7 @@ class InferenceEngine:
                 )
             else:
                 config.model = request.model_name
-        if submit_only and config is not None:
-            thinking_override = self._thinking_disable_extra_body(config)
-            if thinking_override:
-                config.extra_body = {
-                    **(config.extra_body or {}),
-                    **thinking_override,
-                }
+        config = self._with_thinking_disabled_if_needed(config)
         response = await self._model_client.chat(messages=messages, config=config, tools=tools)
         self._record_length_finish(response, iteration, config)
         plan, parse_meta = self._parse_tool_calls(
@@ -241,6 +246,13 @@ class InferenceEngine:
                 if parsed:
                     fallback_parse_valid = True
                     plan = parsed
+        incomplete_reason = self._length_incomplete_reason(
+            response, plan, fallback_parse_valid
+        )
+        if incomplete_reason:
+            plan.incomplete_reason = incomplete_reason
+            parse_meta["incomplete_reason"] = incomplete_reason
+            self._record_incomplete_response(response, iteration, config, incomplete_reason)
         self._record_trace(response, plan, parse_meta, iteration, fallback_json_found, fallback_parse_valid)
         return plan, response.usage.total_tokens, response.reasoning_content
 
@@ -290,6 +302,21 @@ class InferenceEngine:
                 "tool_choice": self._forced_submit_tool_choice(request),
             }
         )
+
+    def _with_thinking_disabled_if_needed(
+        self,
+        config: ModelConfig | None,
+    ) -> ModelConfig | None:
+        candidate = config or self._model_client.default_config
+        thinking_override = self._thinking_disable_extra_body(candidate)
+        if not thinking_override:
+            return config
+        updated = config or candidate.model_copy(deep=True)
+        updated.extra_body = {
+            **(updated.extra_body or {}),
+            **thinking_override,
+        }
+        return updated
 
     @staticmethod
     def _forced_submit_tool_choice(
@@ -785,7 +812,29 @@ class InferenceEngine:
                 "location_warnings": parse_meta.get("location_warnings", []),
                 "fallback_json_found": fallback_json_found,
                 "fallback_parse_valid": fallback_parse_valid,
+                "incomplete_reason": parse_meta.get("incomplete_reason", ""),
                 "force_submit_discarded_count": parse_meta.get("force_submit_discarded_count", 0),
+            },
+        )
+
+    def _record_context_telemetry(
+        self,
+        *,
+        context_telemetry: dict[str, Any],
+        tools: list[dict[str, Any]],
+        iteration: int,
+        prompt_input_token_budget: int,
+    ) -> None:
+        if self._trace_event_writer is None:
+            return
+        self._trace_event_writer(
+            EventType.CONTEXT_TELEMETRY,
+            "analyze",
+            {
+                "iteration": iteration,
+                "prompt_input_token_budget": prompt_input_token_budget,
+                "tool_schema_count": len(tools),
+                **context_telemetry,
             },
         )
 
@@ -804,6 +853,47 @@ class InferenceEngine:
                 "iteration": iteration,
                 "reason": "model_finish_reason_length",
                 "model": response.model,
+                "usage": response.usage.model_dump(),
+                "max_tokens": config.max_tokens if config is not None else None,
+                "content_length": len(response.content),
+                "reasoning_content_length": len(response.reasoning_content),
+            },
+        )
+
+    @staticmethod
+    def _length_incomplete_reason(
+        response: ModelResponse,
+        plan: AnalysisPlan,
+        fallback_parse_valid: bool,
+    ) -> str:
+        if response.finish_reason != "length":
+            return ""
+        if (
+            plan.draft_review is not None
+            or plan.draft_debug is not None
+            or plan.tool_calls
+            or fallback_parse_valid
+        ):
+            return ""
+        return "model_finish_reason_length_no_output"
+
+    def _record_incomplete_response(
+        self,
+        response: ModelResponse,
+        iteration: int,
+        config: ModelConfig | None,
+        reason: str,
+    ) -> None:
+        if self._trace_event_writer is None:
+            return
+        self._trace_event_writer(
+            EventType.ERROR,
+            "analyze",
+            {
+                "iteration": iteration,
+                "reason": reason,
+                "model": response.model,
+                "finish_reason": response.finish_reason,
                 "usage": response.usage.model_dump(),
                 "max_tokens": config.max_tokens if config is not None else None,
                 "content_length": len(response.content),

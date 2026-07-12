@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS review_runs (
     publish_result_path TEXT NOT NULL DEFAULT '',
     total_tokens INTEGER,
     publish_status TEXT NOT NULL DEFAULT '',
+    lease_owner TEXT NOT NULL DEFAULT '',
+    lease_expires_at TEXT,
+    heartbeat_at TEXT,
+    resume_from_step TEXT NOT NULL DEFAULT '',
+    attempt INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'skipped'))
@@ -76,6 +81,27 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status_received
 ON webhook_deliveries(status, received_at, id);
+
+CREATE TABLE IF NOT EXISTS run_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
+    step_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    input_digest TEXT NOT NULL DEFAULT '',
+    output_artifact_path TEXT NOT NULL DEFAULT '',
+    error_type TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(run_id, step_id, attempt),
+    CHECK(status IN ('pending', 'running', 'completed', 'failed', 'skipped'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_checkpoints_run_step
+ON run_checkpoints(run_id, step_id, attempt);
 
 CREATE TABLE IF NOT EXISTS tenant_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +135,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens INTEGER NOT NULL DEFAULT 0,
     duration_ms INTEGER NOT NULL DEFAULT 0,
+    attempt INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
@@ -122,6 +149,10 @@ WHERE status IN ('queued', 'running', 'succeeded');
 
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_installation_received
 ON webhook_deliveries(installation_id, received_at, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_records_run_attempt
+ON usage_records(run_id, attempt)
+WHERE attempt > 0;
 """
 
 
@@ -145,6 +176,12 @@ def init_db(conn: sqlite3.Connection) -> None:
         "installation_id",
         "INTEGER REFERENCES installations(id) ON DELETE SET NULL",
     )
+    _ensure_column(conn, "review_runs", "lease_owner", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "review_runs", "lease_expires_at", "TEXT")
+    _ensure_column(conn, "review_runs", "heartbeat_at", "TEXT")
+    _ensure_column(conn, "review_runs", "resume_from_step", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "review_runs", "attempt", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "usage_records", "attempt", "INTEGER NOT NULL DEFAULT 0")
     conn.executescript(POST_SCHEMA_SQL)
     conn.commit()
 

@@ -46,6 +46,18 @@ def test_github_adapter_keeps_inline_comments_on_changed_lines_only() -> None:
     assert "1 inline candidate" in payload.check_summary
 
 
+def test_github_adapter_uses_first_changed_line_inside_location_range() -> None:
+    response = _response()
+    response.report.issues[0].location = "src/app.py:8-12"
+
+    payload = build_github_advisory_payload(response, {"src/app.py": {10, 12}})
+
+    assert len(payload.inline_comments) == 1
+    assert payload.inline_comments[0].path == "src/app.py"
+    assert payload.inline_comments[0].line == 10
+    assert len(payload.summary_only_issues) == 1
+
+
 def test_fingerprint_is_stable_for_equivalent_issue_text() -> None:
     issue = _response().report.issues[0]
     same = issue.model_copy(

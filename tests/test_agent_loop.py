@@ -1285,6 +1285,52 @@ def test_model_timeout_still_skips_extra_finalize(tmp_path, monkeypatch) -> None
     assert error_event["payload"]["error_type"] == "ModelTimeoutError"
 
 
+def test_length_truncated_empty_model_response_skips_extra_finalize(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "3")
+
+    orchestrator = AgentOrchestrator()
+    analyze_calls: list[bool] = []
+
+    async def _truncated_empty_plan(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        force_submit = bool(kwargs.get("force_submit"))
+        analyze_calls.append(force_submit)
+        plan = AnalysisPlan(
+            needs_tools=False,
+            tool_calls=[],
+            incomplete_reason="model_finish_reason_length_no_output",
+        )
+        orchestrator._latest_tokens = 2148  # noqa: SLF001
+        return plan
+
+    monkeypatch.setattr(orchestrator, "analyze", _truncated_empty_plan)
+
+    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+
+    assert analyze_calls == [False]
+    assert response.context.decisions[-1].result == "stop:model_incomplete"
+    assert any(
+        error.category == "runtime" and "length" in error.message
+        for error in response.context.errors
+    )
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    finalize_event = next(
+        item
+        for item in events
+        if item["event_type"] == EventType.DECISION.value
+        and item["phase"] == "finalize"
+    )
+    assert finalize_event["payload"]["finalize_attempt"] is False
+    assert finalize_event["payload"]["skip_reason"] == "model_incomplete"
+
+
 def test_negative_fixture_fallback_emits_no_fabricated_high_confidence_issues(
     tmp_path, monkeypatch,
 ) -> None:

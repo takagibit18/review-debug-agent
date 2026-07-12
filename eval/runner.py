@@ -23,6 +23,7 @@ from eval.schemas import (
     FixtureWorkspace,
     SampledFixtureResult,
 )
+from eval.run_summary import extract_review_process_metrics
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import (
     Severity,
@@ -69,9 +70,16 @@ def load_fixtures(
 
 def _run_git(args: list[str], *, cwd: Path | None = None) -> str:
     timeout = get_settings().eval_git_timeout_seconds
+    settings = get_settings()
+    command = ["git"]
+    if settings.eval_git_ssl_backend != "system":
+        command.extend(["-c", f"http.sslBackend={settings.eval_git_ssl_backend}"])
+    if cwd is not None:
+        command.extend(["-c", f"safe.directory={cwd.resolve()}"])
+    command.extend(args)
     try:
         completed = subprocess.run(
-            ["git", *args],
+            command,
             cwd=cwd,
             check=True,
             stdout=subprocess.PIPE,
@@ -112,6 +120,7 @@ def _prepare_fixture_workspace(
             target_root,
             pr_number=fixture.source.pr_number,
             workspace_cache_dir=workspace_cache_dir,
+            offline=get_settings().eval_offline_workspace_cache,
         )
     raise ValueError(f"Unsupported fixture workspace kind: {workspace.kind}")
 
@@ -122,12 +131,15 @@ def _checkout_git_workspace(
     *,
     pr_number: int | None = None,
     workspace_cache_dir: Path | None = None,
+    offline: bool = False,
 ) -> Path:
     target_root.parent.mkdir(parents=True, exist_ok=True)
     if target_root.exists():
         shutil.rmtree(target_root)
     cache_root = (
-        _ensure_git_workspace_cache(workspace, workspace_cache_dir)
+        _ensure_git_workspace_cache(
+            workspace, workspace_cache_dir, offline=offline
+        )
         if workspace_cache_dir is not None
         else None
     )
@@ -136,8 +148,12 @@ def _checkout_git_workspace(
             _run_git(["clone", "--quiet", "--shared", str(cache_root), str(target_root)])
         except subprocess.CalledProcessError:
             shutil.rmtree(target_root) if target_root.exists() else None
+            if offline:
+                raise RuntimeError("offline cache clone failed")
             cache_root = None
     if cache_root is None:
+        if offline:
+            raise RuntimeError(f"offline cache miss: {workspace.repo_url}")
         _run_git(
             [
                 "clone",
@@ -151,6 +167,10 @@ def _checkout_git_workspace(
     try:
         _run_git(["checkout", "--quiet", workspace.checkout_sha], cwd=target_root)
     except (subprocess.CalledProcessError, RuntimeError):
+        if offline:
+            raise RuntimeError(
+                f"offline cache miss: {workspace.repo_url} lacks {workspace.checkout_sha}"
+            )
         if pr_number is None:
             raise
         _run_git(
@@ -177,11 +197,26 @@ def _checkout_git_workspace(
 def _ensure_git_workspace_cache(
     workspace: FixtureWorkspace,
     workspace_cache_dir: Path,
+    *,
+    offline: bool = False,
 ) -> Path:
     workspace_cache_dir.mkdir(parents=True, exist_ok=True)
     cache_root = workspace_cache_dir / _workspace_cache_key(workspace.repo_url)
     lock = _workspace_cache_lock(str(cache_root))
     with lock:
+        if offline:
+            if not (cache_root / "objects").is_dir():
+                raise RuntimeError(f"offline cache miss: {workspace.repo_url}")
+            try:
+                _run_git(
+                    ["cat-file", "-e", f"{workspace.checkout_sha}^{{commit}}"],
+                    cwd=cache_root,
+                )
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"offline cache miss: {workspace.repo_url} lacks {workspace.checkout_sha}"
+                ) from exc
+            return cache_root
         if not (cache_root / "objects").is_dir():
             tmp_root = cache_root.with_name(f"{cache_root.name}.tmp")
             if tmp_root.exists():
@@ -201,8 +236,6 @@ def _ensure_git_workspace_cache(
                 if tmp_root.exists():
                     shutil.rmtree(tmp_root)
                 raise
-        else:
-            _run_git(["remote", "update", "--prune"], cwd=cache_root)
         if workspace.checkout_sha:
             _fetch_cache_ref(cache_root, workspace.checkout_sha)
         return cache_root
@@ -377,6 +410,7 @@ async def run_single(
                 budget_exhausted=log_stats["budget_exhausted"],
                 budget_state=log_stats["budget_state"],
                 finish_reasons=log_stats["finish_reasons"],
+                process_metrics=extract_review_process_metrics(event_log_path),
             )
     except Exception as exc:  # noqa: BLE001
         return EvalResult(

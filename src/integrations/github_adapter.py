@@ -52,16 +52,17 @@ def build_github_advisory_payload(
     for issue in response.report.issues:
         fingerprint = fingerprint_issue(issue)
         parsed = normalize_location(issue.location)
-        if (
-            parsed.valid
-            and parsed.path
-            and parsed.line is not None
-            and parsed.line in normalized_changed.get(parsed.path, set())
-        ):
+        inline_line = _inline_line_for_location(
+            parsed.path if parsed.valid else None,
+            parsed.line if parsed.valid else None,
+            parsed.end_line if parsed.valid else None,
+            normalized_changed,
+        )
+        if parsed.valid and parsed.path and inline_line is not None:
             inline_comments.append(
                 InlineCommentCandidate(
                     path=parsed.path,
-                    line=parsed.line,
+                    line=inline_line,
                     severity=issue.severity,
                     body=_comment_body(issue),
                     fingerprint=fingerprint,
@@ -116,6 +117,25 @@ def _normalize_changed_lines(
     for path, lines in changed_lines.items():
         normalized[str(path).replace("\\", "/")] = {int(line) for line in lines}
     return normalized
+
+
+def _inline_line_for_location(
+    path: str | None,
+    line: int | None,
+    end_line: int | None,
+    changed_lines: Mapping[str, set[int]],
+) -> int | None:
+    if not path or line is None:
+        return None
+    candidates = changed_lines.get(path, set())
+    if line in candidates:
+        return line
+    if end_line is None:
+        return None
+    for changed_line in sorted(candidates):
+        if line <= changed_line <= end_line:
+            return changed_line
+    return None
 
 
 def _comment_body(issue: ReviewIssue) -> str:
