@@ -52,6 +52,7 @@ class AgentOrchestrator:
         finding_verifier: Any | None = None,
         finding_verifier_mode: Literal["off", "shadow", "enforce"] | None = None,
         review_workflow_enforcement: Literal["off", "warn", "enforce"] | None = None,
+        review_diff_first_changed_files: bool | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -101,8 +102,19 @@ class AgentOrchestrator:
         self._workflow_enforcement = (
             review_workflow_enforcement or self._settings.review_workflow_enforcement
         )
+        self._review_diff_first_changed_files = (
+            self._settings.review_diff_first_changed_files
+            if review_diff_first_changed_files is None
+            else bool(review_diff_first_changed_files)
+        )
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
+        self._model_raw_issue_count = 0
+        self._verifier_candidate_count = 0
+        self._verifier_accepted_count = 0
+        self._verifier_rejected_count = 0
+        self._verifier_needs_evidence_count = 0
+        self._verifier_downgraded_count = 0
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
             max_chars=self._settings.agent_trace_max_chars,
@@ -170,6 +182,8 @@ class AgentOrchestrator:
         state: ContextState,
     ) -> ReviewResponse:
         candidates = build_candidates(response.report, iteration=self._iteration)
+        self._model_raw_issue_count = len(response.report.issues)
+        self._verifier_candidate_count = len(candidates)
         evidence_bound_count = sum(
             1
             for item in candidates
@@ -180,6 +194,8 @@ class AgentOrchestrator:
             "verify_findings",
             {
                 "candidate_count": len(candidates),
+                "model_raw_issue_count": self._model_raw_issue_count,
+                "verifier_candidate_count": self._verifier_candidate_count,
                 "evidence_bound_count": evidence_bound_count,
                 "mode": self._finding_verifier_mode,
             },
@@ -295,15 +311,25 @@ class AgentOrchestrator:
         rejected = sum(item.status == "rejected" for item in batch.results)
         needs_evidence = sum(item.status == "needs_evidence" for item in batch.results)
         downgraded = sum(item.status == "downgraded" for item in batch.results)
+        self._verifier_accepted_count = accepted
+        self._verifier_rejected_count = rejected
+        self._verifier_needs_evidence_count = needs_evidence
+        self._verifier_downgraded_count = downgraded
         self._record_event(
             EventType.FINDING_VERIFICATION_COMPLETED,
             "verify_findings",
             {
                 "candidate_count": len(candidates),
+                "model_raw_issue_count": self._model_raw_issue_count,
+                "verifier_candidate_count": self._verifier_candidate_count,
                 "accepted_count": accepted,
+                "verifier_accepted_count": accepted,
                 "rejected_count": rejected,
+                "verifier_rejected_count": rejected,
                 "needs_evidence_count": needs_evidence,
+                "verifier_needs_evidence_count": needs_evidence,
                 "downgraded_count": downgraded,
+                "verifier_downgraded_count": downgraded,
                 "first_pass_accept_count": first_pass_accept_count,
                 "mode": self._finding_verifier_mode,
                 "reason_codes": [
@@ -353,6 +379,24 @@ class AgentOrchestrator:
         ]
         if not recoverable or self._workflow_reprompt_count >= 1:
             return response
+        if any(item.step_id == "inspect_changed_context" for item in recoverable):
+            await self._maybe_prefetch_review_changed_files(
+                state,
+                request,
+                force=True,
+                trigger="workflow_recovery",
+            )
+            missing = self._review_workflow.missing_required(
+                has_candidates=has_candidates,
+                has_risk_candidates=has_risk,
+            )
+            recoverable = [
+                item
+                for item in missing
+                if item.step_id in {"inspect_diff", "inspect_changed_context"}
+            ]
+            if not recoverable:
+                return response
         self._workflow_reprompt_count += 1
         state.constraints.append(
             "workflow_missing_required:"
@@ -413,12 +457,16 @@ class AgentOrchestrator:
             if isinstance(raw_missing, list)
             else []
         )
+        workflow_filtered_issue_count = 0
+        workflow_invalid = bool(missing)
         if missing and self._workflow_enforcement == "enforce":
+            before_filter_count = len(response.report.issues)
             response.report.issues = [
                 issue
                 for issue in response.report.issues
                 if issue.severity.value not in {"critical", "warning"}
             ]
+            workflow_filtered_issue_count = before_filter_count - len(response.report.issues)
             state.errors.append(
                 ErrorDetail(
                     file="",
@@ -427,6 +475,21 @@ class AgentOrchestrator:
                 )
             )
             self._last_decision_reason = "workflow_incomplete"
+        response.workflow_invalid = workflow_invalid
+        response.workflow_missing_steps = missing
+        summary.update(
+            {
+                "model_raw_issue_count": self._model_raw_issue_count,
+                "verifier_candidate_count": self._verifier_candidate_count,
+                "verifier_accepted_count": self._verifier_accepted_count,
+                "verifier_rejected_count": self._verifier_rejected_count,
+                "verifier_needs_evidence_count": self._verifier_needs_evidence_count,
+                "verifier_downgraded_count": self._verifier_downgraded_count,
+                "workflow_filtered_issue_count": workflow_filtered_issue_count,
+                "final_effective_issue_count": len(response.report.issues),
+                "workflow_invalid": workflow_invalid,
+            }
+        )
         self._record_event(EventType.WORKFLOW_SUMMARY, "workflow", summary)
         return response
 
@@ -445,7 +508,9 @@ class AgentOrchestrator:
         if successful_names & {
             "read_file",
             "changed_context",
+            "get_changed_context",
             "symbol_context",
+            "find_symbol_context",
             "grep",
             "glob",
             "list_dir",
@@ -1148,6 +1213,12 @@ class AgentOrchestrator:
         self._pre_budget_submit_attempted = False
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
+        self._model_raw_issue_count = 0
+        self._verifier_candidate_count = 0
+        self._verifier_accepted_count = 0
+        self._verifier_rejected_count = 0
+        self._verifier_needs_evidence_count = 0
+        self._verifier_downgraded_count = 0
         self._record_event(
             EventType.PHASE_START,
             "prepare",
@@ -1161,7 +1232,7 @@ class AgentOrchestrator:
                 "agent_tool_timeout_seconds": self._settings.agent_tool_timeout_seconds,
                 "model_max_tokens": self._settings.model_max_tokens,
                 "pre_budget_submit_token_ratio": self._settings.pre_budget_submit_token_ratio,
-                "review_diff_first_changed_files": self._settings.review_diff_first_changed_files,
+                "review_diff_first_changed_files": self._review_diff_first_changed_files,
                 "review_diff_first_changed_files_max": self._settings.review_diff_first_changed_files_max,
             },
         )
@@ -1293,8 +1364,11 @@ class AgentOrchestrator:
         self,
         state: ContextState,
         request: ReviewRequest,
+        *,
+        force: bool = False,
+        trigger: str = "initial",
     ) -> None:
-        if not self._settings.review_diff_first_changed_files:
+        if not force and not self._review_diff_first_changed_files:
             return
         if self._permission_mode == "plan" or not request.diff_mode:
             return
@@ -1306,6 +1380,8 @@ class AgentOrchestrator:
             {
                 "iteration": self._iteration,
                 "enabled": True,
+                "forced": force,
+                "trigger": trigger,
                 "selected_files": selected_files,
                 "max_files": self._settings.review_diff_first_changed_files_max,
             },

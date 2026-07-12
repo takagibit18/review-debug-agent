@@ -948,6 +948,48 @@ def test_review_diff_first_prefetch_reads_changed_files_before_model(
     assert prefetch_event["payload"]["selected_files"] == ["src/module.py"]
 
 
+def test_review_prefetch_override_completes_context_before_model(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo"
+    changed = repo / "src" / "module.py"
+    changed.parent.mkdir(parents=True)
+    changed.write_text("print('changed')\n", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.register(FileReadTool())
+    orchestrator = AgentOrchestrator(
+        registry=registry,
+        review_diff_first_changed_files=True,
+        review_workflow_enforcement="enforce",
+    )
+    observed: list[str] = []
+
+    async def _assert_prefetched_context(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        observed.append(
+            orchestrator._review_workflow.states["inspect_changed_context"].status  # noqa: SLF001
+        )
+        return AnalysisPlan(draft_review=ReviewReport(summary="No issues found."))
+
+    monkeypatch.setattr(orchestrator, "analyze", _assert_prefetched_context)
+    diff_text = (
+        "diff --git a/src/module.py b/src/module.py\n"
+        "--- a/src/module.py\n"
+        "+++ b/src/module.py\n"
+        "@@ -1 +1 @@\n"
+        "+print('changed')\n"
+    )
+
+    asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(repo_path=str(repo), diff_mode=True, diff_text=diff_text)
+        )
+    )
+
+    assert observed == ["completed"]
+
+
 def test_review_mode_registers_review_context_tools_from_diff_text(
     tmp_path,
     monkeypatch,

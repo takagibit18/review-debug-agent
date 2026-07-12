@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -362,6 +363,58 @@ def test_effective_review_max_iterations_allows_explicit_eval_cap_override(
     monkeypatch.delenv("EVAL_REVIEW_MIN_TOOL_ITERATIONS", raising=False)
 
     assert _effective_review_max_iterations(3) == 3
+
+
+def test_effective_review_max_iterations_keeps_context_round_when_settings_are_zero(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("EVAL_REVIEW_MAX_ITERATIONS_CAP", "1")
+    monkeypatch.setenv("EVAL_REVIEW_MIN_TOOL_ITERATIONS", "0")
+
+    assert _effective_review_max_iterations(1) == 2
+
+
+def test_run_single_forces_eval_prefetch_and_tool_round(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOrchestrator:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+
+        async def run_review(self, request):  # type: ignore[no-untyped-def]
+            return ReviewResponse(
+                run_id="eval-run",
+                report=ReviewReport(summary="No issues found."),
+                context=ContextState(goal="review"),
+            )
+
+    monkeypatch.setattr(runner_module, "AgentOrchestrator", FakeOrchestrator)
+    fixture = Fixture.model_validate(
+        {
+            "id": "eval-prefetch",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": (
+                    "diff --git a/module.py b/module.py\n"
+                    "--- a/module.py\n"
+                    "+++ b/module.py\n"
+                    "@@ -0,0 +1 @@\n"
+                    "+value = 1\n"
+                ),
+                "files": {"module.py": "value = 1\n"},
+            },
+            "expected": {"issues": []},
+            "metadata": {"reviewed": True},
+        }
+    )
+
+    result = asyncio.run(runner_module.run_single(fixture, review_max_iterations=1))
+
+    assert result.schema_valid is True
+    assert captured["review_diff_first_changed_files"] is True
+    assert captured["review_min_tool_iterations"] >= 1
+    assert captured["review_max_iterations"] >= 2
 
 
 def test_resolve_fixture_paths_prefers_manifest(tmp_path: Path) -> None:

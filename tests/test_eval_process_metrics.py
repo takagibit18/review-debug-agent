@@ -15,7 +15,12 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
         {
             "event_type": "finding_candidates_built",
             "phase": "verify_findings",
-            "payload": {"candidate_count": 3, "evidence_bound_count": 2},
+            "payload": {
+                "candidate_count": 3,
+                "evidence_bound_count": 2,
+                "model_raw_issue_count": 4,
+                "verifier_candidate_count": 3,
+            },
         },
         {
             "event_type": "finding_verification_completed",
@@ -26,12 +31,22 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
                 "needs_evidence_count": 1,
                 "downgraded_count": 0,
                 "first_pass_accept_count": 1,
+                "model_raw_issue_count": 4,
+                "verifier_candidate_count": 3,
+                "verifier_accepted_count": 1,
             },
         },
         {
             "event_type": "workflow_summary",
             "phase": "workflow",
-            "payload": {"required_step_count": 5, "completed_required_step_count": 4},
+            "payload": {
+                "required_step_count": 5,
+                "completed_required_step_count": 4,
+                "workflow_filtered_issue_count": 2,
+                "final_effective_issue_count": 1,
+                "workflow_invalid": True,
+                "missing_required_steps": ["inspect_changed_context"],
+            },
         },
         {
             "event_type": "tool_io",
@@ -50,6 +65,8 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
 
     assert metrics.candidate_issue_count == 3
     assert metrics.evidence_bound_issue_count == 2
+    assert metrics.model_raw_issue_count == 4
+    assert metrics.verifier_candidate_count == 3
     assert metrics.verifier_accepted_count == 1
     assert metrics.verifier_rejected_count == 1
     assert metrics.verifier_needs_evidence_count == 1
@@ -59,6 +76,10 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
     assert metrics.duplicate_tool_call_count == 1
     assert metrics.evidence_binding_rate == 2 / 3
     assert metrics.required_step_completion_rate == 0.8
+    assert metrics.workflow_filtered_issue_count == 2
+    assert metrics.final_effective_issue_count == 1
+    assert metrics.workflow_invalid is True
+    assert metrics.workflow_missing_steps == ["inspect_changed_context"]
 
 
 def test_eval_result_serializes_zero_value_process_metrics() -> None:
@@ -83,6 +104,8 @@ def test_metric_summary_aggregates_process_metrics() -> None:
         false_positive_count=0,
         total_tokens=100,
         process_metrics=process_metrics_type(
+            model_raw_issue_count=3,
+            verifier_candidate_count=2,
             candidate_issue_count=2,
             evidence_bound_issue_count=2,
             verifier_accepted_count=1,
@@ -91,6 +114,9 @@ def test_metric_summary_aggregates_process_metrics() -> None:
             required_step_count=5,
             completed_required_step_count=5,
             duplicate_tool_call_count=1,
+            workflow_filtered_issue_count=1,
+            final_effective_issue_count=1,
+            workflow_invalid=True,
         ),
     )
 
@@ -103,6 +129,13 @@ def test_metric_summary_aggregates_process_metrics() -> None:
     assert summary.required_step_completion_rate == 1.0
     assert summary.duplicate_tool_call_rate == 0.5
     assert summary.cost_per_accepted_finding == 100.0
+    assert summary.model_raw_issue_count == 3
+    assert summary.verifier_candidate_count == 2
+    assert summary.verifier_accepted_count == 1
+    assert summary.verifier_rejected_count == 1
+    assert summary.workflow_filtered_issue_count == 1
+    assert summary.final_effective_issue_count == 1
+    assert summary.workflow_invalid_run_count == 1
 
 
 def test_compare_reports_rejects_quality_and_cost_regression() -> None:
@@ -139,4 +172,3 @@ def test_compare_reports_rejects_quality_and_cost_regression() -> None:
         "p95_latency_regression",
         "p95_tokens_regression",
     }
-

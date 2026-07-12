@@ -102,6 +102,8 @@ class EvalIssueMatch(BaseModel):
 class ReviewProcessMetrics(BaseModel):
     """Process-level evidence collected from one review run timeline."""
 
+    model_raw_issue_count: int = Field(default=0, ge=0)
+    verifier_candidate_count: int = Field(default=0, ge=0)
     candidate_issue_count: int = Field(default=0, ge=0)
     evidence_bound_issue_count: int = Field(default=0, ge=0)
     verifier_accepted_count: int = Field(default=0, ge=0)
@@ -111,6 +113,10 @@ class ReviewProcessMetrics(BaseModel):
     first_pass_accept_count: int = Field(default=0, ge=0)
     required_step_count: int = Field(default=0, ge=0)
     completed_required_step_count: int = Field(default=0, ge=0)
+    workflow_filtered_issue_count: int = Field(default=0, ge=0)
+    final_effective_issue_count: int = Field(default=0, ge=0)
+    workflow_invalid: bool = False
+    workflow_missing_steps: list[str] = Field(default_factory=list)
     duplicate_tool_call_count: int = Field(default=0, ge=0)
     event_log_status: Literal["ok", "missing", "parse_error"] = "missing"
 
@@ -160,6 +166,8 @@ class EvalResult(BaseModel):
     budget_exhausted: bool = Field(default=False)
     budget_state: str = Field(default="none")
     finish_reasons: list[str] = Field(default_factory=list)
+    workflow_invalid: bool = Field(default=False)
+    workflow_missing_steps: list[str] = Field(default_factory=list)
     process_metrics: ReviewProcessMetrics = Field(default_factory=ReviewProcessMetrics)
 
 
@@ -204,6 +212,15 @@ class MetricSummary(BaseModel):
     required_step_completion_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     duplicate_tool_call_rate: float = Field(default=0.0, ge=0.0)
     cost_per_accepted_finding: float = Field(default=0.0, ge=0.0)
+    model_raw_issue_count: int = Field(default=0, ge=0)
+    verifier_candidate_count: int = Field(default=0, ge=0)
+    verifier_accepted_count: int = Field(default=0, ge=0)
+    verifier_rejected_count: int = Field(default=0, ge=0)
+    verifier_needs_evidence_count: int = Field(default=0, ge=0)
+    verifier_downgraded_count: int = Field(default=0, ge=0)
+    workflow_filtered_issue_count: int = Field(default=0, ge=0)
+    final_effective_issue_count: int = Field(default=0, ge=0)
+    workflow_invalid_run_count: int = Field(default=0, ge=0)
     human_acceptability_note: str = Field(
         default="Manual review template generated; scores are filled offline."
     )
@@ -308,7 +325,13 @@ def _sampled_expected_count(item: SampledFixtureResult) -> int:
     return max((run.expected_count for run in item.runs), default=0)
 
 
-def _aggregate_process_metrics(results: list[EvalResult]) -> dict[str, float]:
+def _aggregate_process_metrics(
+    results: list[EvalResult],
+) -> dict[str, int | float]:
+    raw_issues = sum(item.process_metrics.model_raw_issue_count for item in results)
+    verifier_candidates = sum(
+        item.process_metrics.verifier_candidate_count for item in results
+    )
     candidates = sum(item.process_metrics.candidate_issue_count for item in results)
     evidence_bound = sum(
         item.process_metrics.evidence_bound_issue_count for item in results
@@ -320,11 +343,33 @@ def _aggregate_process_metrics(results: list[EvalResult]) -> dict[str, float]:
     completed = sum(
         item.process_metrics.completed_required_step_count for item in results
     )
+    needs_evidence = sum(
+        item.process_metrics.verifier_needs_evidence_count for item in results
+    )
+    downgraded = sum(
+        item.process_metrics.verifier_downgraded_count for item in results
+    )
+    filtered = sum(
+        item.process_metrics.workflow_filtered_issue_count for item in results
+    )
+    final_effective = sum(
+        item.process_metrics.final_effective_issue_count for item in results
+    )
+    invalid_runs = sum(1 for item in results if item.process_metrics.workflow_invalid)
     duplicates = sum(
         item.process_metrics.duplicate_tool_call_count for item in results
     )
     tokens = sum(item.total_tokens for item in results)
     return {
+        "model_raw_issue_count": raw_issues,
+        "verifier_candidate_count": verifier_candidates,
+        "verifier_accepted_count": accepted,
+        "verifier_rejected_count": rejected,
+        "verifier_needs_evidence_count": needs_evidence,
+        "verifier_downgraded_count": downgraded,
+        "workflow_filtered_issue_count": filtered,
+        "final_effective_issue_count": final_effective,
+        "workflow_invalid_run_count": invalid_runs,
         "evidence_binding_rate": evidence_bound / candidates if candidates else 1.0,
         "verifier_accept_rate": accepted / candidates if candidates else 0.0,
         "verifier_reject_rate": rejected / candidates if candidates else 0.0,

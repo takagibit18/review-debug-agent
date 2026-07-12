@@ -344,7 +344,10 @@ async def run_single(
                 review_max_iterations=_effective_review_max_iterations(
                     review_max_iterations
                 ),
-                review_min_tool_iterations=get_settings().eval_review_min_tool_iterations,
+                review_min_tool_iterations=max(
+                    1, get_settings().eval_review_min_tool_iterations
+                ),
+                review_diff_first_changed_files=True,
             )
             sandbox_context = _build_fixture_context(fixture, repo_root)
 
@@ -425,6 +428,16 @@ async def run_single(
                 budget_exhausted=log_stats["budget_exhausted"],
                 budget_state=log_stats["budget_state"],
                 finish_reasons=log_stats["finish_reasons"],
+                workflow_invalid=(
+                    review_response.workflow_invalid
+                    if fixture.type == "review"
+                    else False
+                ),
+                workflow_missing_steps=(
+                    review_response.workflow_missing_steps
+                    if fixture.type == "review"
+                    else []
+                ),
                 process_metrics=extract_review_process_metrics(event_log_path),
             )
     except Exception as exc:  # noqa: BLE001
@@ -529,8 +542,9 @@ def _effective_review_max_iterations(configured: int | None) -> int:
     min_tool_iterations = settings.eval_review_min_tool_iterations
     requested = configured or settings.eval_review_max_iterations
     stable_cap = settings.eval_review_max_iterations_cap
-    minimum_for_tool_feedback = min_tool_iterations + 1
-    return max(1, minimum_for_tool_feedback, min(requested, stable_cap))
+    minimum_for_tool_feedback = max(2, min_tool_iterations + 1)
+    effective_cap = max(minimum_for_tool_feedback, stable_cap)
+    return max(minimum_for_tool_feedback, min(requested, effective_cap))
 
 
 def _compute_hit_rate(matched_count: int, expected_count: int) -> float:

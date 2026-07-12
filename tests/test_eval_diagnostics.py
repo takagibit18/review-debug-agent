@@ -74,3 +74,21 @@ def test_diagnose_schema_placeholder_and_budget() -> None:
     assert "schema_invalid" in diagnosis.reasons
     assert "placeholder" in diagnosis.reasons
     assert "budget_capped" in diagnosis.reasons
+
+
+def test_diagnose_workflow_invalid_gate_filter() -> None:
+    diagnosis = diagnose_result(
+        EvalResult(
+            fixture_id="workflow-invalid",
+            fixture_type="review",
+            schema_valid=True,
+            expected_count=1,
+            actual_count=0,
+            raw_output={"report": {"issues": [{"severity": "warning"}]}},
+            workflow_invalid=True,
+            workflow_missing_steps=["inspect_changed_context"],
+        )
+    )
+
+    assert "workflow_invalid" in diagnosis.reasons
+    assert "miss_filtered_issue" in diagnosis.reasons

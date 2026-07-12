@@ -92,7 +92,7 @@ def validate_verifications(
         if verdict.status == "accepted":
             locations = [normalize_location(value) for value in verdict.verified_evidence]
             valid = valid and bool(locations) and all(
-                item.valid and item.path in changed and item.line in changed[item.path]
+                _location_intersects_changed_lines(item, changed)
                 for item in locations
             )
         elif verdict.status == "downgraded":
@@ -111,6 +111,20 @@ def validate_verifications(
         else:
             results.append(verdict)
     return FindingVerificationBatch(results=results)
+
+
+def _location_intersects_changed_lines(
+    location: Any,
+    changed: dict[str, set[int]],
+) -> bool:
+    """Require each evidence range to include at least one changed new line."""
+    if not location.valid or location.path not in changed or location.line is None:
+        return False
+    end_line = location.end_line or location.line
+    return any(
+        line in changed[location.path]
+        for line in range(location.line, end_line + 1)
+    )
 
 
 def build_candidates(

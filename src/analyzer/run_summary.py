@@ -31,6 +31,8 @@ class RunSummary(BaseModel):
     total_tokens: int = 0
     publish_status: PublishStatus = "not_requested"
     finding_verifier_mode: str = "off"
+    model_raw_issue_count: int = 0
+    verifier_candidate_count: int = 0
     finding_candidate_count: int = 0
     finding_accepted_count: int = 0
     finding_rejected_count: int = 0
@@ -42,6 +44,9 @@ class RunSummary(BaseModel):
     workflow_completed_required_step_count: int = 0
     workflow_missing_steps: list[str] = Field(default_factory=list)
     workflow_reprompt_count: int = 0
+    workflow_filtered_issue_count: int = 0
+    final_effective_issue_count: int = 0
+    workflow_invalid: bool = False
 
 
 class RunArtifactSummary(BaseModel):
@@ -185,9 +190,23 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
 
     if event_type == "finding_candidates_built":
         summary.finding_verifier_mode = str(payload.get("mode", "off") or "off")
+        summary.model_raw_issue_count = int(
+            payload.get("model_raw_issue_count", summary.model_raw_issue_count) or 0
+        )
+        summary.verifier_candidate_count = int(
+            payload.get("verifier_candidate_count", payload.get("candidate_count", 0))
+            or 0
+        )
         summary.finding_candidate_count = int(payload.get("candidate_count", 0) or 0)
 
     if event_type == "finding_verification_completed":
+        summary.model_raw_issue_count = int(
+            payload.get("model_raw_issue_count", summary.model_raw_issue_count) or 0
+        )
+        summary.verifier_candidate_count = int(
+            payload.get("verifier_candidate_count", summary.verifier_candidate_count)
+            or 0
+        )
         summary.finding_accepted_count = int(payload.get("accepted_count", 0) or 0)
         summary.finding_rejected_count = int(payload.get("rejected_count", 0) or 0)
         summary.finding_needs_evidence_count = int(
@@ -216,3 +235,17 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
             [str(item) for item in missing] if isinstance(missing, list) else []
         )
         summary.workflow_reprompt_count = int(payload.get("reprompt_count", 0) or 0)
+        summary.workflow_filtered_issue_count = int(
+            payload.get("workflow_filtered_issue_count", 0) or 0
+        )
+        summary.final_effective_issue_count = int(
+            payload.get("final_effective_issue_count", 0) or 0
+        )
+        summary.workflow_invalid = bool(payload.get("workflow_invalid", False))
+        summary.workflow_filtered_issue_count = int(
+            payload.get("workflow_filtered_issue_count", 0) or 0
+        )
+        summary.final_effective_issue_count = int(
+            payload.get("final_effective_issue_count", 0) or 0
+        )
+        summary.workflow_invalid = bool(payload.get("workflow_invalid", False))

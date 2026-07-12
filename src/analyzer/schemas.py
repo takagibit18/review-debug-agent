@@ -75,6 +75,14 @@ class ReviewResponse(BaseModel):
         ...,
         description="Session context for audit and debugging",
     )
+    workflow_invalid: bool = Field(
+        default=False,
+        description="Whether required review workflow steps remained incomplete.",
+    )
+    workflow_missing_steps: list[str] = Field(
+        default_factory=list,
+        description="Required workflow steps that remained incomplete.",
+    )
 
 
 class DebugStep(BaseModel):

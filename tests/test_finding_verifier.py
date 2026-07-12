@@ -196,6 +196,78 @@ def test_finding_verifier_parses_forced_structured_tool_result() -> None:
     assert client.calls[0][2][0]["function"]["name"] == "submit_finding_verification"
 
 
+def test_validate_verification_accepts_range_intersecting_changed_line() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    report = ReviewReport(summary="review", issues=[_issue()])
+    candidate = module.build_candidates(report, iteration=0)[0]
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The cited range contains the changed line.",
+                verified_evidence=["pkg/service.py:10-12"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate],
+        batch,
+        ReviewRequest(
+            repo_path=".",
+            diff_mode=True,
+            diff_text=(
+                "diff --git a/pkg/service.py b/pkg/service.py\n"
+                "--- a/pkg/service.py\n"
+                "+++ b/pkg/service.py\n"
+                "@@ -11,0 +12,1 @@\n"
+                "+return cache[key]\n"
+            ),
+        ),
+    )
+
+    assert result.results[0].status == "accepted"
+
+
+def test_validate_verification_rejects_range_without_changed_line_intersection() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    report = ReviewReport(summary="review", issues=[_issue()])
+    candidate = module.build_candidates(report, iteration=0)[0]
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The cited range misses the changed line.",
+                verified_evidence=["pkg/service.py:1-10"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate],
+        batch,
+        ReviewRequest(
+            repo_path=".",
+            diff_mode=True,
+            diff_text=(
+                "diff --git a/pkg/service.py b/pkg/service.py\n"
+                "--- a/pkg/service.py\n"
+                "+++ b/pkg/service.py\n"
+                "@@ -11,0 +12,1 @@\n"
+                "+return cache[key]\n"
+            ),
+        ),
+    )
+
+    assert result.results[0].status == "rejected"
+
+
 def test_orchestrator_retries_needs_evidence_once_before_accepting(
     tmp_path: Path,
     monkeypatch,

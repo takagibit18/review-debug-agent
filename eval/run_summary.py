@@ -56,34 +56,59 @@ def extract_review_process_metrics(
         payload = event.get("payload", {}) or {}
         event_type = str(event.get("event_type", ""))
         if event_type == "finding_candidates_built":
-            metrics.candidate_issue_count += _non_negative_int(
+            metrics.model_raw_issue_count = _non_negative_int(
+                payload.get("model_raw_issue_count")
+            )
+            metrics.verifier_candidate_count = _non_negative_int(
+                payload.get("verifier_candidate_count", payload.get("candidate_count"))
+            )
+            metrics.candidate_issue_count = _non_negative_int(
                 payload.get("candidate_count")
             )
-            metrics.evidence_bound_issue_count += _non_negative_int(
+            metrics.evidence_bound_issue_count = _non_negative_int(
                 payload.get("evidence_bound_count")
             )
         elif event_type == "finding_verification_completed":
-            metrics.verifier_accepted_count += _non_negative_int(
+            metrics.verifier_accepted_count = _non_negative_int(
                 payload.get("accepted_count")
             )
-            metrics.verifier_rejected_count += _non_negative_int(
+            metrics.verifier_rejected_count = _non_negative_int(
                 payload.get("rejected_count")
             )
-            metrics.verifier_needs_evidence_count += _non_negative_int(
+            metrics.verifier_needs_evidence_count = _non_negative_int(
                 payload.get("needs_evidence_count")
             )
-            metrics.verifier_downgraded_count += _non_negative_int(
+            metrics.verifier_downgraded_count = _non_negative_int(
                 payload.get("downgraded_count")
             )
-            metrics.first_pass_accept_count += _non_negative_int(
+            metrics.first_pass_accept_count = _non_negative_int(
                 payload.get("first_pass_accept_count")
             )
+            metrics.model_raw_issue_count = _non_negative_int(
+                payload.get("model_raw_issue_count", metrics.model_raw_issue_count)
+            )
+            metrics.verifier_candidate_count = _non_negative_int(
+                payload.get("verifier_candidate_count", metrics.verifier_candidate_count)
+            )
         elif event_type == "workflow_summary":
-            metrics.required_step_count += _non_negative_int(
+            metrics.required_step_count = _non_negative_int(
                 payload.get("required_step_count")
             )
-            metrics.completed_required_step_count += _non_negative_int(
+            metrics.completed_required_step_count = _non_negative_int(
                 payload.get("completed_required_step_count")
+            )
+            metrics.workflow_filtered_issue_count = _non_negative_int(
+                payload.get("workflow_filtered_issue_count")
+            )
+            metrics.final_effective_issue_count = _non_negative_int(
+                payload.get("final_effective_issue_count")
+            )
+            metrics.workflow_invalid = bool(payload.get("workflow_invalid", False))
+            missing_steps = payload.get("missing_required_steps", [])
+            metrics.workflow_missing_steps = (
+                [str(item) for item in missing_steps]
+                if isinstance(missing_steps, list)
+                else []
             )
         elif event_type == "tool_io" and payload.get("deduplicated") is True:
             metrics.duplicate_tool_call_count += 1
