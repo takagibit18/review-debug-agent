@@ -37,7 +37,7 @@ DEFAULT_REVIEW_WORKFLOW: tuple[ReviewWorkflowStep, ...] = (
     ReviewWorkflowStep(
         step_id="validate_candidate_draft",
         phase=30,
-        required_if="has_candidates",
+        required_if="has_risk_candidates",
     ),
     ReviewWorkflowStep(
         step_id="semantic_verify_findings",

@@ -14,7 +14,11 @@ from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.finding_verifier import (
-    FindingVerifier, apply_verifications, build_candidates, validate_verifications,
+    FindingVerifier,
+    apply_verifications,
+    build_candidates,
+    review_candidate_severities,
+    validate_verifications,
 )
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
 from src.analyzer.diff_lines import changed_new_lines_by_file
@@ -24,6 +28,7 @@ from src.analyzer.output_formatter import ReviewReport
 from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
 from src.analyzer.schemas import FindingVerificationBatch
 from src.analyzer.trace import TraceRecorder
+from src.analyzer.verifier_context import capture_verifier_tool_evidence
 from src.analyzer.result_processor import ResultProcessor
 from src.config import get_settings
 from src.models.client import ModelClient
@@ -115,6 +120,10 @@ class AgentOrchestrator:
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0
         self._verifier_downgraded_count = 0
+        self._high_confidence_info_issue_count = 0
+        self._severity_reviewed_count = 0
+        self._severity_promoted_count = 0
+        self._verifier_tool_evidence: list[dict[str, Any]] = []
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
             max_chars=self._settings.agent_trace_max_chars,
@@ -181,6 +190,13 @@ class AgentOrchestrator:
         request: ReviewRequest,
         state: ContextState,
     ) -> ReviewResponse:
+        severity_review = review_candidate_severities(response.report, request)
+        response.report = severity_review.report
+        self._high_confidence_info_issue_count = (
+            severity_review.high_confidence_info_count
+        )
+        self._severity_reviewed_count = severity_review.reviewed_count
+        self._severity_promoted_count = severity_review.promoted_count
         candidates = build_candidates(response.report, iteration=self._iteration)
         self._model_raw_issue_count = len(response.report.issues)
         self._verifier_candidate_count = len(candidates)
@@ -197,6 +213,10 @@ class AgentOrchestrator:
                 "model_raw_issue_count": self._model_raw_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "evidence_bound_count": evidence_bound_count,
+                "high_confidence_info_issue_count": self._high_confidence_info_issue_count,
+                "severity_reviewed_count": self._severity_reviewed_count,
+                "severity_promoted_count": self._severity_promoted_count,
+                "verifier_context_entry_count": len(self._verifier_tool_evidence),
                 "mode": self._finding_verifier_mode,
             },
         )
@@ -241,7 +261,12 @@ class AgentOrchestrator:
                 )
             return response
         try:
-            batch = await verifier.verify(candidates, request, state)
+            batch = await self._call_finding_verifier(
+                verifier,
+                candidates,
+                request,
+                state,
+            )
             batch = validate_verifications(candidates, batch, request)
             self._consume_verifier_tokens(verifier)
         except Exception as exc:  # noqa: BLE001
@@ -271,7 +296,12 @@ class AgentOrchestrator:
                 + ",".join(sorted(needs_evidence_ids))
             )
             try:
-                repaired = await verifier.verify(repair_candidates, request, state)
+                repaired = await self._call_finding_verifier(
+                    verifier,
+                    repair_candidates,
+                    request,
+                    state,
+                )
                 repaired = validate_verifications(repair_candidates, repaired, request)
                 self._consume_verifier_tokens(verifier)
             except Exception as exc:  # noqa: BLE001
@@ -427,6 +457,33 @@ class AgentOrchestrator:
         self._total_tokens += tokens
         self._budget_state = self._result_processor.budget_state(self._total_tokens)
         self._budget_exhausted = self._budget_state != "none"
+
+    async def _call_finding_verifier(
+        self,
+        verifier: Any,
+        candidates: list[Any],
+        request: ReviewRequest,
+        state: ContextState,
+    ) -> FindingVerificationBatch:
+        """Pass captured evidence when supported while preserving injected verifiers."""
+        verify = verifier.verify
+        try:
+            parameters = inspect.signature(verify).parameters.values()
+            accepts_evidence = any(
+                item.name == "tool_evidence"
+                or item.kind == inspect.Parameter.VAR_KEYWORD
+                for item in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_evidence = False
+        if accepts_evidence:
+            return await verify(
+                candidates,
+                request,
+                state,
+                tool_evidence=list(self._verifier_tool_evidence),
+            )
+        return await verify(candidates, request, state)
 
     def _finalize_review_workflow(
         self,
@@ -1219,6 +1276,10 @@ class AgentOrchestrator:
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0
         self._verifier_downgraded_count = 0
+        self._high_confidence_info_issue_count = 0
+        self._severity_reviewed_count = 0
+        self._severity_promoted_count = 0
+        self._verifier_tool_evidence = []
         self._record_event(
             EventType.PHASE_START,
             "prepare",
@@ -1572,6 +1633,9 @@ class AgentOrchestrator:
     def _append_tool_feedback(self, entries: list[dict[str, Any]]) -> None:
         """Append feedback entries with iteration metadata, maintain ring-buffer window
         and digest index for folded-summary injection."""
+        self._verifier_tool_evidence.extend(
+            capture_verifier_tool_evidence(entries, self._workspace_root)
+        )
         window = max(1, self._settings.feedback_window_iterations)
         for entry in entries:
             tool_call = entry.get("tool_call", {})

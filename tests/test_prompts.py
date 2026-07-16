@@ -41,3 +41,11 @@ def test_review_prompts_describe_atomic_review_tools() -> None:
     assert "validate_review_draft" in combined
     assert "policy feedback" in combined
     assert "submit_review" in combined
+
+
+def test_review_prompts_require_risk_severity_for_concrete_regressions() -> None:
+    for prompt in (SYSTEM_PROMPT_REVIEW, USER_PREFIX_REVIEW, FINALIZE_REVIEW_NOTICE):
+        normalized = prompt.lower()
+        assert "must use warning or critical" in normalized
+        assert "never info or style" in normalized
+        assert "data loss" in normalized

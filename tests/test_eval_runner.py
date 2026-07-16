@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import eval.runner as runner_module
 from eval.runner import (
     _aggregate_sampled_result,
@@ -154,6 +156,133 @@ def test_workspace_cache_resumes_valid_partial_mirror(monkeypatch, tmp_path: Pat
     assert runner_module._ensure_git_workspace_cache(workspace, tmp_path) == cache_root
     assert not any(args[0] == "clone" for args in calls)
     assert ["fetch", "--quiet", "--depth=1", "origin", "abc123"] in calls
+
+
+def test_workspace_cache_clone_uses_unique_temporary_directory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = FixtureWorkspace(
+        repo_url="https://example.test/acme/repo.git",
+        checkout_sha="abc123",
+    )
+    cache_root = tmp_path / runner_module._workspace_cache_key(workspace.repo_url)
+    clone_targets: list[Path] = []
+
+    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
+        if args[0] == "clone":
+            target = Path(args[-1])
+            clone_targets.append(target)
+            (target / "objects").mkdir(parents=True)
+            (target / "config").write_text("[core]\nrepositoryformatversion = 0\n")
+        return ""
+
+    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+
+    assert runner_module._ensure_git_workspace_cache(workspace, tmp_path) == cache_root
+    assert len(clone_targets) == 1
+    assert clone_targets[0] != cache_root.with_name(f"{cache_root.name}.tmp")
+    assert clone_targets[0].parent.parent == tmp_path
+    assert clone_targets[0].parent.name.endswith(".tmp")
+    assert not clone_targets[0].parent.exists()
+
+
+def test_publish_cache_retries_windows_permission_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.git"
+    destination = tmp_path / "destination.git"
+    (source / "objects").mkdir(parents=True)
+    original_replace = Path.replace
+    attempts = 0
+
+    def flaky_replace(self, target):  # type: ignore[no-untyped-def]
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            error = PermissionError(5, "sharing violation", str(self))
+            error.winerror = 5
+            raise error
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr(runner_module, "sleep", lambda _seconds: None)
+
+    runner_module._publish_cache_with_retry(source, destination, attempts=3)
+
+    assert attempts == 2
+    assert (destination / "objects").is_dir()
+    assert not source.exists()
+
+
+def test_workspace_cache_cleanup_retries_without_masking_clone_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = FixtureWorkspace(
+        repo_url="https://example.test/acme/repo.git",
+        checkout_sha="abc123",
+    )
+    original_rmtree = shutil.rmtree
+    cleanup_attempts = 0
+
+    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
+        if args[0] == "clone":
+            target = Path(args[-1])
+            pack = target / "objects" / "pack"
+            pack.mkdir(parents=True)
+            (pack / "tmp_pack_locked").write_text("partial")
+            raise RuntimeError("clone transport failed")
+        return ""
+
+    def flaky_rmtree(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal cleanup_attempts
+        cleanup_attempts += 1
+        if cleanup_attempts == 1:
+            error = PermissionError(5, "sharing violation", str(path))
+            error.winerror = 5
+            raise error
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+    monkeypatch.setattr(runner_module.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(runner_module, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="clone transport failed"):
+        runner_module._ensure_git_workspace_cache(workspace, tmp_path)
+
+    assert cleanup_attempts >= 2
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_fetch_failure_cleans_residual_pack_temp_files(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = FixtureWorkspace(
+        repo_url="https://example.test/acme/repo.git",
+        checkout_sha="abc123",
+    )
+    cache_root = tmp_path / runner_module._workspace_cache_key(workspace.repo_url)
+    pack_dir = cache_root / "objects" / "pack"
+    pack_dir.mkdir(parents=True)
+
+    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
+        if args[0] == "cat-file":
+            raise RuntimeError("missing commit")
+        if args[0] == "fetch":
+            (pack_dir / "tmp_pack_failed").write_text("partial")
+            raise RuntimeError("fetch transport failed")
+        return ""
+
+    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+
+    with pytest.raises(RuntimeError, match="fetch transport failed"):
+        runner_module._ensure_git_workspace_cache(workspace, tmp_path)
+
+    assert list(pack_dir.glob("tmp_*")) == []
 
 
 def test_local_smoke_fixture_is_file_backed_and_not_golden() -> None:

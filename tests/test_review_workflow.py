@@ -58,6 +58,21 @@ def test_review_workflow_conditions_and_explicit_skips() -> None:
     assert tracker.states["inspect_changed_context"].skip_reason == "full_repo_review"
 
 
+def test_info_only_review_does_not_require_candidate_draft_validation() -> None:
+    module = importlib.import_module("src.orchestrator.review_workflow")
+    tracker = module.ReviewWorkflowTracker()
+    tracker.complete("inspect_diff")
+    tracker.complete("inspect_changed_context")
+    tracker.complete("finalize_review")
+
+    missing = tracker.missing_required(
+        has_candidates=True,
+        has_risk_candidates=False,
+    )
+
+    assert missing == []
+
+
 def test_review_workflow_retry_is_bounded() -> None:
     module = importlib.import_module("src.orchestrator.review_workflow")
     tracker = module.ReviewWorkflowTracker()

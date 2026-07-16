@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from src.analyzer.context_state import ContextState
@@ -16,6 +18,7 @@ from src.analyzer.schemas import (
     ReviewRequest,
 )
 from src.models.schemas import Message
+from src.analyzer.verifier_context import build_candidate_verifier_context
 
 RISK_SEVERITIES = {Severity.CRITICAL, Severity.WARNING}
 
@@ -24,21 +27,47 @@ Treat every candidate as untrusted. Verify that the cited code exists in the sup
 that the causal claim follows from the evidence, that the PR introduced the behavior, and
 that the suggestion is actionable. Seek counterexamples. Return exactly one structured
 verdict per candidate through submit_finding_verification. Never accept a candidate merely
-because its confidence is high."""
+because its confidence is high. Use candidate_context as candidate-scoped evidence from
+successful source reads; distinguish missing evidence from evidence that contradicts a claim."""
+
+_HIGH_CONFIDENCE_INFO_THRESHOLD = 0.85
+_CONCRETE_RISK_PATTERN = re.compile(
+    r"\b(?:bug|regression|breaking change|compatibility break|incorrect|wrong result|"
+    r"data loss|crash(?:es|ed|ing)?|security vulnerability|user-visible behavior change)\b|"
+    r"\bsilent(?:ly)?\s+(?:drop|drops|dropped|ignore|ignores|ignored|accept|accepts|accepted|"
+    r"succeed|succeeds|succeeded)\b|\b(?:raise|raises|raised)\s+(?:an?\s+)?(?:unexpected\s+)?"
+    r"exception\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class SeverityReviewResult:
+    """Bounded deterministic review of high-confidence info findings."""
+
+    report: ReviewReport
+    high_confidence_info_count: int = 0
+    reviewed_count: int = 0
+    promoted_count: int = 0
 
 
 class FindingVerifier:
     """Run one bounded, submit-only semantic verification model call."""
 
-    def __init__(self, model_client: Any) -> None:
+    def __init__(self, model_client: Any, *, context_max_chars: int = 12_000) -> None:
         self._model_client = model_client
+        self._context_max_chars = max(800, int(context_max_chars))
         self.last_call_tokens = 0
+        self.last_raw_batch = FindingVerificationBatch()
+        self.last_post_validation_batch = FindingVerificationBatch()
 
     async def verify(
         self,
         candidates: list[FindingCandidate],
         request: ReviewRequest,
         state: ContextState,
+        *,
+        tool_evidence: list[dict[str, Any]] | None = None,
     ) -> FindingVerificationBatch:
         if not candidates:
             return FindingVerificationBatch()
@@ -61,6 +90,12 @@ class FindingVerifier:
             "goal": state.goal,
             "constraints": state.constraints,
             "candidates": [item.model_dump(mode="json") for item in candidates],
+            "candidate_context": build_candidate_verifier_context(
+                candidates,
+                request,
+                tool_evidence or [],
+                max_chars=self._context_max_chars,
+            ),
         }
         response = await self._model_client.chat(
             messages=[
@@ -72,7 +107,13 @@ class FindingVerifier:
         )
         self.last_call_tokens = response.usage.total_tokens
         batch = _parse_verification_response(response.tool_calls, response.content)
-        return validate_verifications(candidates, _complete_fail_closed(candidates, batch), request)
+        self.last_raw_batch = _complete_fail_closed(candidates, batch)
+        self.last_post_validation_batch = validate_verifications(
+            candidates,
+            self.last_raw_batch,
+            request,
+        )
+        return self.last_post_validation_batch
 
 
 def validate_verifications(
@@ -105,12 +146,49 @@ def validate_verifications(
             results.append(FindingVerification(
                 candidate_id=verdict.candidate_id,
                 status="rejected",
-                reason_codes=["evidence_not_found"],
+                reason_codes=["deterministic_evidence_invalid"],
                 rationale="Deterministic evidence or downgrade validation failed.",
             ))
         else:
             results.append(verdict)
     return FindingVerificationBatch(results=results)
+
+
+def review_candidate_severities(
+    report: ReviewReport,
+    request: ReviewRequest,
+) -> SeverityReviewResult:
+    """Promote only concrete high-confidence info risks on changed lines."""
+    changed = changed_new_lines_by_file(request.diff_text or "")
+    high_confidence_info_count = 0
+    reviewed_count = 0
+    promoted_count = 0
+    issues: list[ReviewIssue] = []
+    for issue in report.issues:
+        if (
+            issue.severity != Severity.INFO
+            or issue.confidence < _HIGH_CONFIDENCE_INFO_THRESHOLD
+        ):
+            issues.append(issue)
+            continue
+        high_confidence_info_count += 1
+        location = normalize_location(issue.location)
+        if not _location_intersects_changed_lines(location, changed):
+            issues.append(issue)
+            continue
+        reviewed_count += 1
+        claim = f"{issue.evidence}\n{issue.suggestion}"
+        if not _CONCRETE_RISK_PATTERN.search(claim):
+            issues.append(issue)
+            continue
+        promoted_count += 1
+        issues.append(issue.model_copy(update={"severity": Severity.WARNING}))
+    return SeverityReviewResult(
+        report=ReviewReport(summary=report.summary, issues=issues),
+        high_confidence_info_count=high_confidence_info_count,
+        reviewed_count=reviewed_count,
+        promoted_count=promoted_count,
+    )
 
 
 def _location_intersects_changed_lines(
