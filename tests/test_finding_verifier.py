@@ -131,9 +131,139 @@ def test_orchestrator_enforce_mode_removes_rejected_finding(
 
     assert response.report.issues == []
     log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
-    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    events = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
     assert any(event["event_type"] == "finding_candidates_built" for event in events)
-    assert any(event["event_type"] == "finding_verification_completed" for event in events)
+    assert any(
+        event["event_type"] == "finding_verification_completed" for event in events
+    )
+
+
+def test_orchestrator_does_not_revalidate_builtin_verifier_without_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+
+    class ContextValidatedVerifier(module.FindingVerifier):
+        def __init__(self) -> None:
+            self.last_call_tokens = 0
+            self.last_raw_batch = schemas.FindingVerificationBatch()
+            self.last_post_validation_batch = schemas.FindingVerificationBatch()
+            self.last_validation_stats = module.DeterministicValidationStats()
+
+        async def verify(self, candidates, request, state):  # type: ignore[no-untyped-def]
+            accepted = schemas.FindingVerificationBatch(
+                results=[
+                    schemas.FindingVerification(
+                        candidate_id=item.candidate_id,
+                        status="accepted",
+                        reason_codes=["verified"],
+                        rationale="Retained symbol context supports the finding.",
+                        verified_evidence=["pkg/service.py:11"],
+                    )
+                    for item in candidates
+                ]
+            )
+            self.last_raw_batch = accepted
+            self.last_post_validation_batch = accepted
+            self.last_validation_stats = module.DeterministicValidationStats(
+                checked_count=1, passed_count=1
+            )
+            return accepted
+
+    orchestrator = AgentOrchestrator(
+        finding_verifier=ContextValidatedVerifier(),
+        finding_verifier_mode="enforce",
+        review_workflow_enforcement="off",
+    )
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        return AnalysisPlan(
+            draft_review=ReviewReport(summary="review", issues=[_issue()])
+        )
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+    response = asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(
+                repo_path=str(tmp_path),
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/pkg/service.py b/pkg/service.py\n"
+                    "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+                    "@@ -11,2 +11,3 @@\n guard = ready\n+return cache[key]\n cleanup()\n"
+                ),
+            )
+        )
+    )
+
+    assert len(response.report.issues) == 1
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
+    events = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    verification = next(
+        event
+        for event in events
+        if event["event_type"] == "finding_verification_completed"
+    )
+    assert verification["payload"]["raw_accepted_count"] == 1
+    assert verification["payload"]["accepted_count"] == 1
+    assert verification["payload"]["deterministic_evidence_checked_count"] == 1
+    assert verification["payload"]["deterministic_evidence_passed_count"] == 1
+
+
+def test_orchestrator_strictly_validates_injected_verifier(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    schemas = importlib.import_module("src.analyzer.schemas")
+
+    class UnvalidatedVerifier:
+        async def verify(self, candidates, request, state):  # type: ignore[no-untyped-def]
+            return schemas.FindingVerificationBatch(
+                results=[
+                    schemas.FindingVerification(
+                        candidate_id=item.candidate_id,
+                        status="accepted",
+                        reason_codes=["verified"],
+                        rationale="This location is outside the diff.",
+                        verified_evidence=["pkg/service.py:11"],
+                    )
+                    for item in candidates
+                ]
+            )
+
+    orchestrator = AgentOrchestrator(
+        finding_verifier=UnvalidatedVerifier(),
+        finding_verifier_mode="enforce",
+        review_workflow_enforcement="off",
+    )
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        return AnalysisPlan(
+            draft_review=ReviewReport(summary="review", issues=[_issue()])
+        )
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+    response = asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(
+                repo_path=str(tmp_path),
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/pkg/service.py b/pkg/service.py\n"
+                    "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+                    "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+                ),
+            )
+        )
+    )
+
+    assert response.report.issues == []
 
 
 def test_finding_verifier_parses_forced_structured_tool_result() -> None:
@@ -180,11 +310,15 @@ def test_finding_verifier_parses_forced_structured_tool_result() -> None:
     batch = asyncio.run(
         verifier.verify(
             [candidate],
-            ReviewRequest(repo_path=".", diff_mode=True, diff_text=(
-                "diff --git a/pkg/service.py b/pkg/service.py\n"
-                "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
-                "@@ -11,0 +12,1 @@\n+return cache[key]\n"
-            )),
+            ReviewRequest(
+                repo_path=".",
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/pkg/service.py b/pkg/service.py\n"
+                    "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+                    "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+                ),
+            ),
             ContextState(goal="review pull request"),
         )
     )
@@ -192,7 +326,10 @@ def test_finding_verifier_parses_forced_structured_tool_result() -> None:
     assert batch.results[0].status == "accepted"
     assert verifier.last_call_tokens == 42
     assert client.calls[0][1].temperature == 0.0
-    assert client.calls[0][1].tool_choice["function"]["name"] == "submit_finding_verification"
+    assert (
+        client.calls[0][1].tool_choice["function"]["name"]
+        == "submit_finding_verification"
+    )
     assert client.calls[0][2][0]["function"]["name"] == "submit_finding_verification"
 
 
@@ -232,7 +369,9 @@ def test_validate_verification_accepts_range_intersecting_changed_line() -> None
     assert result.results[0].status == "accepted"
 
 
-def test_validate_verification_rejects_range_without_changed_line_intersection() -> None:
+def test_validate_verification_rejects_range_without_changed_line_intersection() -> (
+    None
+):
     module = importlib.import_module("src.analyzer.finding_verifier")
     schemas = importlib.import_module("src.analyzer.schemas")
     report = ReviewReport(summary="review", issues=[_issue()])
@@ -266,6 +405,243 @@ def test_validate_verification_rejects_range_without_changed_line_intersection()
     )
 
     assert result.results[0].status == "rejected"
+
+
+def test_validate_verification_accepts_retained_hunk_context_line() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[_issue()]), iteration=0
+    )[0]
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The unchanged guard in the retained hunk confirms the ordering.",
+                verified_evidence=["pkg/service.py:11"],
+            )
+        ]
+    )
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,2 +11,3 @@\n guard = ready\n+return cache[key]\n cleanup()\n"
+        ),
+    )
+    context = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "diff_hunks": [
+                {
+                    "path": "pkg/service.py",
+                    "new_start": 11,
+                    "new_count": 3,
+                }
+            ],
+        }
+    ]
+
+    result, stats = module.validate_verifications_with_stats(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "accepted"
+    assert stats.checked_count == 1
+    assert stats.passed_count == 1
+    assert stats.rejected_count == 0
+
+
+def test_validate_verification_accepts_retained_cross_file_symbol_reference() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[_issue()]), iteration=0
+    )[0]
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The retained caller demonstrates the affected path.",
+                verified_evidence=["pkg/service.py:12", "pkg/caller.py:8"],
+            )
+        ]
+    )
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    context = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "symbol_contexts": [
+                {
+                    "definitions": [],
+                    "references": [{"path": "pkg/caller.py", "line": 8}],
+                    "enclosing_symbols": [],
+                }
+            ],
+        }
+    ]
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "accepted"
+
+
+def test_validate_verification_accepts_retained_enclosing_symbol_line() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[_issue()]), iteration=0
+    )[0]
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The enclosing function guard supports the finding.",
+                verified_evidence=["pkg/service.py:8"],
+            )
+        ]
+    )
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    context = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "enclosing_symbols": [
+                {"path": "pkg/service.py", "line": 8, "end_line": 16}
+            ],
+        }
+    ]
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "accepted"
+
+
+def test_context_removed_by_budget_cannot_validate_evidence() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[_issue()]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [
+            {
+                "tool_name": "read_file",
+                "arguments": {"file_path": "pkg/service.py"},
+                "data": {
+                    "file_path": "pkg/service.py",
+                    "start_line": 1,
+                    "line_count": 20,
+                    "content": "x" * 4_000,
+                },
+            }
+        ],
+        max_chars=800,
+    )
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The cited line was clipped from the candidate payload.",
+                verified_evidence=["pkg/service.py:13"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert context[0]["file_windows"] == []
+    assert result.results[0].status == "rejected"
+
+
+def test_validate_verification_rejects_unretained_or_unanchored_context() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[_issue()]), iteration=0
+    )[0]
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The cited line was not retained for this candidate.",
+                verified_evidence=["pkg/unrelated.py:8"],
+            )
+        ]
+    )
+    changed_request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    unanchored_request = changed_request.model_copy(
+        update={"diff_text": changed_request.diff_text.replace("+12,1", "+13,1")}
+    )
+    context = [
+        {
+            "candidate_id": candidate.candidate_id,
+            "file_windows": [
+                {"path": "pkg/unrelated.py", "start_line": 8, "end_line": 8}
+            ],
+        }
+    ]
+
+    unretained = module.validate_verifications([candidate], batch, changed_request)
+    unanchored = module.validate_verifications(
+        [candidate], batch, unanchored_request, candidate_context=context
+    )
+
+    assert unretained.results[0].reason_codes == ["deterministic_evidence_invalid"]
+    assert unanchored.results[0].reason_codes == ["deterministic_evidence_invalid"]
 
 
 def test_finding_verifier_injects_candidate_scoped_tool_evidence() -> None:
@@ -645,8 +1021,12 @@ def test_orchestrator_retries_needs_evidence_once_before_accepting(
                         candidate_id=item.candidate_id,
                         status=status,
                         reason_codes=[reason],
-                        rationale="Need the caller context." if self.calls == 1 else "Caller confirms the path.",
-                        verified_evidence=["pkg/service.py:12"] if self.calls > 1 else [],
+                        rationale="Need the caller context."
+                        if self.calls == 1
+                        else "Caller confirms the path.",
+                        verified_evidence=["pkg/service.py:12"]
+                        if self.calls > 1
+                        else [],
                     )
                     for item in candidates
                 ]
@@ -660,24 +1040,34 @@ def test_orchestrator_retries_needs_evidence_once_before_accepting(
     )
 
     async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
-        return AnalysisPlan(draft_review=ReviewReport(summary="review", issues=[_issue()]))
+        return AnalysisPlan(
+            draft_review=ReviewReport(summary="review", issues=[_issue()])
+        )
 
     monkeypatch.setattr(orchestrator, "analyze", _analyze)
     response = asyncio.run(
-        orchestrator.run_review(ReviewRequest(
-            repo_path=str(tmp_path), diff_mode=True, diff_text=(
-                "diff --git a/pkg/service.py b/pkg/service.py\n"
-                "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
-                "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        orchestrator.run_review(
+            ReviewRequest(
+                repo_path=str(tmp_path),
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/pkg/service.py b/pkg/service.py\n"
+                    "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+                    "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+                ),
             )
-        ))
+        )
     )
 
     assert verifier.calls == 2
     assert len(response.report.issues) == 1
     log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
-    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    events = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
     repair = next(
-        event for event in events if event["event_type"] == "finding_evidence_repair_completed"
+        event
+        for event in events
+        if event["event_type"] == "finding_evidence_repair_completed"
     )
     assert repair["payload"]["round"] == 1

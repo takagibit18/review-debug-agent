@@ -110,6 +110,13 @@ class ReviewProcessMetrics(BaseModel):
     verifier_rejected_count: int = Field(default=0, ge=0)
     verifier_needs_evidence_count: int = Field(default=0, ge=0)
     verifier_downgraded_count: int = Field(default=0, ge=0)
+    raw_verifier_accepted_count: int = Field(default=0, ge=0)
+    raw_verifier_rejected_count: int = Field(default=0, ge=0)
+    raw_verifier_needs_evidence_count: int = Field(default=0, ge=0)
+    raw_verifier_downgraded_count: int = Field(default=0, ge=0)
+    deterministic_evidence_checked_count: int = Field(default=0, ge=0)
+    deterministic_evidence_passed_count: int = Field(default=0, ge=0)
+    deterministic_evidence_rejected_count: int = Field(default=0, ge=0)
     first_pass_accept_count: int = Field(default=0, ge=0)
     required_step_count: int = Field(default=0, ge=0)
     completed_required_step_count: int = Field(default=0, ge=0)
@@ -133,6 +140,15 @@ class ReviewProcessMetrics(BaseModel):
         return (
             self.completed_required_step_count / self.required_step_count
             if self.required_step_count
+            else 1.0
+        )
+
+    @property
+    def evidence_validation_pass_rate(self) -> float:
+        return (
+            self.deterministic_evidence_passed_count
+            / self.deterministic_evidence_checked_count
+            if self.deterministic_evidence_checked_count
             else 1.0
         )
 
@@ -218,6 +234,14 @@ class MetricSummary(BaseModel):
     verifier_rejected_count: int = Field(default=0, ge=0)
     verifier_needs_evidence_count: int = Field(default=0, ge=0)
     verifier_downgraded_count: int = Field(default=0, ge=0)
+    raw_verifier_accepted_count: int = Field(default=0, ge=0)
+    raw_verifier_rejected_count: int = Field(default=0, ge=0)
+    raw_verifier_needs_evidence_count: int = Field(default=0, ge=0)
+    raw_verifier_downgraded_count: int = Field(default=0, ge=0)
+    deterministic_evidence_checked_count: int = Field(default=0, ge=0)
+    deterministic_evidence_passed_count: int = Field(default=0, ge=0)
+    deterministic_evidence_rejected_count: int = Field(default=0, ge=0)
+    evidence_validation_pass_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     workflow_filtered_issue_count: int = Field(default=0, ge=0)
     final_effective_issue_count: int = Field(default=0, ge=0)
     workflow_invalid_run_count: int = Field(default=0, ge=0)
@@ -346,8 +370,27 @@ def _aggregate_process_metrics(
     needs_evidence = sum(
         item.process_metrics.verifier_needs_evidence_count for item in results
     )
-    downgraded = sum(
-        item.process_metrics.verifier_downgraded_count for item in results
+    downgraded = sum(item.process_metrics.verifier_downgraded_count for item in results)
+    raw_accepted = sum(
+        item.process_metrics.raw_verifier_accepted_count for item in results
+    )
+    raw_rejected = sum(
+        item.process_metrics.raw_verifier_rejected_count for item in results
+    )
+    raw_needs_evidence = sum(
+        item.process_metrics.raw_verifier_needs_evidence_count for item in results
+    )
+    raw_downgraded = sum(
+        item.process_metrics.raw_verifier_downgraded_count for item in results
+    )
+    deterministic_checked = sum(
+        item.process_metrics.deterministic_evidence_checked_count for item in results
+    )
+    deterministic_passed = sum(
+        item.process_metrics.deterministic_evidence_passed_count for item in results
+    )
+    deterministic_rejected = sum(
+        item.process_metrics.deterministic_evidence_rejected_count for item in results
     )
     filtered = sum(
         item.process_metrics.workflow_filtered_issue_count for item in results
@@ -356,9 +399,7 @@ def _aggregate_process_metrics(
         item.process_metrics.final_effective_issue_count for item in results
     )
     invalid_runs = sum(1 for item in results if item.process_metrics.workflow_invalid)
-    duplicates = sum(
-        item.process_metrics.duplicate_tool_call_count for item in results
-    )
+    duplicates = sum(item.process_metrics.duplicate_tool_call_count for item in results)
     tokens = sum(item.total_tokens for item in results)
     return {
         "model_raw_issue_count": raw_issues,
@@ -367,12 +408,24 @@ def _aggregate_process_metrics(
         "verifier_rejected_count": rejected,
         "verifier_needs_evidence_count": needs_evidence,
         "verifier_downgraded_count": downgraded,
+        "raw_verifier_accepted_count": raw_accepted,
+        "raw_verifier_rejected_count": raw_rejected,
+        "raw_verifier_needs_evidence_count": raw_needs_evidence,
+        "raw_verifier_downgraded_count": raw_downgraded,
+        "deterministic_evidence_checked_count": deterministic_checked,
+        "deterministic_evidence_passed_count": deterministic_passed,
+        "deterministic_evidence_rejected_count": deterministic_rejected,
         "workflow_filtered_issue_count": filtered,
         "final_effective_issue_count": final_effective,
         "workflow_invalid_run_count": invalid_runs,
         "evidence_binding_rate": evidence_bound / candidates if candidates else 1.0,
         "verifier_accept_rate": accepted / candidates if candidates else 0.0,
         "verifier_reject_rate": rejected / candidates if candidates else 0.0,
+        "evidence_validation_pass_rate": (
+            deterministic_passed / deterministic_checked
+            if deterministic_checked
+            else 1.0
+        ),
         "first_pass_accept_rate": first_pass / accepted if accepted else 0.0,
         "required_step_completion_rate": completed / required if required else 1.0,
         "duplicate_tool_call_rate": duplicates / candidates if candidates else 0.0,

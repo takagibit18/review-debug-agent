@@ -14,18 +14,25 @@ from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.finding_verifier import (
+    DeterministicValidationStats,
     FindingVerifier,
     apply_verifications,
     build_candidates,
     review_candidate_severities,
-    validate_verifications,
+    validate_verifications_with_stats,
 )
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
 from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.output_formatter import ReviewReport
-from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
+from src.analyzer.schemas import (
+    AnalysisPlan,
+    DebugRequest,
+    DebugResponse,
+    ReviewRequest,
+    ReviewResponse,
+)
 from src.analyzer.schemas import FindingVerificationBatch
 from src.analyzer.trace import TraceRecorder
 from src.analyzer.verifier_context import capture_verifier_tool_evidence
@@ -152,12 +159,12 @@ class AgentOrchestrator:
                 self._complete_workflow_step("inspect_diff")
             else:
                 self._skip_workflow_step("inspect_diff", "full_repo_review")
-                self._skip_workflow_step(
-                    "inspect_changed_context", "full_repo_review"
-                )
+                self._skip_workflow_step("inspect_changed_context", "full_repo_review")
         response: ReviewResponse | DebugResponse | None = None
         while True:
-            tool_specs = [] if self._permission_mode == "plan" else self._registry.list_specs()
+            tool_specs = (
+                [] if self._permission_mode == "plan" else self._registry.list_specs()
+            )
             plan = await self.analyze(state, request, tool_specs)
             self._last_plan = plan
             self._observe_incomplete_plan(plan, state)
@@ -169,7 +176,9 @@ class AgentOrchestrator:
             if self._should_pre_budget_submit(state):
                 self._pre_budget_submit_attempted = True
                 self._record_pre_budget_submit("attempt", state)
-                submit_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
+                submit_plan = await self.analyze(
+                    state, request, tool_specs=[], force_submit=True
+                )
                 self._last_plan = submit_plan
                 self._observe_incomplete_plan(submit_plan, state)
                 response = self.format_result(state, tool_results=[])
@@ -261,13 +270,18 @@ class AgentOrchestrator:
                 )
             return response
         try:
-            batch = await self._call_finding_verifier(
+            returned_batch = await self._call_finding_verifier(
                 verifier,
                 candidates,
                 request,
                 state,
             )
-            batch = validate_verifications(candidates, batch, request)
+            raw_batch, batch, validation_stats = self._normalize_verifier_result(
+                verifier,
+                candidates,
+                returned_batch,
+                request,
+            )
             self._consume_verifier_tokens(verifier)
         except Exception as exc:  # noqa: BLE001
             self._record_event(
@@ -280,8 +294,12 @@ class AgentOrchestrator:
                     "message": str(exc)[:500],
                 },
             )
+            raw_batch = FindingVerificationBatch()
             batch = FindingVerificationBatch()
-        first_pass_accept_count = sum(item.status == "accepted" for item in batch.results)
+            validation_stats = DeterministicValidationStats()
+        first_pass_accept_count = sum(
+            item.status == "accepted" for item in batch.results
+        )
         needs_evidence_ids = {
             item.candidate_id
             for item in batch.results
@@ -292,20 +310,28 @@ class AgentOrchestrator:
                 item for item in candidates if item.candidate_id in needs_evidence_ids
             ]
             state.constraints.append(
-                "verifier_needs_evidence:"
-                + ",".join(sorted(needs_evidence_ids))
+                "verifier_needs_evidence:" + ",".join(sorted(needs_evidence_ids))
             )
             try:
-                repaired = await self._call_finding_verifier(
+                returned_repaired = await self._call_finding_verifier(
                     verifier,
                     repair_candidates,
                     request,
                     state,
                 )
-                repaired = validate_verifications(repair_candidates, repaired, request)
+                raw_repaired, repaired, repaired_stats = (
+                    self._normalize_verifier_result(
+                        verifier,
+                        repair_candidates,
+                        returned_repaired,
+                        request,
+                    )
+                )
                 self._consume_verifier_tokens(verifier)
             except Exception as exc:  # noqa: BLE001
+                raw_repaired = FindingVerificationBatch()
                 repaired = FindingVerificationBatch()
+                repaired_stats = DeterministicValidationStats()
                 self._record_event(
                     EventType.FINDING_VERIFICATION_FAILED,
                     "verify_findings",
@@ -317,6 +343,9 @@ class AgentOrchestrator:
                     },
                 )
             repaired_by_id = {item.candidate_id: item for item in repaired.results}
+            raw_repaired_by_id = {
+                item.candidate_id: item for item in raw_repaired.results
+            }
             batch = FindingVerificationBatch(
                 results=[
                     repaired_by_id.get(item.candidate_id, item)
@@ -324,6 +353,25 @@ class AgentOrchestrator:
                     else item
                     for item in batch.results
                 ]
+            )
+            raw_batch = FindingVerificationBatch(
+                results=[
+                    raw_repaired_by_id.get(item.candidate_id, item)
+                    if item.candidate_id in needs_evidence_ids
+                    else item
+                    for item in raw_batch.results
+                ]
+            )
+            validation_stats = DeterministicValidationStats(
+                checked_count=(
+                    validation_stats.checked_count + repaired_stats.checked_count
+                ),
+                passed_count=(
+                    validation_stats.passed_count + repaired_stats.passed_count
+                ),
+                rejected_count=(
+                    validation_stats.rejected_count + repaired_stats.rejected_count
+                ),
             )
             self._record_event(
                 EventType.FINDING_EVIDENCE_REPAIR_COMPLETED,
@@ -341,6 +389,12 @@ class AgentOrchestrator:
         rejected = sum(item.status == "rejected" for item in batch.results)
         needs_evidence = sum(item.status == "needs_evidence" for item in batch.results)
         downgraded = sum(item.status == "downgraded" for item in batch.results)
+        raw_accepted = sum(item.status == "accepted" for item in raw_batch.results)
+        raw_rejected = sum(item.status == "rejected" for item in raw_batch.results)
+        raw_needs_evidence = sum(
+            item.status == "needs_evidence" for item in raw_batch.results
+        )
+        raw_downgraded = sum(item.status == "downgraded" for item in raw_batch.results)
         self._verifier_accepted_count = accepted
         self._verifier_rejected_count = rejected
         self._verifier_needs_evidence_count = needs_evidence
@@ -361,6 +415,16 @@ class AgentOrchestrator:
                 "downgraded_count": downgraded,
                 "verifier_downgraded_count": downgraded,
                 "first_pass_accept_count": first_pass_accept_count,
+                "raw_accepted_count": raw_accepted,
+                "raw_rejected_count": raw_rejected,
+                "raw_needs_evidence_count": raw_needs_evidence,
+                "raw_downgraded_count": raw_downgraded,
+                "raw_reason_codes": [
+                    code for item in raw_batch.results for code in item.reason_codes
+                ],
+                "deterministic_evidence_checked_count": validation_stats.checked_count,
+                "deterministic_evidence_passed_count": validation_stats.passed_count,
+                "deterministic_evidence_rejected_count": validation_stats.rejected_count,
                 "mode": self._finding_verifier_mode,
                 "reason_codes": [
                     code for item in batch.results for code in item.reason_codes
@@ -369,7 +433,8 @@ class AgentOrchestrator:
         )
         if self._workflow_enforcement != "off":
             terminal_ids = {
-                item.candidate_id for item in batch.results
+                item.candidate_id
+                for item in batch.results
                 if item.status in {"accepted", "rejected", "downgraded"}
             }
             if all(item.candidate_id in terminal_ids for item in candidates):
@@ -477,13 +542,42 @@ class AgentOrchestrator:
         except (TypeError, ValueError):
             accepts_evidence = False
         if accepts_evidence:
-            return await verify(
-                candidates,
-                request,
-                state,
-                tool_evidence=list(self._verifier_tool_evidence),
+            return FindingVerificationBatch.model_validate(
+                await verify(
+                    candidates,
+                    request,
+                    state,
+                    tool_evidence=list(self._verifier_tool_evidence),
+                )
             )
-        return await verify(candidates, request, state)
+        return FindingVerificationBatch.model_validate(
+            await verify(candidates, request, state)
+        )
+
+    @staticmethod
+    def _normalize_verifier_result(
+        verifier: Any,
+        candidates: list[Any],
+        returned_batch: FindingVerificationBatch,
+        request: ReviewRequest,
+    ) -> tuple[
+        FindingVerificationBatch,
+        FindingVerificationBatch,
+        DeterministicValidationStats,
+    ]:
+        """Return raw and post-validation batches without validating twice."""
+        if isinstance(verifier, FindingVerifier):
+            return (
+                verifier.last_raw_batch,
+                verifier.last_post_validation_batch,
+                verifier.last_validation_stats,
+            )
+        post_batch, stats = validate_verifications_with_stats(
+            candidates,
+            returned_batch,
+            request,
+        )
+        return returned_batch, post_batch, stats
 
     def _finalize_review_workflow(
         self,
@@ -510,9 +604,7 @@ class AgentOrchestrator:
         )
         raw_missing = summary.get("missing_required_steps", [])
         missing = (
-            [str(item) for item in raw_missing]
-            if isinstance(raw_missing, list)
-            else []
+            [str(item) for item in raw_missing] if isinstance(raw_missing, list) else []
         )
         workflow_filtered_issue_count = 0
         workflow_invalid = bool(missing)
@@ -523,7 +615,9 @@ class AgentOrchestrator:
                 for issue in response.report.issues
                 if issue.severity.value not in {"critical", "warning"}
             ]
-            workflow_filtered_issue_count = before_filter_count - len(response.report.issues)
+            workflow_filtered_issue_count = before_filter_count - len(
+                response.report.issues
+            )
             state.errors.append(
                 ErrorDetail(
                     file="",
@@ -628,7 +722,9 @@ class AgentOrchestrator:
         state = self.prepare_context(request)
         response: ReviewResponse | DebugResponse | None = None
         while True:
-            tool_specs = [] if self._permission_mode == "plan" else self._registry.list_specs()
+            tool_specs = (
+                [] if self._permission_mode == "plan" else self._registry.list_specs()
+            )
             plan = await self.analyze(state, request, tool_specs)
             self._last_plan = plan
             self._observe_incomplete_plan(plan, state)
@@ -639,7 +735,9 @@ class AgentOrchestrator:
             if self._should_pre_budget_submit(state):
                 self._pre_budget_submit_attempted = True
                 self._record_pre_budget_submit("attempt", state)
-                submit_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
+                submit_plan = await self.analyze(
+                    state, request, tool_specs=[], force_submit=True
+                )
                 self._last_plan = submit_plan
                 self._observe_incomplete_plan(submit_plan, state)
                 response = self.format_result(state, tool_results=[])
@@ -671,7 +769,9 @@ class AgentOrchestrator:
         plan = self._last_plan
         if plan is None or self._has_review_business_output(plan.draft_review):
             return response
-        finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
+        finalize_plan = await self.analyze(
+            state, request, tool_specs=[], force_submit=True
+        )
         self._last_plan = finalize_plan
         self._observe_incomplete_plan(finalize_plan, state)
         response = self.format_result(state, tool_results=[])
@@ -705,7 +805,9 @@ class AgentOrchestrator:
         plan = self._last_plan
         if plan is None or plan.draft_debug is not None:
             return response
-        finalize_plan = await self.analyze(state, request, tool_specs=[], force_submit=True)
+        finalize_plan = await self.analyze(
+            state, request, tool_specs=[], force_submit=True
+        )
         self._last_plan = finalize_plan
         self._observe_incomplete_plan(finalize_plan, state)
         response = self.format_result(state, tool_results=[])
@@ -727,11 +829,17 @@ class AgentOrchestrator:
         state = self._context_builder.prepare_context(request)
         if isinstance(request, ReviewRequest) and request.diff_mode:
             state.constraints.append("diff_mode")
-        if isinstance(request, DebugRequest) and (request.error_log_path or request.error_log_text):
+        if isinstance(request, DebugRequest) and (
+            request.error_log_path or request.error_log_text
+        ):
             state.constraints.append("error_log_provided")
         if self._permission_mode == "plan":
             state.constraints.append("plan_mode")
-        self._record_event(EventType.PHASE_END, "prepare", {"elapsed_ms": int((perf_counter() - start) * 1000)})
+        self._record_event(
+            EventType.PHASE_END,
+            "prepare",
+            {"elapsed_ms": int((perf_counter() - start) * 1000)},
+        )
         return state
 
     async def analyze(
@@ -912,7 +1020,13 @@ class AgentOrchestrator:
                     ErrorDetail(file="", message=err, category="runtime")
                 )
                 results.append(ToolResult(ok=False, error=err, data=structured))
-                executed_feedback.append({"tool_call": raw_call, "result": results[-1], "reasoning_content": self._last_reasoning_content})
+                executed_feedback.append(
+                    {
+                        "tool_call": raw_call,
+                        "result": results[-1],
+                        "reasoning_content": self._last_reasoning_content,
+                    }
+                )
                 index += 1
                 continue
 
@@ -935,7 +1049,11 @@ class AgentOrchestrator:
                         },
                     )
                     executed_feedback.append(
-                        {"tool_call": raw_call, "result": results[-1], "reasoning_content": self._last_reasoning_content}
+                        {
+                            "tool_call": raw_call,
+                            "result": results[-1],
+                            "reasoning_content": self._last_reasoning_content,
+                        }
                     )
                     index += 1
                     continue
@@ -966,13 +1084,21 @@ class AgentOrchestrator:
                         "name": tool_name,
                         "ok": result.ok,
                         "error": result.error or "",
-                        "args_digest": self._trace_recorder.build_tool_result_preview(args).get(
-                            "digest", {}
+                        "args_digest": self._trace_recorder.build_tool_result_preview(
+                            args
+                        ).get("digest", {}),
+                        "result_preview": self._trace_recorder.build_tool_result_preview(
+                            result
                         ),
-                        "result_preview": self._trace_recorder.build_tool_result_preview(result),
                     },
                 )
-                executed_feedback.append({"tool_call": raw_call, "result": result, "reasoning_content": self._last_reasoning_content})
+                executed_feedback.append(
+                    {
+                        "tool_call": raw_call,
+                        "result": result,
+                        "reasoning_content": self._last_reasoning_content,
+                    }
+                )
                 index += 1
                 continue
 
@@ -1003,13 +1129,21 @@ class AgentOrchestrator:
                         "name": tool_name,
                         "ok": result.ok,
                         "error": result.error or "",
-                        "args_digest": self._trace_recorder.build_tool_result_preview(args).get(
-                            "digest", {}
+                        "args_digest": self._trace_recorder.build_tool_result_preview(
+                            args
+                        ).get("digest", {}),
+                        "result_preview": self._trace_recorder.build_tool_result_preview(
+                            result
                         ),
-                        "result_preview": self._trace_recorder.build_tool_result_preview(result),
                     },
                 )
-                executed_feedback.append({"tool_call": raw_call, "result": result, "reasoning_content": self._last_reasoning_content})
+                executed_feedback.append(
+                    {
+                        "tool_call": raw_call,
+                        "result": result,
+                        "reasoning_content": self._last_reasoning_content,
+                    }
+                )
                 index += 1
                 continue
 
@@ -1047,9 +1181,7 @@ class AgentOrchestrator:
                 batch_result,
                 batch_error,
                 elapsed_ms,
-            ) in zip(
-                batch_calls, batch_results
-            ):
+            ) in zip(batch_calls, batch_results):
                 if batch_error is not None:
                     state.errors.append(batch_error)
                 results.append(batch_result)
@@ -1080,7 +1212,13 @@ class AgentOrchestrator:
                         ),
                     },
                 )
-                executed_feedback.append({"tool_call": batch_raw, "result": batch_result, "reasoning_content": self._last_reasoning_content})
+                executed_feedback.append(
+                    {
+                        "tool_call": batch_raw,
+                        "result": batch_result,
+                        "reasoning_content": self._last_reasoning_content,
+                    }
+                )
             index += len(batch_calls)
 
         self._append_tool_feedback(executed_feedback)
@@ -1146,7 +1284,9 @@ class AgentOrchestrator:
         )
         return response
 
-    def should_continue(self, state: ContextState, response: ReviewResponse | DebugResponse) -> bool:
+    def should_continue(
+        self, state: ContextState, response: ReviewResponse | DebugResponse
+    ) -> bool:
         """Decide whether another loop iteration should run."""
         has_pending_tools = (
             False
@@ -1311,8 +1451,7 @@ class AgentOrchestrator:
         if not self._tool_feedback:
             return False
         return any(
-            isinstance(item.get("result"), ToolResult)
-            and item["result"].ok
+            isinstance(item.get("result"), ToolResult) and item["result"].ok
             for item in self._tool_feedback
         )
 
@@ -1355,7 +1494,8 @@ class AgentOrchestrator:
             "has_tool_feedback": bool(self._tool_feedback),
             "pre_budget_submit_ratio": self._settings.pre_budget_submit_token_ratio,
             "pre_budget_submit_threshold": int(
-                self._settings.token_budget * self._settings.pre_budget_submit_token_ratio
+                self._settings.token_budget
+                * self._settings.pre_budget_submit_token_ratio
             ),
         }
         if plan is not None:
@@ -1462,7 +1602,7 @@ class AgentOrchestrator:
                             self._prefetch_read_args(path, diff_text),
                             ensure_ascii=True,
                         ),
-                    }
+                    },
                 }
                 for index, path in enumerate(selected_files)
             ],
@@ -1484,7 +1624,9 @@ class AgentOrchestrator:
 
     @staticmethod
     def _prefetch_read_args(path: str, diff_text: str) -> dict[str, Any]:
-        changed_lines = AgentOrchestrator._changed_new_lines_for_file(diff_text).get(path)
+        changed_lines = AgentOrchestrator._changed_new_lines_for_file(diff_text).get(
+            path
+        )
         if not changed_lines:
             return {"file_path": path, "offset": 0, "limit": 80}
         start_line = max(1, min(changed_lines) - 40)
@@ -1494,7 +1636,9 @@ class AgentOrchestrator:
     def _changed_new_lines_for_file(diff_text: str) -> dict[str, set[int]]:
         return changed_new_lines_by_file(diff_text)
 
-    def _build_review_tool_context(self, request: ReviewRequest) -> ReviewToolContext | None:
+    def _build_review_tool_context(
+        self, request: ReviewRequest
+    ) -> ReviewToolContext | None:
         diff_text = request.diff_text or ""
         if request.diff_mode and not diff_text:
             diff_text = self._context_builder.load_diff(request.repo_path)
@@ -1606,9 +1750,7 @@ class AgentOrchestrator:
         lower = message.lower()
         recommendation = "Inspect arguments and retry."
         if "not found" in lower or "outside the allowed workspace" in lower:
-            recommendation = (
-                "Run list_dir on the parent directory to verify paths, then retry with a workspace-relative path."
-            )
+            recommendation = "Run list_dir on the parent directory to verify paths, then retry with a workspace-relative path."
         elif "not a directory" in lower:
             recommendation = "Validate parent directory with list_dir before calling glob_files/grep_files."
         elif "invalid glob pattern" in lower or "invalid regex pattern" in lower:
@@ -1624,7 +1766,9 @@ class AgentOrchestrator:
     @staticmethod
     def _tool_dedup_key(tool_name: str, args: dict[str, Any]) -> str:
         try:
-            serialized = _json.dumps(args, ensure_ascii=True, sort_keys=True, default=str)
+            serialized = _json.dumps(
+                args, ensure_ascii=True, sort_keys=True, default=str
+            )
         except Exception:  # noqa: BLE001
             serialized = str(args)
         digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -1664,7 +1808,9 @@ class AgentOrchestrator:
 
     @staticmethod
     def _compute_feedback_digest(tool_call: dict[str, Any]) -> str:
-        function_block = tool_call.get("function") if isinstance(tool_call, dict) else None
+        function_block = (
+            tool_call.get("function") if isinstance(tool_call, dict) else None
+        )
         if not isinstance(function_block, dict):
             return ""
         name = str(function_block.get("name", "")).strip()
@@ -1677,7 +1823,9 @@ class AgentOrchestrator:
         else:
             parsed = args
         try:
-            serialized = _json.dumps(parsed, ensure_ascii=True, sort_keys=True, default=str)
+            serialized = _json.dumps(
+                parsed, ensure_ascii=True, sort_keys=True, default=str
+            )
         except Exception:  # noqa: BLE001
             serialized = str(parsed)
         return f"{name}:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
@@ -1689,7 +1837,9 @@ class AgentOrchestrator:
         tool_call: dict[str, Any],
         result: Any,
     ) -> dict[str, Any]:
-        function_block = tool_call.get("function") if isinstance(tool_call, dict) else {}
+        function_block = (
+            tool_call.get("function") if isinstance(tool_call, dict) else {}
+        )
         name = ""
         args_preview: Any = ""
         if isinstance(function_block, dict):
@@ -1784,7 +1934,9 @@ class AgentOrchestrator:
     def _fallback_plan(request: ReviewRequest | DebugRequest) -> AnalysisPlan:
         return AnalysisPlan(needs_tools=False, tool_calls=[])
 
-    def _record_event(self, event_type: EventType, phase: str, payload: dict[str, Any]) -> None:
+    def _record_event(
+        self, event_type: EventType, phase: str, payload: dict[str, Any]
+    ) -> None:
         if self._event_log is None:
             return
         self._event_log.record(

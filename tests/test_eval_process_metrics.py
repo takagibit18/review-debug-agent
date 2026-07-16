@@ -34,6 +34,13 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
                 "model_raw_issue_count": 4,
                 "verifier_candidate_count": 3,
                 "verifier_accepted_count": 1,
+                "raw_accepted_count": 2,
+                "raw_rejected_count": 0,
+                "raw_needs_evidence_count": 1,
+                "raw_downgraded_count": 0,
+                "deterministic_evidence_checked_count": 2,
+                "deterministic_evidence_passed_count": 1,
+                "deterministic_evidence_rejected_count": 1,
             },
         },
         {
@@ -71,6 +78,13 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
     assert metrics.verifier_rejected_count == 1
     assert metrics.verifier_needs_evidence_count == 1
     assert metrics.first_pass_accept_count == 1
+    assert metrics.raw_verifier_accepted_count == 2
+    assert metrics.raw_verifier_rejected_count == 0
+    assert metrics.raw_verifier_needs_evidence_count == 1
+    assert metrics.deterministic_evidence_checked_count == 2
+    assert metrics.deterministic_evidence_passed_count == 1
+    assert metrics.deterministic_evidence_rejected_count == 1
+    assert metrics.evidence_validation_pass_rate == 0.5
     assert metrics.required_step_count == 5
     assert metrics.completed_required_step_count == 4
     assert metrics.duplicate_tool_call_count == 1
@@ -110,6 +124,11 @@ def test_metric_summary_aggregates_process_metrics() -> None:
             evidence_bound_issue_count=2,
             verifier_accepted_count=1,
             verifier_rejected_count=1,
+            raw_verifier_accepted_count=2,
+            raw_verifier_rejected_count=0,
+            deterministic_evidence_checked_count=2,
+            deterministic_evidence_passed_count=1,
+            deterministic_evidence_rejected_count=1,
             first_pass_accept_count=1,
             required_step_count=5,
             completed_required_step_count=5,
@@ -133,6 +152,12 @@ def test_metric_summary_aggregates_process_metrics() -> None:
     assert summary.verifier_candidate_count == 2
     assert summary.verifier_accepted_count == 1
     assert summary.verifier_rejected_count == 1
+    assert summary.raw_verifier_accepted_count == 2
+    assert summary.raw_verifier_rejected_count == 0
+    assert summary.deterministic_evidence_checked_count == 2
+    assert summary.deterministic_evidence_passed_count == 1
+    assert summary.deterministic_evidence_rejected_count == 1
+    assert summary.evidence_validation_pass_rate == 0.5
     assert summary.workflow_filtered_issue_count == 1
     assert summary.final_effective_issue_count == 1
     assert summary.workflow_invalid_run_count == 1

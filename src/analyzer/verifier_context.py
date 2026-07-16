@@ -34,7 +34,7 @@ def capture_verifier_tool_evidence(
         if tool_name not in VERIFIER_CONTEXT_TOOL_NAMES:
             continue
         result = entry.get("result")
-        if hasattr(result, "model_dump"):
+        if result is not None and hasattr(result, "model_dump"):
             result_payload = result.model_dump(mode="python")
         elif isinstance(result, dict):
             result_payload = result
@@ -96,6 +96,7 @@ def build_candidate_verifier_context(
                 context,
                 "diff_hunks",
                 {
+                    "path": location.path,
                     "header": hunk.header,
                     "new_start": hunk.new_start,
                     "new_count": hunk.new_count,
@@ -149,7 +150,7 @@ def _append_matching_tool_context(
             _append_bounded(
                 context,
                 "diff_hunks",
-                {**hunk, "source": tool_name},
+                {**hunk, "path": data_path, "source": tool_name},
                 budget,
             )
         window = data.get("file_window")
@@ -294,9 +295,73 @@ def _append_bounded(
         bucket.pop()
 
 
+def location_in_candidate_context(
+    context: dict[str, Any] | None,
+    location: Any,
+) -> bool:
+    """Return whether a parsed location is covered by retained candidate context."""
+    if not context or not location.valid or not location.path or location.line is None:
+        return False
+    location_end = location.end_line or location.line
+    for key in ("diff_hunks", "file_windows", "enclosing_symbols"):
+        records = context.get(key)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if _location_overlaps_record(
+                location.path, location.line, location_end, record
+            ):
+                return True
+    symbol_contexts = context.get("symbol_contexts")
+    if not isinstance(symbol_contexts, list):
+        return False
+    for symbol_context in symbol_contexts:
+        if not isinstance(symbol_context, dict):
+            continue
+        for key in ("definitions", "references", "enclosing_symbols"):
+            records = symbol_context.get(key)
+            if not isinstance(records, list):
+                continue
+            for record in records:
+                if _location_overlaps_record(
+                    location.path, location.line, location_end, record
+                ):
+                    return True
+    return False
+
+
+def _location_overlaps_record(
+    path: str,
+    start: int,
+    end: int,
+    record: Any,
+) -> bool:
+    if not isinstance(record, dict):
+        return False
+    record_path = _normalized_path(record.get("path", ""))
+    if record_path != path:
+        return False
+    record_start = _as_int(record.get("start_line"))
+    if record_start is None:
+        record_start = _as_int(record.get("line"))
+    if record_start is None:
+        record_start = _as_int(record.get("new_start"))
+    if record_start is None:
+        return False
+    record_end = _as_int(record.get("end_line"))
+    if record_end is None and "new_count" in record:
+        count = _as_int(record.get("new_count")) or 1
+        record_end = record_start + max(0, count - 1)
+    record_end = record_end or record_start
+    return start <= record_end and record_start <= end
+
+
 def _clip_payload(value: Any, *, key: str = "") -> Any:
     if isinstance(value, dict):
-        return {str(item_key): _clip_payload(item, key=str(item_key)) for item_key, item in value.items()}
+        return {
+            str(item_key): _clip_payload(item, key=str(item_key))
+            for item_key, item in value.items()
+        }
     if isinstance(value, list):
         return [_clip_payload(item, key=key) for item in value[:20]]
     if isinstance(value, str):
@@ -310,11 +375,7 @@ def _clip_payload(value: Any, *, key: str = "") -> Any:
 def _clip_records(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    return [
-        _clip_payload(item)
-        for item in value[:10]
-        if isinstance(item, dict)
-    ]
+    return [_clip_payload(item) for item in value[:10] if isinstance(item, dict)]
 
 
 def _payload_matches_range(
@@ -358,7 +419,11 @@ def _ranges_overlap(
 
 def _entry_path(data: dict[str, Any], arguments: dict[str, Any]) -> str:
     return _normalized_path(
-        data.get("file_path") or data.get("path") or arguments.get("file_path") or arguments.get("path") or ""
+        data.get("file_path")
+        or data.get("path")
+        or arguments.get("file_path")
+        or arguments.get("path")
+        or ""
     )
 
 
@@ -394,7 +459,11 @@ def _relative_path(value: str, workspace_root: Path | None) -> str:
     if workspace_root is not None:
         try:
             path = Path(raw)
-            resolved = path.resolve() if path.is_absolute() else (workspace_root / path).resolve()
+            resolved = (
+                path.resolve()
+                if path.is_absolute()
+                else (workspace_root / path).resolve()
+            )
             return resolved.relative_to(workspace_root.resolve()).as_posix()
         except (OSError, ValueError):
             pass
