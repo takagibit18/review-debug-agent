@@ -12,7 +12,9 @@ from src.analyzer.run_summary import (
 )
 
 
-def test_runtime_run_summary_collects_publish_status_and_event_metrics(tmp_path: Path) -> None:
+def test_runtime_run_summary_collects_publish_status_and_event_metrics(
+    tmp_path: Path,
+) -> None:
     log = tmp_path / "run-1.jsonl"
     events = [
         {
@@ -74,7 +76,9 @@ def test_summarize_run_artifacts_includes_artifact_paths(tmp_path: Path) -> None
     assert artifact_summary.artifact_paths["publish_result_json"] == str(publish_json)
 
 
-def test_runtime_summary_collects_verifier_and_workflow_outcomes(tmp_path: Path) -> None:
+def test_runtime_summary_collects_verifier_and_workflow_outcomes(
+    tmp_path: Path,
+) -> None:
     log = tmp_path / "v020.jsonl"
     events = [
         {
@@ -92,7 +96,19 @@ def test_runtime_summary_collects_verifier_and_workflow_outcomes(tmp_path: Path)
                 "rejected_count": 1,
                 "needs_evidence_count": 0,
                 "downgraded_count": 1,
-                "reason_codes": ["verified", "claim_not_supported", "severity_overstated"],
+                "reason_codes": [
+                    "verified",
+                    "claim_not_supported",
+                    "severity_overstated",
+                ],
+                "raw_accepted_count": 2,
+                "raw_rejected_count": 0,
+                "raw_needs_evidence_count": 0,
+                "raw_downgraded_count": 1,
+                "raw_reason_codes": ["verified", "verified", "severity_overstated"],
+                "deterministic_evidence_checked_count": 2,
+                "deterministic_evidence_passed_count": 1,
+                "deterministic_evidence_rejected_count": 1,
             },
         },
         {
@@ -118,8 +134,45 @@ def test_runtime_summary_collects_verifier_and_workflow_outcomes(tmp_path: Path)
     assert summary.finding_rejected_count == 1
     assert summary.finding_downgraded_count == 1
     assert summary.finding_reason_codes["claim_not_supported"] == 1
+    assert summary.raw_verifier_accepted_count == 2
+    assert summary.raw_verifier_rejected_count == 0
+    assert summary.raw_finding_reason_codes["verified"] == 2
+    assert summary.deterministic_evidence_checked_count == 2
+    assert summary.deterministic_evidence_passed_count == 1
+    assert summary.deterministic_evidence_rejected_count == 1
     assert summary.workflow_enforcement == "enforce"
     assert summary.workflow_required_step_count == 5
     assert summary.workflow_completed_required_step_count == 4
     assert summary.workflow_missing_steps == ["inspect_changed_context"]
     assert summary.workflow_reprompt_count == 1
+
+
+def test_runtime_summary_backfills_raw_counts_for_legacy_events(tmp_path: Path) -> None:
+    log = tmp_path / "legacy.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "run_id": "legacy",
+                "event_type": "finding_verification_completed",
+                "phase": "verify_findings",
+                "payload": {
+                    "accepted_count": 1,
+                    "rejected_count": 1,
+                    "needs_evidence_count": 0,
+                    "downgraded_count": 0,
+                    "reason_codes": ["verified", "claim_not_supported"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = summarize_event_log(log)
+
+    assert summary.raw_verifier_accepted_count == 1
+    assert summary.raw_verifier_rejected_count == 1
+    assert summary.raw_finding_reason_codes == {
+        "verified": 1,
+        "claim_not_supported": 1,
+    }
+    assert summary.deterministic_evidence_checked_count == 0

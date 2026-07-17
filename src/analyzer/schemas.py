@@ -195,6 +195,7 @@ FindingVerificationStatus = Literal[
 ]
 FindingVerificationReason = Literal[
     "evidence_not_found",
+    "deterministic_evidence_invalid",
     "claim_not_supported",
     "not_introduced_by_diff",
     "cross_file_context_missing",

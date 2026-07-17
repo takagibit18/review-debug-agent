@@ -12,7 +12,7 @@ import tempfile
 import threading
 from pathlib import Path
 from statistics import mean, pstdev
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any
 
 from eval.schemas import (
@@ -228,13 +228,27 @@ def _ensure_git_workspace_cache(
                 ) from exc
             return cache_root
         if not (cache_root / "objects").is_dir():
-            tmp_root = cache_root.with_name(f"{cache_root.name}.tmp")
+            # Reuse a legacy interrupted staging mirror when it is valid;
+            # otherwise clone into a unique parent directory.  The parent is
+            # unique so concurrent Windows workers never share pack/index
+            # handles, while the final publish remains an atomic rename.
+            legacy_tmp = cache_root.with_name(f"{cache_root.name}.tmp")
+            stage_parent: Path | None = None
+            if (legacy_tmp / "objects").is_dir() and (legacy_tmp / "config").is_file():
+                tmp_root = legacy_tmp
+            else:
+                stage_parent = Path(
+                    tempfile.mkdtemp(
+                        prefix="workspace-cache-",
+                        suffix=".tmp",
+                        dir=workspace_cache_dir,
+                    )
+                )
+                tmp_root = stage_parent / cache_root.name
             if (tmp_root / "objects").is_dir() and (tmp_root / "config").is_file():
                 if workspace.checkout_sha:
                     _fetch_cache_ref(tmp_root, workspace.checkout_sha)
-                tmp_root.replace(cache_root)
-            elif tmp_root.exists():
-                shutil.rmtree(tmp_root)
+                _publish_cache_with_retry(tmp_root, cache_root)
             if not (cache_root / "objects").is_dir():
                 try:
                     _run_git(
@@ -246,11 +260,15 @@ def _ensure_git_workspace_cache(
                             str(tmp_root),
                         ]
                     )
-                    tmp_root.replace(cache_root)
+                    _publish_cache_with_retry(tmp_root, cache_root)
                 except Exception:
-                    if tmp_root.exists():
-                        shutil.rmtree(tmp_root)
+                    if stage_parent is not None and stage_parent.exists():
+                        _remove_path_with_retries(stage_parent)
+                    elif tmp_root.exists():
+                        _remove_path_with_retries(tmp_root)
                     raise
+            if stage_parent is not None and stage_parent.exists():
+                _remove_path_with_retries(stage_parent)
         if workspace.checkout_sha:
             _fetch_cache_ref(cache_root, workspace.checkout_sha)
         return cache_root
@@ -262,10 +280,72 @@ def _fetch_cache_ref(cache_root: Path, ref: str) -> None:
         return
     except (subprocess.CalledProcessError, RuntimeError):
         pass
-    _run_git(
-        ["fetch", "--quiet", "--depth=1", "origin", ref],
-        cwd=cache_root,
-    )
+    try:
+        _run_git(["fetch", "--quiet", "--depth=1", "origin", ref], cwd=cache_root)
+    except Exception:
+        # A failed fetch may leave .tmp_pack/.tmp_idx files behind on Windows;
+        # clean those best-effort while preserving the original fetch error.
+        _cleanup_pack_temps(cache_root)
+        raise
+
+
+def _is_windows_permission_error(exc: BaseException) -> bool:
+    return isinstance(exc, PermissionError) and getattr(exc, "winerror", None) in {
+        5,
+        32,
+    }
+
+
+def _replace_with_retries(source: Path, destination: Path, attempts: int = 4) -> None:
+    last_error: BaseException | None = None
+    for index in range(max(1, attempts)):
+        try:
+            source.replace(destination)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if not _is_windows_permission_error(exc) or index + 1 >= attempts:
+                raise
+            sleep(0.05 * (index + 1))
+    if last_error is not None:
+        raise last_error
+
+
+def _publish_cache_with_retry(source: Path, destination: Path, attempts: int = 4) -> None:
+    """Publish a completed mirror, tolerating transient Windows sharing locks."""
+    _replace_with_retries(source, destination, attempts=attempts)
+
+
+def _remove_path_with_retries(path: Path, attempts: int = 4) -> None:
+    if not path.exists():
+        return
+    last_error: BaseException | None = None
+    for index in range(max(1, attempts)):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if not _is_windows_permission_error(exc) or index + 1 >= attempts:
+                raise
+            sleep(0.05 * (index + 1))
+    if last_error is not None:
+        raise last_error
+
+
+def _cleanup_pack_temps(cache_root: Path) -> None:
+    pack_dir = cache_root / "objects" / "pack"
+    if not pack_dir.is_dir():
+        return
+    for candidate in pack_dir.iterdir():
+        if candidate.name.startswith("tmp_") or candidate.name.endswith(".tmp"):
+            try:
+                _remove_path_with_retries(candidate)
+            except OSError:
+                continue
 
 
 def _workspace_cache_key(repo_url: str) -> str:

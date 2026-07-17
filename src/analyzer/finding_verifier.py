@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from src.analyzer.context_state import ContextState
@@ -16,6 +18,10 @@ from src.analyzer.schemas import (
     ReviewRequest,
 )
 from src.models.schemas import Message
+from src.analyzer.verifier_context import (
+    build_candidate_verifier_context,
+    location_in_candidate_context,
+)
 
 RISK_SEVERITIES = {Severity.CRITICAL, Severity.WARNING}
 
@@ -24,22 +30,64 @@ Treat every candidate as untrusted. Verify that the cited code exists in the sup
 that the causal claim follows from the evidence, that the PR introduced the behavior, and
 that the suggestion is actionable. Seek counterexamples. Return exactly one structured
 verdict per candidate through submit_finding_verification. Never accept a candidate merely
-because its confidence is high."""
+because its confidence is high. Use candidate_context as candidate-scoped evidence from
+successful source reads; distinguish missing evidence from evidence that contradicts a claim."""
+
+_HIGH_CONFIDENCE_INFO_THRESHOLD = 0.85
+_CONCRETE_RISK_PATTERN = re.compile(
+    r"\b(?:bug|regression|breaking change|compatibility break|incorrect|wrong result|"
+    r"data loss|crash(?:es|ed|ing)?|security vulnerability|user-visible behavior change)\b|"
+    r"\bsilent(?:ly)?\s+(?:drop|drops|dropped|ignore|ignores|ignored|accept|accepts|accepted|"
+    r"succeed|succeeds|succeeded)\b|\b(?:raise|raises|raised)\s+(?:an?\s+)?(?:unexpected\s+)?"
+    r"exception\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class SeverityReviewResult:
+    """Bounded deterministic review of high-confidence info findings."""
+
+    report: ReviewReport
+    high_confidence_info_count: int = 0
+    reviewed_count: int = 0
+    promoted_count: int = 0
+
+
+@dataclass(frozen=True)
+class DeterministicValidationStats:
+    """Verdict-level statistics for deterministic accepted-evidence checks."""
+
+    checked_count: int = 0
+    passed_count: int = 0
+    rejected_count: int = 0
 
 
 class FindingVerifier:
     """Run one bounded, submit-only semantic verification model call."""
 
-    def __init__(self, model_client: Any) -> None:
+    def __init__(self, model_client: Any, *, context_max_chars: int = 12_000) -> None:
         self._model_client = model_client
+        self._context_max_chars = max(800, int(context_max_chars))
         self.last_call_tokens = 0
+        self.last_raw_batch = FindingVerificationBatch()
+        self.last_post_validation_batch = FindingVerificationBatch()
+        self.last_candidate_context: list[dict[str, Any]] = []
+        self.last_validation_stats = DeterministicValidationStats()
 
     async def verify(
         self,
         candidates: list[FindingCandidate],
         request: ReviewRequest,
         state: ContextState,
+        *,
+        tool_evidence: list[dict[str, Any]] | None = None,
     ) -> FindingVerificationBatch:
+        self.last_call_tokens = 0
+        self.last_raw_batch = FindingVerificationBatch()
+        self.last_post_validation_batch = FindingVerificationBatch()
+        self.last_candidate_context = []
+        self.last_validation_stats = DeterministicValidationStats()
         if not candidates:
             return FindingVerificationBatch()
         config = self._model_client.default_config.model_copy(deep=True)
@@ -56,11 +104,18 @@ class FindingVerifier:
                 "parameters": FindingVerificationBatch.model_json_schema(),
             },
         }
+        self.last_candidate_context = build_candidate_verifier_context(
+            candidates,
+            request,
+            tool_evidence or [],
+            max_chars=self._context_max_chars,
+        )
         payload = {
             "diff": request.diff_text or "",
             "goal": state.goal,
             "constraints": state.constraints,
             "candidates": [item.model_dump(mode="json") for item in candidates],
+            "candidate_context": self.last_candidate_context,
         }
         response = await self._model_client.chat(
             messages=[
@@ -72,29 +127,84 @@ class FindingVerifier:
         )
         self.last_call_tokens = response.usage.total_tokens
         batch = _parse_verification_response(response.tool_calls, response.content)
-        return validate_verifications(candidates, _complete_fail_closed(candidates, batch), request)
+        self.last_raw_batch = _complete_fail_closed(candidates, batch)
+        (
+            self.last_post_validation_batch,
+            self.last_validation_stats,
+        ) = validate_verifications_with_stats(
+            candidates,
+            self.last_raw_batch,
+            request,
+            candidate_context=self.last_candidate_context,
+        )
+        return self.last_post_validation_batch
 
 
 def validate_verifications(
     candidates: list[FindingCandidate],
     batch: FindingVerificationBatch,
     request: ReviewRequest,
+    *,
+    candidate_context: list[dict[str, Any]] | None = None,
 ) -> FindingVerificationBatch:
-    """Deterministically reject verdicts whose locations are not bound to the diff."""
+    """Deterministically reject verdicts whose locations lack trusted evidence scope."""
+    result, _ = validate_verifications_with_stats(
+        candidates,
+        batch,
+        request,
+        candidate_context=candidate_context,
+    )
+    return result
+
+
+def validate_verifications_with_stats(
+    candidates: list[FindingCandidate],
+    batch: FindingVerificationBatch,
+    request: ReviewRequest,
+    *,
+    candidate_context: list[dict[str, Any]] | None = None,
+) -> tuple[FindingVerificationBatch, DeterministicValidationStats]:
+    """Validate verdicts and report accepted-evidence check statistics."""
     from src.analyzer.schemas import FindingVerification
 
     changed = changed_new_lines_by_file(request.diff_text or "")
     by_id = {item.candidate_id: item for item in candidates}
+    contexts_by_id = {
+        str(item.get("candidate_id", "")): item
+        for item in candidate_context or []
+        if isinstance(item, dict)
+    }
     results: list[FindingVerification] = []
+    checked_count = 0
+    passed_count = 0
+    rejected_count = 0
     for verdict in batch.results:
         candidate = by_id.get(verdict.candidate_id)
         valid = candidate is not None
         if verdict.status == "accepted":
-            locations = [normalize_location(value) for value in verdict.verified_evidence]
-            valid = valid and bool(locations) and all(
-                _location_intersects_changed_lines(item, changed)
-                for item in locations
+            checked_count += 1
+            candidate_location = normalize_location(
+                candidate.issue.location if candidate is not None else ""
             )
+            locations = [
+                normalize_location(value) for value in verdict.verified_evidence
+            ]
+            context = contexts_by_id.get(verdict.candidate_id)
+            valid = (
+                valid
+                and _location_intersects_changed_lines(candidate_location, changed)
+                and bool(locations)
+                and all(item.valid and item.line is not None for item in locations)
+                and all(
+                    _location_intersects_changed_lines(item, changed)
+                    or location_in_candidate_context(context, item)
+                    for item in locations
+                )
+            )
+            if valid:
+                passed_count += 1
+            else:
+                rejected_count += 1
         elif verdict.status == "downgraded":
             valid = (
                 valid
@@ -102,15 +212,61 @@ def validate_verifications(
                 and verdict.revised_issue.severity in {Severity.INFO, Severity.STYLE}
             )
         if not valid:
-            results.append(FindingVerification(
-                candidate_id=verdict.candidate_id,
-                status="rejected",
-                reason_codes=["evidence_not_found"],
-                rationale="Deterministic evidence or downgrade validation failed.",
-            ))
+            results.append(
+                FindingVerification(
+                    candidate_id=verdict.candidate_id,
+                    status="rejected",
+                    reason_codes=["deterministic_evidence_invalid"],
+                    rationale="Deterministic evidence or downgrade validation failed.",
+                )
+            )
         else:
             results.append(verdict)
-    return FindingVerificationBatch(results=results)
+    return (
+        FindingVerificationBatch(results=results),
+        DeterministicValidationStats(
+            checked_count=checked_count,
+            passed_count=passed_count,
+            rejected_count=rejected_count,
+        ),
+    )
+
+
+def review_candidate_severities(
+    report: ReviewReport,
+    request: ReviewRequest,
+) -> SeverityReviewResult:
+    """Promote only concrete high-confidence info risks on changed lines."""
+    changed = changed_new_lines_by_file(request.diff_text or "")
+    high_confidence_info_count = 0
+    reviewed_count = 0
+    promoted_count = 0
+    issues: list[ReviewIssue] = []
+    for issue in report.issues:
+        if (
+            issue.severity != Severity.INFO
+            or issue.confidence < _HIGH_CONFIDENCE_INFO_THRESHOLD
+        ):
+            issues.append(issue)
+            continue
+        high_confidence_info_count += 1
+        location = normalize_location(issue.location)
+        if not _location_intersects_changed_lines(location, changed):
+            issues.append(issue)
+            continue
+        reviewed_count += 1
+        claim = f"{issue.evidence}\n{issue.suggestion}"
+        if not _CONCRETE_RISK_PATTERN.search(claim):
+            issues.append(issue)
+            continue
+        promoted_count += 1
+        issues.append(issue.model_copy(update={"severity": Severity.WARNING}))
+    return SeverityReviewResult(
+        report=ReviewReport(summary=report.summary, issues=issues),
+        high_confidence_info_count=high_confidence_info_count,
+        reviewed_count=reviewed_count,
+        promoted_count=promoted_count,
+    )
 
 
 def _location_intersects_changed_lines(
@@ -122,8 +278,7 @@ def _location_intersects_changed_lines(
         return False
     end_line = location.end_line or location.line
     return any(
-        line in changed[location.path]
-        for line in range(location.line, end_line + 1)
+        line in changed[location.path] for line in range(location.line, end_line + 1)
     )
 
 
