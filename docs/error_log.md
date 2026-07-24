@@ -4,6 +4,9 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-07-23 | `persistent_index` / Windows SQLite | benchmark 的第二次 cache load 报数据库仍被占用 | `with sqlite3.connect(...)` 在 Windows 上事务退出后未可靠关闭连接，后续 WAL/index 操作碰到文件锁 | 增加显式关闭的 `_sqlite_connection` context manager，并让 load/save/compatibility 检查统一使用；persistent reuse 与 incremental benchmark 恢复通过 |
+| 2026-07-23 | `prompts` / `eval.diagnostics` | Ruff 发现 planner telemetry 引用了错误作用域变量，workflow diagnostic 引用了未定义 `run_summary` | 新增 telemetry 更新块误落到相邻函数；旧 diagnostic 分支残留不可见局部名 | 把 base context telemetry 更新移回原函数，planner telemetry 只累加 Manifest 指标；diagnostic 只读取 `EvalResult.workflow_missing_steps` |
+| 2026-07-23 | benchmark artifact | A–I benchmark 完成计算后无法写入 `C:\\tmp` | 当前 Windows workspace sandbox 拒绝该路径写入 | 将 `--output` 指向仓库内已忽略的 `artifacts/v025_benchmark.json` 并用同一配置重跑成功 |
 | 2026-07-16 | `verifier_context` / `agent_loop` | Mypy 报告可空工具结果调用 `model_dump`，以及动态 verifier 返回 `Any` | 工具结果分支未显式排除 `None`；注入式 verifier 的动态方法缺少返回值收窄 | 增加非空判断，并通过 `FindingVerificationBatch.model_validate` 统一验证动态返回值；`mypy src` 恢复通过 |
 | 2026-07-16 | `tests/test_finding_verifier.py` | 候选上下文回归测试错误地被 `deterministic_evidence_invalid` 拒绝 | 测试 hunk 从新侧第 10 行开始，导致新增行实际为 11，但固定 candidate location 为第 12 行；主 changed-line 锚点门控按设计拒绝 | 将 hunk 调整为新侧第 11 行开始，使上下文行为 11、新增行为 12；定向测试恢复通过 |
 | 2026-04-16 | `eval` / sparse sandbox | Eval fixture 仅包含稀疏文件，模型按完整仓库路径调用 `grep_files`，出现 `Directory not found`，导致审查迭代消耗在无效路径探索 | 评测管线未向模型显式提供沙箱可用文件集合；system prompt 缺少“先探明目录再搜索”的引导。发现的生产侧漏洞：`AgentOrchestrator.analyze` 未接入 `project_structure`、`file_contents` 默认空、工具目录不存在报错缺少可用目录回退提示、`SYSTEM_PROMPT_REVIEW` 未约束先 `list_dir` | 已在 `eval/runner.py` 为 review/debug 请求注入 `[SANDBOX CONTEXT]` 文件列表前缀，明确仅可访问的路径并提示先验证目录；生产侧问题暂记账，后续单独修复 |

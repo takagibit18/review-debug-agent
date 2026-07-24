@@ -202,6 +202,11 @@ FindingVerificationReason = Literal[
     "suggestion_not_actionable",
     "severity_overstated",
     "duplicate_finding",
+    "observed_behavior_unsupported",
+    "causal_mechanism_unsupported",
+    "manifest_evidence_missing",
+    "low_confidence_graph_evidence",
+    "unreceived_context_claim",
     "verified",
 ]
 

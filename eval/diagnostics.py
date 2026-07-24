@@ -131,7 +131,7 @@ def _build_note(result: EvalResult, reasons: list[DiagnosticReason]) -> str:
     if "fp_negative" in reasons:
         return "Negative fixture produced effective issues."
     if "workflow_invalid" in reasons:
-        missing = result.workflow_missing_steps or run_summary.workflow_missing_steps
+        missing = result.workflow_missing_steps
         suffix = f": {', '.join(missing)}" if missing else ""
         return "Required review workflow was incomplete" + suffix + "."
     if "miss_filtered_issue" in reasons:

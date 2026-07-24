@@ -38,6 +38,14 @@ class ExpectedIssue(BaseModel):
     end_line: int | None = Field(default=None, ge=1)
     category: str = Field(default="logic")
     description: str = Field(default="")
+    root_cause_id: str = Field(
+        default="",
+        description="Optional annotation grouping symptoms into one expected root cause.",
+    )
+    repair_unit: str = Field(
+        default="",
+        description="Optional normalized minimal-repair annotation.",
+    )
 
 
 class ExpectedResult(BaseModel):
@@ -125,6 +133,25 @@ class ReviewProcessMetrics(BaseModel):
     workflow_invalid: bool = False
     workflow_missing_steps: list[str] = Field(default_factory=list)
     duplicate_tool_call_count: int = Field(default=0, ge=0)
+    structured_hypothesis_count: int = Field(default=0, ge=0)
+    evidence_complete_count: int = Field(default=0, ge=0)
+    candidate_context_tokens: int = Field(default=0, ge=0)
+    included_graph_nodes: int = Field(default=0, ge=0)
+    included_graph_paths: int = Field(default=0, ge=0)
+    discarded_graph_paths: int = Field(default=0, ge=0)
+    reviewer_tool_call_count: int = Field(default=0, ge=0)
+    unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    edge_confidence_contribution: float = Field(default=0.0, ge=0.0, le=1.0)
+    graph_build_latency_seconds: float = Field(default=0.0, ge=0.0)
+    incremental_update_latency_seconds: float = Field(default=0.0, ge=0.0)
+    persistent_cache_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    consolidator_block_count: int = Field(default=0, ge=0)
+    consolidator_average_block_size: float = Field(default=0.0, ge=0.0)
+    consolidator_proposal_count: int = Field(default=0, ge=0)
+    consolidator_accepted_cluster_count: int = Field(default=0, ge=0)
+    consolidator_rejected_cluster_count: int = Field(default=0, ge=0)
+    final_root_cause_count: int = Field(default=0, ge=0)
+    finding_inflation_ratio: float = Field(default=0.0, ge=0.0)
     event_log_status: Literal["ok", "missing", "parse_error"] = "missing"
 
     @property
@@ -164,6 +191,14 @@ class EvalResult(BaseModel):
     actual_count: int = Field(default=0, ge=0)
     matched_count: int = Field(default=0, ge=0)
     false_positive_count: int = Field(default=0, ge=0)
+    expected_root_cause_count: int = Field(default=0, ge=0)
+    matched_root_cause_count: int = Field(default=0, ge=0)
+    over_merge_count: int = Field(default=0, ge=0)
+    under_merge_count: int = Field(default=0, ge=0)
+    repair_unit_expected_count: int = Field(default=0, ge=0)
+    repair_unit_matched_count: int = Field(default=0, ge=0)
+    evidence_complete_count: int = Field(default=0, ge=0)
+    final_finding_count: int = Field(default=0, ge=0)
     latency_seconds: float = Field(default=0.0, ge=0.0)
     total_tokens: int = Field(default=0, ge=0)
     event_log_path: str | None = Field(
@@ -214,6 +249,13 @@ class MetricSummary(BaseModel):
     hit_rate_stddev: float = Field(default=0.0, ge=0.0)
     false_positive_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     mean_false_positive_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    root_cause_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
+    over_merge_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    under_merge_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    repair_unit_accuracy: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_completeness: float = Field(default=0.0, ge=0.0, le=1.0)
+    finding_inflation_ratio: float = Field(default=0.0, ge=0.0)
+    final_finding_count: int = Field(default=0, ge=0)
     sampling_k: int = Field(default=1, ge=1)
     avg_latency_seconds: float = Field(default=0.0, ge=0.0)
     p50_latency_seconds: float = Field(default=0.0, ge=0.0)
@@ -228,6 +270,21 @@ class MetricSummary(BaseModel):
     required_step_completion_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     duplicate_tool_call_rate: float = Field(default=0.0, ge=0.0)
     cost_per_accepted_finding: float = Field(default=0.0, ge=0.0)
+    avg_candidate_context_tokens: float = Field(default=0.0, ge=0.0)
+    included_graph_nodes: int = Field(default=0, ge=0)
+    included_graph_paths: int = Field(default=0, ge=0)
+    discarded_graph_paths: int = Field(default=0, ge=0)
+    reviewer_tool_call_count: int = Field(default=0, ge=0)
+    unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    edge_confidence_contribution: float = Field(default=0.0, ge=0.0, le=1.0)
+    avg_graph_build_latency_seconds: float = Field(default=0.0, ge=0.0)
+    avg_incremental_update_latency_seconds: float = Field(default=0.0, ge=0.0)
+    persistent_cache_hit_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    consolidator_block_count: int = Field(default=0, ge=0)
+    average_consolidator_block_size: float = Field(default=0.0, ge=0.0)
+    consolidator_proposal_count: int = Field(default=0, ge=0)
+    consolidator_accepted_cluster_count: int = Field(default=0, ge=0)
+    consolidator_rejected_cluster_count: int = Field(default=0, ge=0)
     model_raw_issue_count: int = Field(default=0, ge=0)
     verifier_candidate_count: int = Field(default=0, ge=0)
     verifier_accepted_count: int = Field(default=0, ge=0)
@@ -275,6 +332,7 @@ class MetricSummary(BaseModel):
         latencies = [item.latency_seconds for item in results]
         token_values = [float(item.total_tokens) for item in results]
         process = _aggregate_process_metrics(results)
+        quality = _aggregate_quality_metrics(results)
 
         return cls(
             schema_validity_rate=valid_count / len(results),
@@ -297,6 +355,7 @@ class MetricSummary(BaseModel):
             avg_total_tokens=float(mean(token_values)),
             p50_total_tokens=cls._percentile(token_values, 0.5),
             p95_total_tokens=cls._percentile(token_values, 0.95),
+            **quality,
             **process,
         )
 
@@ -319,6 +378,7 @@ class MetricSummary(BaseModel):
         latencies = [run.latency_seconds for run in all_runs]
         token_values = [float(run.total_tokens) for run in all_runs]
         process = _aggregate_process_metrics(all_runs)
+        quality = _aggregate_quality_metrics(all_runs)
 
         return cls(
             schema_validity_rate=float(mean(schema_valid_values)),
@@ -339,6 +399,7 @@ class MetricSummary(BaseModel):
             avg_total_tokens=float(mean(token_values)) if token_values else 0.0,
             p50_total_tokens=cls._percentile(token_values, 0.5),
             p95_total_tokens=cls._percentile(token_values, 0.95),
+            **quality,
             **process,
         )
 
@@ -401,6 +462,43 @@ def _aggregate_process_metrics(
     invalid_runs = sum(1 for item in results if item.process_metrics.workflow_invalid)
     duplicates = sum(item.process_metrics.duplicate_tool_call_count for item in results)
     tokens = sum(item.total_tokens for item in results)
+    context_tokens = sum(
+        item.process_metrics.candidate_context_tokens for item in results
+    )
+    included_nodes = sum(item.process_metrics.included_graph_nodes for item in results)
+    included_paths = sum(item.process_metrics.included_graph_paths for item in results)
+    discarded_paths = sum(
+        item.process_metrics.discarded_graph_paths for item in results
+    )
+    reviewer_tools = sum(
+        item.process_metrics.reviewer_tool_call_count for item in results
+    )
+    graph_latencies = [
+        item.process_metrics.graph_build_latency_seconds for item in results
+    ]
+    incremental_latencies = [
+        item.process_metrics.incremental_update_latency_seconds for item in results
+    ]
+    cache_rates = [item.process_metrics.persistent_cache_hit_rate for item in results]
+    unused_ratios = [item.process_metrics.unused_context_ratio for item in results]
+    edge_contributions = [
+        item.process_metrics.edge_confidence_contribution for item in results
+    ]
+    block_count = sum(item.process_metrics.consolidator_block_count for item in results)
+    proposal_count = sum(
+        item.process_metrics.consolidator_proposal_count for item in results
+    )
+    accepted_clusters = sum(
+        item.process_metrics.consolidator_accepted_cluster_count for item in results
+    )
+    rejected_clusters = sum(
+        item.process_metrics.consolidator_rejected_cluster_count for item in results
+    )
+    weighted_block_size = sum(
+        item.process_metrics.consolidator_average_block_size
+        * item.process_metrics.consolidator_block_count
+        for item in results
+    )
     return {
         "model_raw_issue_count": raw_issues,
         "verifier_candidate_count": verifier_candidates,
@@ -430,6 +528,59 @@ def _aggregate_process_metrics(
         "required_step_completion_rate": completed / required if required else 1.0,
         "duplicate_tool_call_rate": duplicates / candidates if candidates else 0.0,
         "cost_per_accepted_finding": tokens / accepted if accepted else 0.0,
+        "avg_candidate_context_tokens": context_tokens / len(results)
+        if results
+        else 0.0,
+        "included_graph_nodes": included_nodes,
+        "included_graph_paths": included_paths,
+        "discarded_graph_paths": discarded_paths,
+        "reviewer_tool_call_count": reviewer_tools,
+        "unused_context_ratio": float(mean(unused_ratios)) if unused_ratios else 0.0,
+        "edge_confidence_contribution": (
+            float(mean(edge_contributions)) if edge_contributions else 0.0
+        ),
+        "avg_graph_build_latency_seconds": (
+            float(mean(graph_latencies)) if graph_latencies else 0.0
+        ),
+        "avg_incremental_update_latency_seconds": (
+            float(mean(incremental_latencies)) if incremental_latencies else 0.0
+        ),
+        "persistent_cache_hit_rate": float(mean(cache_rates)) if cache_rates else 0.0,
+        "consolidator_block_count": block_count,
+        "average_consolidator_block_size": (
+            weighted_block_size / block_count if block_count else 0.0
+        ),
+        "consolidator_proposal_count": proposal_count,
+        "consolidator_accepted_cluster_count": accepted_clusters,
+        "consolidator_rejected_cluster_count": rejected_clusters,
+    }
+
+
+def _aggregate_quality_metrics(results: list[EvalResult]) -> dict[str, int | float]:
+    expected_roots = sum(item.expected_root_cause_count for item in results)
+    matched_roots = sum(item.matched_root_cause_count for item in results)
+    over_merges = sum(item.over_merge_count for item in results)
+    under_merges = sum(item.under_merge_count for item in results)
+    repair_expected = sum(item.repair_unit_expected_count for item in results)
+    repair_matched = sum(item.repair_unit_matched_count for item in results)
+    evidence_complete = sum(item.evidence_complete_count for item in results)
+    final_findings = sum(item.final_finding_count for item in results)
+    return {
+        "root_cause_coverage": (
+            matched_roots / expected_roots if expected_roots else 0.0
+        ),
+        "over_merge_rate": over_merges / final_findings if final_findings else 0.0,
+        "under_merge_rate": under_merges / expected_roots if expected_roots else 0.0,
+        "repair_unit_accuracy": (
+            repair_matched / repair_expected if repair_expected else 0.0
+        ),
+        "evidence_completeness": (
+            evidence_complete / final_findings if final_findings else 0.0
+        ),
+        "finding_inflation_ratio": (
+            final_findings / expected_roots if expected_roots else 0.0
+        ),
+        "final_finding_count": final_findings,
     }
 
 

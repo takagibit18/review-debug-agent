@@ -68,6 +68,12 @@ def extract_review_process_metrics(
             metrics.evidence_bound_issue_count = _non_negative_int(
                 payload.get("evidence_bound_count")
             )
+            metrics.structured_hypothesis_count = _non_negative_int(
+                payload.get("structured_hypothesis_count")
+            )
+            metrics.evidence_complete_count = _non_negative_int(
+                payload.get("evidence_complete_count")
+            )
         elif event_type == "finding_verification_completed":
             metrics.verifier_accepted_count = _non_negative_int(
                 payload.get("accepted_count")
@@ -135,8 +141,64 @@ def extract_review_process_metrics(
                 if isinstance(missing_steps, list)
                 else []
             )
-        elif event_type == "tool_io" and payload.get("deduplicated") is True:
-            metrics.duplicate_tool_call_count += 1
+        elif event_type == "context_plan_completed":
+            metrics.candidate_context_tokens = _non_negative_int(
+                payload.get("token_cost")
+            )
+            metrics.included_graph_nodes = _non_negative_int(
+                payload.get("included_node_count")
+            )
+            metrics.included_graph_paths = _non_negative_int(
+                payload.get("included_path_count")
+            )
+            metrics.discarded_graph_paths = _non_negative_int(
+                payload.get("discarded_path_count")
+            )
+        elif event_type == "index_lifecycle":
+            metrics.graph_build_latency_seconds = _non_negative_float(
+                payload.get("build_latency_seconds")
+            )
+            metrics.incremental_update_latency_seconds = _non_negative_float(
+                payload.get("incremental_update_latency_seconds")
+            )
+            metrics.persistent_cache_hit_rate = _bounded_ratio(
+                payload.get("cache_hit_rate")
+            )
+        elif event_type == "root_cause_consolidation_completed":
+            metrics.consolidator_block_count = _non_negative_int(
+                payload.get("block_count")
+            )
+            metrics.consolidator_average_block_size = _non_negative_float(
+                payload.get("average_block_size")
+            )
+            metrics.consolidator_proposal_count = _non_negative_int(
+                payload.get("proposal_count")
+            )
+            metrics.consolidator_accepted_cluster_count = _non_negative_int(
+                payload.get("accepted_cluster_count")
+            )
+            metrics.consolidator_rejected_cluster_count = _non_negative_int(
+                payload.get("rejected_cluster_count")
+            )
+            metrics.final_root_cause_count = _non_negative_int(
+                payload.get("final_root_cause_count")
+            )
+            metrics.finding_inflation_ratio = _non_negative_float(
+                payload.get("finding_inflation_ratio")
+            )
+            metrics.unused_context_ratio = _bounded_ratio(
+                payload.get("unused_context_ratio")
+            )
+            metrics.edge_confidence_contribution = _bounded_ratio(
+                payload.get("edge_confidence_contribution")
+            )
+            metrics.evidence_complete_count = _non_negative_int(
+                payload.get("evidence_complete_count", metrics.evidence_complete_count)
+            )
+        elif event_type == "tool_io":
+            metrics.reviewer_tool_call_count += 1
+            if payload.get("deduplicated") is True:
+                metrics.duplicate_tool_call_count += 1
     return metrics
 
 
@@ -145,3 +207,14 @@ def _non_negative_int(value: object) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _non_negative_float(value: object) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _bounded_ratio(value: object) -> float:
+    return min(1.0, _non_negative_float(value))

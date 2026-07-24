@@ -62,6 +62,7 @@ def build_candidate_verifier_context(
     tool_evidence: list[dict[str, Any]],
     *,
     max_chars: int = 12_000,
+    context_manifests: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build bounded hunk/window/symbol evidence associated with each candidate."""
     if not candidates:
@@ -78,12 +79,33 @@ def build_candidate_verifier_context(
             "file_windows": [],
             "enclosing_symbols": [],
             "symbol_contexts": [],
+            "context_manifest_id": "",
+            "included_spans": [],
+            "included_graph_paths": [],
+            "excluded_low_confidence_paths": [],
         }
         if not location.valid or not location.path:
             contexts.append(context)
             continue
         start = location.line
         end = location.end_line or start
+
+        manifest = _select_context_manifest(
+            candidate, context_manifests or [], location.path, start, end
+        )
+        if manifest is not None:
+            context["context_manifest_id"] = str(manifest.get("candidate_id", ""))
+            for span in manifest.get("included_spans", []):
+                if isinstance(span, dict):
+                    _append_bounded(context, "included_spans", span, budget)
+            for path in manifest.get("included_graph_paths", []):
+                if isinstance(path, dict):
+                    _append_bounded(context, "included_graph_paths", path, budget)
+            for path in manifest.get("excluded_low_confidence_paths", []):
+                if isinstance(path, dict):
+                    _append_bounded(
+                        context, "excluded_low_confidence_paths", path, budget
+                    )
 
         for hunk in hunks_by_file.get(location.path, []):
             if start is not None and not _lines_overlap(
@@ -303,6 +325,13 @@ def location_in_candidate_context(
     if not context or not location.valid or not location.path or location.line is None:
         return False
     location_end = location.end_line or location.line
+    spans = context.get("included_spans")
+    if isinstance(spans, list):
+        for span in spans:
+            if _location_overlaps_record(
+                location.path, location.line, location_end, span
+            ):
+                return True
     for key in ("diff_hunks", "file_windows", "enclosing_symbols"):
         records = context.get(key)
         if not isinstance(records, list):
@@ -330,6 +359,97 @@ def location_in_candidate_context(
     return False
 
 
+def provenance_in_candidate_context(
+    context: dict[str, Any] | None,
+    evidence: Any,
+    *,
+    min_edge_confidence: float = 0.65,
+) -> bool:
+    """Validate manifest id, span hash, and any graph-edge eligibility."""
+
+    if context is None:
+        return False
+    manifest_id = str(context.get("context_manifest_id", ""))
+    evidence_manifest = str(getattr(evidence, "context_manifest_id", ""))
+    if not manifest_id or evidence_manifest != manifest_id:
+        return False
+    file = _normalized_path(getattr(evidence, "file", ""))
+    line = _as_int(getattr(evidence, "line", None))
+    end_line = _as_int(getattr(evidence, "end_line", None)) or line
+    digest = str(getattr(evidence, "context_hash", ""))
+    if not file or line is None or not digest:
+        return False
+    spans = context.get("included_spans")
+    matching_span = False
+    if isinstance(spans, list):
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            if str(span.get("context_hash", "")) != digest:
+                continue
+            if _location_overlaps_record(file, line, end_line or line, span):
+                matching_span = True
+                break
+    if not matching_span:
+        return False
+    edge_kind = str(getattr(evidence, "edge_kind", ""))
+    if not edge_kind:
+        return True
+    edge_confidence = getattr(evidence, "edge_confidence", None)
+    eligibility = str(getattr(evidence, "evidence_eligibility", ""))
+    resolver = str(getattr(evidence, "resolver", ""))
+    if (
+        edge_confidence is None
+        or float(edge_confidence) < min_edge_confidence
+        or eligibility != "strong"
+        or not resolver
+    ):
+        return False
+    graph_paths = context.get("included_graph_paths")
+    if not isinstance(graph_paths, list):
+        return False
+    for path in graph_paths:
+        if not isinstance(path, dict) or path.get("evidence_eligibility") != "strong":
+            continue
+        for edge in path.get("edges", []):
+            if not isinstance(edge, dict):
+                continue
+            if (
+                str(edge.get("kind", "")) == edge_kind
+                and str(edge.get("resolver", "")) == resolver
+                and float(edge.get("confidence", 0.0) or 0.0) >= min_edge_confidence
+                and edge.get("evidence_eligibility") == "strong"
+            ):
+                return True
+    return False
+
+
+def _select_context_manifest(
+    candidate: FindingCandidate,
+    manifests: list[dict[str, Any]],
+    path: str,
+    start: int | None,
+    end: int | None,
+) -> dict[str, Any] | None:
+    requested = candidate.issue.context_manifest_id
+    if requested:
+        for manifest in manifests:
+            if str(manifest.get("candidate_id", "")) == requested:
+                return manifest
+    for manifest in manifests:
+        anchor = manifest.get("changed_anchor")
+        if (
+            not isinstance(anchor, dict)
+            or _normalized_path(anchor.get("file", "")) != path
+        ):
+            continue
+        anchor_start = _as_int(anchor.get("line"))
+        anchor_end = _as_int(anchor.get("end_line")) or anchor_start
+        if _ranges_overlap(start, end, anchor_start, anchor_end):
+            return manifest
+    return None
+
+
 def _location_overlaps_record(
     path: str,
     start: int,
@@ -338,7 +458,7 @@ def _location_overlaps_record(
 ) -> bool:
     if not isinstance(record, dict):
         return False
-    record_path = _normalized_path(record.get("path", ""))
+    record_path = _normalized_path(record.get("path") or record.get("file", ""))
     if record_path != path:
         return False
     record_start = _as_int(record.get("start_line"))

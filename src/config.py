@@ -30,6 +30,7 @@ ReviewWorkflowEnforcement = Literal["off", "warn", "enforce"]
 ExecuteBackend = Literal["subprocess", "docker"]
 GitHubAuthMode = Literal["token", "app"]
 EvalGitSslBackend = Literal["system", "openssl", "schannel"]
+RelationGraphResolverMode = Literal["ast", "resolver", "lsp"]
 
 _DEFAULT_EXECUTE_ALLOWED_COMMANDS: tuple[str, ...] = (
     "python",
@@ -64,9 +65,7 @@ def _parse_optional_positive_int_env(name: str) -> int | None:
 def _parse_allowed_commands(raw: str | None) -> tuple[str, ...]:
     if raw is None or not raw.strip():
         return _DEFAULT_EXECUTE_ALLOWED_COMMANDS
-    parts = tuple(
-        item.strip() for item in raw.split(",") if item.strip()
-    )
+    parts = tuple(item.strip() for item in raw.split(",") if item.strip())
     return parts or _DEFAULT_EXECUTE_ALLOWED_COMMANDS
 
 
@@ -202,20 +201,24 @@ class Settings(BaseModel):
         description="Max number of files loaded into file_contents context.",
     )
     file_context_max_chars_per_file: int = Field(
-        default_factory=lambda: int(os.getenv("FILE_CONTEXT_MAX_CHARS_PER_FILE", "12000")),
+        default_factory=lambda: int(
+            os.getenv("FILE_CONTEXT_MAX_CHARS_PER_FILE", "12000")
+        ),
         ge=100,
         description="Max chars loaded per file for file_contents context.",
     )
     file_context_max_chars_total: int = Field(
-        default_factory=lambda: int(os.getenv("FILE_CONTEXT_MAX_CHARS_TOTAL", "120000")),
+        default_factory=lambda: int(
+            os.getenv("FILE_CONTEXT_MAX_CHARS_TOTAL", "120000")
+        ),
         ge=1000,
         description="Max aggregate chars loaded across file_contents context.",
     )
     context_summary_enabled: bool = Field(
-        default_factory=lambda: os.getenv(
-            "CONTEXT_SUMMARY_ENABLED", "true"
-        ).strip().lower()
-        in {"1", "true", "yes"},
+        default_factory=lambda: (
+            os.getenv("CONTEXT_SUMMARY_ENABLED", "true").strip().lower()
+            in {"1", "true", "yes"}
+        ),
         description="Enable second-layer LLM summarization for overflowed context parts",
     )
     summary_max_tokens_per_part: int = Field(
@@ -252,6 +255,84 @@ class Settings(BaseModel):
         ge=0,
         le=1,
     )
+    root_cause_consolidation_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env(
+            "ROOT_CAUSE_CONSOLIDATION_ENABLED", True
+        ),
+        description="Consolidate verified hypotheses into independent repair units.",
+    )
+    root_cause_consolidation_max_block_size: int = Field(
+        default_factory=lambda: int(
+            os.getenv("ROOT_CAUSE_CONSOLIDATION_MAX_BLOCK_SIZE", "16")
+        ),
+        ge=2,
+        le=100,
+    )
+    root_cause_consolidation_conservative_mode: bool = Field(
+        default_factory=lambda: _parse_bool_env(
+            "ROOT_CAUSE_CONSOLIDATION_CONSERVATIVE_MODE", True
+        ),
+        description="Require complete-link cluster compatibility and explicit yes counterfactuals.",
+    )
+    root_cause_consolidation_extra_retrieval_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env(
+            "ROOT_CAUSE_CONSOLIDATION_EXTRA_RETRIEVAL_ENABLED", False
+        ),
+    )
+    relation_graph_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env("RELATION_GRAPH_ENABLED", True),
+    )
+    relation_graph_persistence_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env(
+            "RELATION_GRAPH_PERSISTENCE_ENABLED", True
+        ),
+    )
+    relation_graph_index_path: str = Field(
+        default_factory=lambda: os.getenv(
+            "RELATION_GRAPH_INDEX_PATH", ".mergewarden/relation-index.sqlite3"
+        ).strip(),
+        min_length=1,
+    )
+    relation_graph_max_depth: int = Field(
+        default_factory=lambda: int(os.getenv("RELATION_GRAPH_MAX_DEPTH", "2")),
+        ge=0,
+        le=6,
+    )
+    relation_graph_max_nodes: int = Field(
+        default_factory=lambda: int(os.getenv("RELATION_GRAPH_MAX_NODES", "40")),
+        ge=1,
+        le=500,
+    )
+    relation_graph_max_context_tokens: int = Field(
+        default_factory=lambda: int(
+            os.getenv("RELATION_GRAPH_MAX_CONTEXT_TOKENS", "4000")
+        ),
+        ge=128,
+        le=64000,
+    )
+    relation_graph_min_evidence_confidence: float = Field(
+        default_factory=lambda: float(
+            os.getenv("RELATION_GRAPH_MIN_EVIDENCE_CONFIDENCE", "0.65")
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    relation_graph_lsp_enrichment_enabled: bool = Field(
+        default_factory=lambda: _parse_bool_env(
+            "RELATION_GRAPH_LSP_ENRICHMENT_ENABLED", False
+        ),
+    )
+    relation_graph_resolver_mode: RelationGraphResolverMode = Field(
+        default_factory=lambda: cast(
+            RelationGraphResolverMode,
+            os.getenv("RELATION_GRAPH_RESOLVER_MODE", "ast").strip().lower(),
+        ),
+    )
+    relation_graph_max_files: int = Field(
+        default_factory=lambda: int(os.getenv("RELATION_GRAPH_MAX_FILES", "5000")),
+        ge=1,
+        le=100000,
+    )
     review_workflow_enforcement: ReviewWorkflowEnforcement = Field(
         default_factory=lambda: cast(
             ReviewWorkflowEnforcement,
@@ -271,17 +352,23 @@ class Settings(BaseModel):
         description="Hard wall-clock timeout for one orchestrator tool call.",
     )
     pre_budget_submit_token_ratio: float = Field(
-        default_factory=lambda: float(os.getenv("PRE_BUDGET_SUBMIT_TOKEN_RATIO", "0.40")),
+        default_factory=lambda: float(
+            os.getenv("PRE_BUDGET_SUBMIT_TOKEN_RATIO", "0.40")
+        ),
         ge=0.1,
         le=0.9,
         description="Ratio of token_budget at which a pre-budget submit-only call triggers when useful tool feedback exists.",
     )
     review_diff_first_changed_files: bool = Field(
-        default_factory=lambda: _parse_bool_env("REVIEW_DIFF_FIRST_CHANGED_FILES", False),
+        default_factory=lambda: _parse_bool_env(
+            "REVIEW_DIFF_FIRST_CHANGED_FILES", False
+        ),
         description="Read changed diff files before the first review model call for A/B eval runs.",
     )
     review_diff_first_changed_files_max: int = Field(
-        default_factory=lambda: int(os.getenv("REVIEW_DIFF_FIRST_CHANGED_FILES_MAX", "4")),
+        default_factory=lambda: int(
+            os.getenv("REVIEW_DIFF_FIRST_CHANGED_FILES_MAX", "4")
+        ),
         ge=1,
         le=20,
         description="Maximum number of changed diff files to pre-read before the first review model call.",
@@ -290,16 +377,18 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("EVENT_LOG_DIR", ".mergewarden/logs"),
         min_length=1,
     )
-    agent_trace_detail: TraceDetailMode = Field(default_factory=_default_agent_trace_detail)
+    agent_trace_detail: TraceDetailMode = Field(
+        default_factory=_default_agent_trace_detail
+    )
     agent_trace_max_chars: int = Field(
         default_factory=lambda: int(os.getenv("AGENT_TRACE_MAX_CHARS", "1200")),
         ge=64,
     )
     agent_trace_log_tool_body: bool = Field(
-        default_factory=lambda: os.getenv("AGENT_TRACE_LOG_TOOL_BODY", "false")
-        .strip()
-        .lower()
-        in {"1", "true", "yes"},
+        default_factory=lambda: (
+            os.getenv("AGENT_TRACE_LOG_TOOL_BODY", "false").strip().lower()
+            in {"1", "true", "yes"}
+        ),
     )
     eval_temperature: float = Field(
         default_factory=lambda: float(os.getenv("EVAL_TEMPERATURE", "0.0")),
@@ -325,10 +414,12 @@ class Settings(BaseModel):
         description="Per-command TLS backend for Eval Git operations.",
     )
     eval_workspace_cache_dir: str = Field(
-        default_factory=lambda: os.getenv(
-            "EVAL_WORKSPACE_CACHE_DIR", "eval/outputs/workspace_cache"
-        ).strip()
-        or "eval/outputs/workspace_cache",
+        default_factory=lambda: (
+            os.getenv(
+                "EVAL_WORKSPACE_CACHE_DIR", "eval/outputs/workspace_cache"
+            ).strip()
+            or "eval/outputs/workspace_cache"
+        ),
         min_length=1,
         description="Root directory for reusable Eval Git workspace mirrors.",
     )
@@ -537,6 +628,8 @@ class Settings(BaseModel):
     def _normalize_budget_relationships(self) -> "Settings":
         if self.token_hard_budget < self.token_budget:
             self.token_hard_budget = self.token_budget
+        if self.relation_graph_lsp_enrichment_enabled:
+            self.relation_graph_resolver_mode = "lsp"
         return self
 
     @field_validator("openai_base_url", mode="before")
@@ -558,6 +651,14 @@ class Settings(BaseModel):
             return ".mergewarden/logs"
         raw = str(value).strip()
         return raw or ".mergewarden/logs"
+
+    @field_validator("relation_graph_index_path", mode="before")
+    @classmethod
+    def _validate_relation_graph_index_path(cls, value: object) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("RELATION_GRAPH_INDEX_PATH must not be empty")
+        return raw
 
     @field_validator("execute_backend", mode="before")
     @classmethod

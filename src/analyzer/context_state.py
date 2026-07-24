@@ -7,6 +7,8 @@ make informed decisions at each phase.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -49,4 +51,12 @@ class ContextState(BaseModel):
     )
     errors: list[ErrorDetail] = Field(
         default_factory=list, description="Errors discovered so far"
+    )
+    candidate_context_manifests: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Budgeted context manifests that are actually sent to the reviewer.",
+    )
+    relation_graph_summary: dict[str, object] = Field(
+        default_factory=dict,
+        description="Non-source telemetry for the change-centred code graph/index.",
     )

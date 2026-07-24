@@ -98,15 +98,16 @@ def fingerprint_issue(issue: ReviewIssue) -> str:
         else issue.location.replace("\\", "/")
     )
     line = str(parsed.line or "")
-    payload = "\n".join(
-        [
-            path.strip().lower(),
-            line,
-            issue.severity.value,
-            _normalize_text(issue.evidence),
-            _normalize_text(issue.suggestion),
-        ]
-    )
+    parts = [
+        path.strip().lower(),
+        line,
+        issue.severity.value,
+        _normalize_text(issue.evidence),
+        _normalize_text(issue.suggestion),
+    ]
+    if issue.root_cause_id:
+        parts.append(issue.root_cause_id)
+    payload = "\n".join(parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -139,10 +140,22 @@ def _inline_line_for_location(
 
 
 def _comment_body(issue: ReviewIssue) -> str:
-    return (
+    body = (
         f"**{issue.severity.value.upper()}** confidence={issue.confidence:.2f}\n\n"
         f"Evidence: {issue.evidence}\n\nSuggestion: {issue.suggestion}"
     )
+    if issue.root_cause_id:
+        body += f"\n\nRoot cause: `{issue.root_cause_id}`"
+    if issue.causal_mechanism:
+        body += f"\n\nCausal mechanism: {issue.causal_mechanism}"
+    if issue.violated_invariant:
+        body += f"\n\nViolated invariant: {issue.violated_invariant}"
+    if issue.related_locations:
+        body += "\n\nRelated locations: " + ", ".join(
+            f"`{location.location}` ({location.role})"
+            for location in issue.related_locations
+        )
+    return body
 
 
 def _check_summary(

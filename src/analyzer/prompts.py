@@ -25,7 +25,11 @@ SYSTEM_PROMPT_REVIEW = (
     "You are a senior code reviewer. Analyze the provided diff/files and return structured, "
     "actionable findings. The final answer must be submitted via the submit_review tool. "
     "Use only these severity values: critical, warning, info, style. "
-    "Each issue must include severity, location, evidence, suggestion, and confidence between 0 and 1. "
+    "Each issue is a structured finding hypothesis using schema_version 2.0. Include the legacy "
+    "severity, location, evidence, suggestion, and confidence fields plus finding_id, primary_anchor, "
+    "related_locations, observed_behavior, causal_mechanism, violated_invariant, repair_intent, "
+    "trigger, impact, cause_evidence, contract_evidence, trigger_evidence, impact_evidence, and "
+    "context_manifest_id. Never invent or emit root_cause_id; only the later consolidator assigns it. "
     "Location must be canonical: path[:line[-end_line]], using repo-relative forward-slash paths. "
     "Do not use free-form natural language for location. "
     "Evidence must cite the concrete changed diff lines or hunk that support the claim. "
@@ -43,12 +47,20 @@ SYSTEM_PROMPT_REVIEW = (
     "and error exposure semantics. Tests can show intent, but if users receive changed "
     "behavior without a user-visible warning or explicit documentation, report at least "
     "a warning with concrete changed-line evidence. "
-    "Report one issue per independent root cause. If a downstream symptom, cache/keying "
-    "effect, or behavioral consequence comes from the same defect, include it as evidence "
-    "or suggestion in the same issue instead of creating another warning. "
+    "First enumerate concrete abnormal observations. Then decide whether each observation is a "
+    "trigger, symptom, or impact of the same causal mechanism. Within this candidate call, output "
+    "one hypothesis per independent minimal repair unit. A local pre-merge is allowed only when the "
+    "observations share the causal mechanism, violated invariant, and repair action+targets+boundary. "
+    "If a downstream symptom, cache/keying effect, or behavioral consequence comes from the same "
+    "defect, preserve it as role-specific evidence or a related location in that hypothesis. "
+    "When uncertain, keep hypotheses separate. Never merge merely because observations are in the "
+    "same module, function, call chain, graph community, or use similar wording. "
     "Do not promote consequences of a hypothetical fix into a separate issue; keep them "
     "inside the suggestion unless the current diff already creates that independent risk. "
-    "When you need a changed hunk plus surrounding source, prefer get_changed_context. "
+    "Evidence may cite only code present in the supplied candidate_context_manifests or later successful "
+    "tool results. Copy the manifest id and exact context_hash into each evidence provenance entry. "
+    "A graph edge is navigation context, not proof of runtime identity; exploratory/low-confidence edges "
+    "cannot alone support a warning. When you need a changed hunk plus surrounding source, prefer get_changed_context. "
     "When you need symbol definitions, references, field initialization, or constructor "
     "assignment evidence, use find_symbol_context. "
     "Before submitting warning or critical findings, if tool rounds remain, call "
@@ -138,6 +150,7 @@ def build_review_messages(
         selected = all_parts
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
+    _populate_planner_telemetry(telemetry_sink, context)
     return [
         Message(role="system", content=SYSTEM_PROMPT_REVIEW),
         Message(
@@ -181,6 +194,7 @@ async def build_review_messages_async(
         selected = cb.truncate_context(all_parts, prompt_token_budget)
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
+    _populate_planner_telemetry(telemetry_sink, context)
     return [
         Message(role="system", content=SYSTEM_PROMPT_REVIEW),
         Message(
@@ -289,9 +303,38 @@ def _populate_context_telemetry(
             "selected": _measure_context_parts(builder, selected),
             "dropped_part_count": dropped_count,
             "summarized_part_count": len(
-                [part for part in selected if str(part.label).startswith(SUMMARY_LABEL_PREFIX)]
+                [
+                    part
+                    for part in selected
+                    if str(part.label).startswith(SUMMARY_LABEL_PREFIX)
+                ]
             ),
         }
+    )
+
+
+def _populate_planner_telemetry(
+    sink: dict[str, Any] | None,
+    context: ContextState,
+) -> None:
+    if sink is None:
+        return
+    manifests = context.candidate_context_manifests
+    sink["candidate_context_manifest_count"] = len(manifests)
+    sink["candidate_context_token_cost"] = sum(
+        int(item.get("token_cost", 0) or 0) for item in manifests
+    )
+    sink["candidate_context_graph_path_count"] = sum(
+        len(item.get("included_graph_paths", []))
+        for item in manifests
+        if isinstance(item.get("included_graph_paths", []), list)
+    )
+    sink["candidate_context_discarded_path_count"] = sum(
+        len(item.get("discarded_paths", []))
+        + len(item.get("excluded_low_confidence_paths", []))
+        for item in manifests
+        if isinstance(item.get("discarded_paths", []), list)
+        and isinstance(item.get("excluded_low_confidence_paths", []), list)
     )
 
 

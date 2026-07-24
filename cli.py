@@ -14,7 +14,12 @@ import click
 from src.analyzer.output_formatter import ReviewIssue, triage_review_report
 from src.analyzer.run_summary import PublishStatus, summarize_run_artifacts
 from src import __version__
-from src.analyzer.schemas import DebugRequest, DebugResponse, ReviewRequest, ReviewResponse
+from src.analyzer.schemas import (
+    DebugRequest,
+    DebugResponse,
+    ReviewRequest,
+    ReviewResponse,
+)
 from src.analyzer.review_failures import find_blocking_review_error
 from src.config import get_settings
 from src.integrations.github_adapter import build_github_advisory_payload
@@ -72,9 +77,7 @@ def _render_review_response(response: ReviewResponse, verbose: bool) -> None:
     click.echo("Immediate attention: " + ("yes" if triage.must_fix_critical else "no"))
     click.echo(f"Must-fix critical bugs: {len(triage.must_fix_critical)}")
     click.echo(f"Other bug findings: {len(triage.other_bug_findings)}")
-    click.echo(
-        f"Optimization suggestions: {len(triage.optimization_suggestions)}"
-    )
+    click.echo(f"Optimization suggestions: {len(triage.optimization_suggestions)}")
     click.echo(f"Tracked files: {len(response.context.current_files)}")
     if triage.must_fix_critical:
         click.secho("Must-Fix Critical Bugs:", fg="red", bold=True)
@@ -100,6 +103,13 @@ def _render_review_issue(issue: ReviewIssue, index: int) -> None:
     )
     click.echo(f"   Evidence: {issue.evidence}")
     click.echo(f"   Suggested fix: {issue.suggestion}")
+    if issue.root_cause_id:
+        click.echo(f"   Root cause: {issue.root_cause_id}")
+    if issue.related_locations:
+        click.echo(
+            "   Related: "
+            + ", ".join(location.location for location in issue.related_locations)
+        )
 
 
 def _render_debug_response(response: DebugResponse, verbose: bool) -> None:
@@ -173,7 +183,9 @@ def review(
     orchestrator = AgentOrchestrator(permission_mode=ctx.obj["permission_mode"])
     response = _run_async_command(orchestrator.run_review(request), "review")
     if output_json:
-        Path(output_json).write_text(response.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        Path(output_json).write_text(
+            response.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
         click.echo(f"Review response saved to: {Path(output_json).as_posix()}")
     if summary_json:
         event_log_path = _resolve_event_log_path(path, response.run_id)
@@ -183,12 +195,16 @@ def review(
             response_json_path=output_json,
             publish_status="not_requested",
         )
-        Path(summary_json).write_text(summary.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        Path(summary_json).write_text(
+            summary.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
         click.echo(f"Run summary saved to: {Path(summary_json).as_posix()}")
     _render_review_response(response, ctx.obj["verbose"])
     blocking_error = find_blocking_review_error(response)
     if blocking_error:
-        raise click.ClickException(f"review produced no trusted result: {blocking_error}")
+        raise click.ClickException(
+            f"review produced no trusted result: {blocking_error}"
+        )
 
 
 @main.command()
@@ -296,7 +312,9 @@ def _write_publish_run_summary(
                 event_log = artifact_paths.get("event_log")
                 advisory_json = artifact_paths.get("advisory_json")
                 existing_event_log_path = str(event_log) if event_log else None
-                existing_advisory_json_path = str(advisory_json) if advisory_json else None
+                existing_advisory_json_path = (
+                    str(advisory_json) if advisory_json else None
+                )
         except json.JSONDecodeError:
             existing_event_log_path = None
             existing_advisory_json_path = None
@@ -354,7 +372,11 @@ def platform_worker(once: bool, poll_interval: float | None) -> None:
         )
         if once:
             processed = worker.run_once()
-            click.echo("Processed one platform run." if processed else "No queued platform runs.")
+            click.echo(
+                "Processed one platform run."
+                if processed
+                else "No queued platform runs."
+            )
             return
         click.echo(
             "Starting platform worker "
@@ -434,7 +456,9 @@ def github_advisory_publish(
         Path(response_json).read_text(encoding="utf-8")
     )
     changed_lines = _load_changed_lines(Path(changed_lines_json))
-    effective_dry_run = get_settings().github_advisory_dry_run if dry_run is None else dry_run
+    effective_dry_run = (
+        get_settings().github_advisory_dry_run if dry_run is None else dry_run
+    )
     request = GitHubPublishRequest(
         owner_repo=owner_repo,
         pr_number=pr_number,
@@ -460,7 +484,9 @@ def github_advisory_publish(
     publish_status = _publish_status_from_result(result)
     if output_json:
         Path(output_json).write_text(output + "\n", encoding="utf-8")
-        click.echo(f"GitHub advisory publish result saved to: {Path(output_json).as_posix()}")
+        click.echo(
+            f"GitHub advisory publish result saved to: {Path(output_json).as_posix()}"
+        )
         _write_publish_run_summary(
             summary_json=summary_json,
             response=response,
@@ -482,10 +508,14 @@ def github_advisory_publish(
 class _DryRunGithubClient:
     """Client placeholder; dry-runs never call network methods."""
 
-    async def list_review_comments(self, owner_repo: str, pr_number: int) -> list[dict[str, Any]]:
+    async def list_review_comments(
+        self, owner_repo: str, pr_number: int
+    ) -> list[dict[str, Any]]:
         raise RuntimeError("dry-run should not list GitHub comments")
 
-    async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def create_check_run(
+        self, owner_repo: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         raise RuntimeError("dry-run should not create GitHub check runs")
 
     async def create_review_comment(

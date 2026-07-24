@@ -52,12 +52,44 @@ def render_report(
     summary.add_row("Mean Hit Rate", f"{report.metrics.mean_hit_rate:.2%}")
     summary.add_row("Hit Rate Stddev", f"{report.metrics.hit_rate_stddev:.2%}")
     summary.add_row("False Positive Rate", f"{report.metrics.false_positive_rate:.2%}")
-    summary.add_row("Mean False Positive Rate", f"{report.metrics.mean_false_positive_rate:.2%}")
+    summary.add_row(
+        "Mean False Positive Rate", f"{report.metrics.mean_false_positive_rate:.2%}"
+    )
+    summary.add_row("Root-Cause Coverage", f"{report.metrics.root_cause_coverage:.2%}")
+    summary.add_row("Over-Merge Rate", f"{report.metrics.over_merge_rate:.2%}")
+    summary.add_row("Under-Merge Rate", f"{report.metrics.under_merge_rate:.2%}")
+    summary.add_row(
+        "Repair-Unit Accuracy", f"{report.metrics.repair_unit_accuracy:.2%}"
+    )
+    summary.add_row(
+        "Evidence Completeness", f"{report.metrics.evidence_completeness:.2%}"
+    )
+    summary.add_row(
+        "Finding Inflation Ratio", f"{report.metrics.finding_inflation_ratio:.3f}"
+    )
+    summary.add_row("Final Finding Count", str(report.metrics.final_finding_count))
+    summary.add_row(
+        "Avg Candidate Tokens", f"{report.metrics.avg_candidate_context_tokens:.1f}"
+    )
+    summary.add_row(
+        "Graph Paths Included/Discarded",
+        f"{report.metrics.included_graph_paths}/{report.metrics.discarded_graph_paths}",
+    )
+    summary.add_row(
+        "Persistent Cache Hit Rate", f"{report.metrics.persistent_cache_hit_rate:.2%}"
+    )
+    summary.add_row("Consolidator Blocks", str(report.metrics.consolidator_block_count))
     summary.add_row("Sampling K", str(report.metrics.sampling_k))
     summary.add_row("Avg Latency (s)", f"{report.metrics.avg_latency_seconds:.3f}")
-    summary.add_row("P50/P95 Latency (s)", f"{report.metrics.p50_latency_seconds:.3f}/{report.metrics.p95_latency_seconds:.3f}")
+    summary.add_row(
+        "P50/P95 Latency (s)",
+        f"{report.metrics.p50_latency_seconds:.3f}/{report.metrics.p95_latency_seconds:.3f}",
+    )
     summary.add_row("Avg Tokens", f"{report.metrics.avg_total_tokens:.1f}")
-    summary.add_row("P50/P95 Tokens", f"{report.metrics.p50_total_tokens:.1f}/{report.metrics.p95_total_tokens:.1f}")
+    summary.add_row(
+        "P50/P95 Tokens",
+        f"{report.metrics.p50_total_tokens:.1f}/{report.metrics.p95_total_tokens:.1f}",
+    )
     ui.print(summary)
 
     detail = Table(title="Fixture Details")
@@ -112,4 +144,3 @@ def render_report(
                 item.note,
             )
         ui.print(diag)
-
