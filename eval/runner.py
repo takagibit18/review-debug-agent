@@ -137,19 +137,21 @@ def _checkout_git_workspace(
     if target_root.exists():
         shutil.rmtree(target_root)
     cache_root = (
-        _ensure_git_workspace_cache(
-            workspace, workspace_cache_dir, offline=offline
-        )
+        _ensure_git_workspace_cache(workspace, workspace_cache_dir, offline=offline)
         if workspace_cache_dir is not None
         else None
     )
     if cache_root is not None:
         try:
-            _run_git(["clone", "--quiet", "--shared", str(cache_root), str(target_root)])
+            _run_git(
+                ["clone", "--quiet", "--shared", str(cache_root), str(target_root)]
+            )
             # A shared clone only inherits object alternates.  It does not inherit
             # the cache's promisor-remote configuration, so filtered cache entries
             # cannot lazily retrieve their trees/blobs during checkout.
-            _run_git(["remote", "set-url", "origin", workspace.repo_url], cwd=target_root)
+            _run_git(
+                ["remote", "set-url", "origin", workspace.repo_url], cwd=target_root
+            )
             _run_git(["config", "remote.origin.promisor", "true"], cwd=target_root)
             _run_git(
                 ["config", "remote.origin.partialclonefilter", "blob:none"],
@@ -311,7 +313,9 @@ def _replace_with_retries(source: Path, destination: Path, attempts: int = 4) ->
         raise last_error
 
 
-def _publish_cache_with_retry(source: Path, destination: Path, attempts: int = 4) -> None:
+def _publish_cache_with_retry(
+    source: Path, destination: Path, attempts: int = 4
+) -> None:
     """Publish a completed mirror, tolerating transient Windows sharing locks."""
     _replace_with_retries(source, destination, attempts=attempts)
 
@@ -474,6 +478,11 @@ async def run_single(
             matches, matched_count, false_positive_count = _match_issues(
                 fixture, parsed_response
             )
+            root_cause_quality = (
+                _root_cause_quality(fixture, parsed_response, matches)
+                if isinstance(parsed_response, ReviewResponse)
+                else {}
+            )
             raw_output = parsed_response.model_dump(mode="json")
 
             placeholder = _is_placeholder_response(parsed_response)
@@ -488,6 +497,7 @@ async def run_single(
                 actual_count=actual_count,
                 matched_count=matched_count,
                 false_positive_count=false_positive_count,
+                **root_cause_quality,
                 latency_seconds=latency,
                 total_tokens=total_tokens,
                 event_log_path=event_log_path,
@@ -1023,6 +1033,85 @@ def _effective_review_issues(fixture: Fixture, response: ReviewResponse) -> list
     ]
 
 
+def _root_cause_quality(
+    fixture: Fixture,
+    response: ReviewResponse,
+    matches: list[EvalIssueMatch],
+) -> dict[str, int]:
+    actual = _effective_review_issues(fixture, response)
+    expected_root_keys = {
+        index: (issue.root_cause_id.strip() or f"expected-{index}")
+        for index, issue in enumerate(fixture.expected.issues)
+    }
+    actual_root_keys = {
+        index: (issue.root_cause_id.strip() or f"actual-{index}")
+        for index, issue in enumerate(actual)
+    }
+    expected_to_actual: dict[str, set[str]] = {}
+    actual_to_expected: dict[str, set[str]] = {}
+    repair_expected = 0
+    repair_matched = 0
+    for match in matches:
+        expected = fixture.expected.issues[match.expected_index]
+        expected_root = expected_root_keys[match.expected_index]
+        if expected.repair_unit.strip():
+            repair_expected += 1
+        if not match.matched or match.matched_actual_index is None:
+            continue
+        actual_index = match.matched_actual_index
+        actual_root = actual_root_keys[actual_index]
+        expected_to_actual.setdefault(expected_root, set()).add(actual_root)
+        actual_to_expected.setdefault(actual_root, set()).add(expected_root)
+        if expected.repair_unit.strip() and _repair_unit_matches(
+            expected.repair_unit, actual[actual_index]
+        ):
+            repair_matched += 1
+    matched_roots = len(expected_to_actual)
+    over_merge_count = sum(
+        max(0, len(expected_roots) - 1)
+        for expected_roots in actual_to_expected.values()
+    )
+    under_merge_count = sum(
+        max(0, len(actual_roots) - 1) for actual_roots in expected_to_actual.values()
+    )
+    evidence_complete = sum(
+        bool(issue.cause_evidence)
+        and bool(issue.contract_evidence)
+        and (not issue.trigger or bool(issue.trigger_evidence))
+        and (not issue.impact or bool(issue.impact_evidence))
+        for issue in actual
+    )
+    return {
+        "expected_root_cause_count": len(set(expected_root_keys.values())),
+        "matched_root_cause_count": matched_roots,
+        "over_merge_count": over_merge_count,
+        "under_merge_count": under_merge_count,
+        "repair_unit_expected_count": repair_expected,
+        "repair_unit_matched_count": repair_matched,
+        "evidence_complete_count": evidence_complete,
+        "final_finding_count": len(actual),
+    }
+
+
+def _repair_unit_matches(expected: str, issue: Any) -> bool:
+    normalized_expected = " ".join(expected.strip().lower().replace("_", " ").split())
+    repair = getattr(issue, "repair_intent", None)
+    if repair is None:
+        return False
+    actual = " ".join(
+        [
+            str(getattr(repair, "action", "")),
+            *[str(value) for value in getattr(repair, "targets", [])],
+            str(getattr(repair, "boundary", "")),
+        ]
+    )
+    normalized_actual = " ".join(actual.lower().replace("_", " ").split())
+    return (
+        normalized_expected == normalized_actual
+        or normalized_expected in normalized_actual
+    )
+
+
 def _meets_expected_severity_floor(issue: Any, fixture: Fixture) -> bool:
     if not fixture.expected.issues:
         return True
@@ -1126,7 +1215,9 @@ def _issue_evidence_mentions_expected_line(expected_issue: Any, issue: Any) -> b
 def _evidence_mentions_line(evidence: str, line: int) -> bool:
     if not evidence:
         return False
-    return re.search(rf"\bline\s+{line}\b|:{line}\b", evidence, re.IGNORECASE) is not None
+    return (
+        re.search(rf"\bline\s+{line}\b|:{line}\b", evidence, re.IGNORECASE) is not None
+    )
 
 
 def _is_eval_effective_issue(issue: Any, fixture: Fixture | None = None) -> bool:
@@ -1155,7 +1246,11 @@ def _is_eval_effective_issue(issue: Any, fixture: Fixture | None = None) -> bool
 
 
 def _issue_location_is_changed_line(issue: Any, fixture: Fixture | None) -> bool:
-    if fixture is None or fixture.type != "review" or not fixture.input.diff_text.strip():
+    if (
+        fixture is None
+        or fixture.type != "review"
+        or not fixture.input.diff_text.strip()
+    ):
         return False
     location = str(getattr(issue, "location", "") or "")
     parsed = normalize_location(location)

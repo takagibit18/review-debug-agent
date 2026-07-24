@@ -283,3 +283,11 @@ MergeWarden 采用 PR 与 Issue 驱动的协作方式。代码、文档和审查
 ## 许可证
 
 [MIT](LICENSE)
+
+## v0.2.3–v0.2.5：根因级 finding 与 change-centered 代码图
+
+Review 流水线现在先输出带因果机制、不变量、最小修复签名和分角色 provenance 的 finding hypothesis。单条 finding 通过 evidence verifier 后，系统按确定性 blocking 形成候选组，只在共同机制、共同不变量和共同 repair unit 同时成立且反事实结果明确为 `yes` 时归并；独立的 consolidation verifier 拒绝不安全归并并恢复原 findings。
+
+系统还会从 changed hunk/symbol 构建带 qualified identity、resolver、confidence 和 evidence eligibility 的代码关系图，通过预算化 Context Planner 生成与实际 Reviewer prompt 一致的 Candidate Context Manifest。SQLite 索引按 file hash 增量更新；LSP enrichment 可选且不是运行硬依赖。
+
+完整架构、schema、配置、迁移、provenance、benchmark 和限制见 [v0.2.3–v0.2.5 根因级审查文档](docs/v023_v025_root_cause_relation_graph.md)。

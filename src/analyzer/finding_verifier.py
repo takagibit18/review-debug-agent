@@ -21,14 +21,21 @@ from src.models.schemas import Message
 from src.analyzer.verifier_context import (
     build_candidate_verifier_context,
     location_in_candidate_context,
+    provenance_in_candidate_context,
 )
 
 RISK_SEVERITIES = {Severity.CRITICAL, Severity.WARNING}
 
 _VERIFIER_SYSTEM_PROMPT = """You are an independent semantic verifier for PR review findings.
 Treat every candidate as untrusted. Verify that the cited code exists in the supplied diff,
-that the causal claim follows from the evidence, that the PR introduced the behavior, and
-that the suggestion is actionable. Seek counterexamples. Return exactly one structured
+that observed_behavior and causal_mechanism follow from role-specific provenance, that the
+violated invariant has contract evidence, that trigger/impact do not exceed context actually
+received, that the PR introduced the behavior, and that repair_intent is actionable. A primary
+anchor must hit a changed line. Cross-file evidence must be in the candidate context manifest.
+Graph CALLS/REFERENCES/READS_FIELD/WRITES_FIELD edges establish only their named structural
+relation; they do not prove argument identity, runtime object identity, write-to-read flow, or
+path execution. Exploratory or low-confidence graph edges cannot alone support acceptance.
+Seek counterexamples. Return exactly one structured
 verdict per candidate through submit_finding_verification. Never accept a candidate merely
 because its confidence is high. Use candidate_context as candidate-scoped evidence from
 successful source reads; distinguish missing evidence from evidence that contradicts a claim."""
@@ -109,6 +116,9 @@ class FindingVerifier:
             request,
             tool_evidence or [],
             max_chars=self._context_max_chars,
+            context_manifests=[
+                dict(item) for item in state.candidate_context_manifests
+            ],
         )
         payload = {
             "diff": request.diff_text or "",
@@ -201,6 +211,16 @@ def validate_verifications_with_stats(
                     for item in locations
                 )
             )
+            if (
+                valid
+                and candidate is not None
+                and candidate.issue.is_structured_hypothesis
+            ):
+                valid = _structured_candidate_evidence_valid(
+                    candidate,
+                    context,
+                    changed,
+                )
             if valid:
                 passed_count += 1
             else:
@@ -282,6 +302,75 @@ def _location_intersects_changed_lines(
     )
 
 
+def _structured_candidate_evidence_valid(
+    candidate: FindingCandidate,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+) -> bool:
+    """Fail closed when a schema-v2 hypothesis is not bound to sent context."""
+
+    issue = candidate.issue
+    anchor = issue.primary_anchor
+    if anchor is None or anchor.line not in changed.get(anchor.file, set()):
+        return False
+    parsed_location = normalize_location(issue.location)
+    if (
+        not parsed_location.valid
+        or parsed_location.path != anchor.file
+        or parsed_location.line is None
+        or not (
+            parsed_location.line
+            <= anchor.line
+            <= (parsed_location.end_line or parsed_location.line)
+        )
+    ):
+        return False
+    if (
+        not all(
+            value.strip()
+            for value in (
+                issue.observed_behavior,
+                issue.causal_mechanism,
+                issue.violated_invariant,
+                issue.repair_intent.action,
+                issue.repair_intent.boundary,
+                issue.context_manifest_id,
+            )
+        )
+        or not issue.repair_intent.targets
+    ):
+        return False
+    if not issue.cause_evidence or not issue.contract_evidence:
+        return False
+    if issue.trigger.strip() and not issue.trigger_evidence:
+        return False
+    if issue.impact.strip() and not issue.impact_evidence:
+        return False
+    evidence = issue.all_evidence()
+    if not evidence:
+        return False
+    if any(
+        not all(
+            value.strip()
+            for value in (
+                item.candidate_id,
+                item.context_manifest_id,
+                item.retrieval_source,
+                item.file,
+                item.symbol_id,
+                item.context_hash,
+                item.resolver,
+                item.statement,
+            )
+        )
+        for item in evidence
+    ):
+        return False
+    if any(item.context_manifest_id != issue.context_manifest_id for item in evidence):
+        return False
+    return all(provenance_in_candidate_context(context, item) for item in evidence)
+
+
 def build_candidates(
     report: ReviewReport,
     *,
@@ -293,6 +382,9 @@ def build_candidates(
         if issue.severity not in RISK_SEVERITIES:
             continue
         candidate_id = _candidate_id(issue)
+        issue.candidate_id = candidate_id
+        if not issue.finding_id:
+            issue.finding_id = "F-" + candidate_id[:12].upper()
         candidate_issue = issue.model_copy(update={"candidate_id": candidate_id})
         candidates.append(
             FindingCandidate(
@@ -314,7 +406,14 @@ def apply_verifications(
 ) -> ReviewReport:
     """Apply verifier verdicts; enforce mode is fail closed for risk findings."""
     if mode != "enforce":
-        return report.model_copy(deep=True)
+        copied = report.model_copy(deep=True)
+        for issue in copied.issues:
+            if issue.severity in RISK_SEVERITIES:
+                issue.candidate_id = issue.candidate_id or _candidate_id(issue)
+                issue.finding_id = issue.finding_id or (
+                    "F-" + issue.candidate_id[:12].upper()
+                )
+        return copied
     verdicts = {item.candidate_id: item for item in batch.results}
     output: list[ReviewIssue] = []
     for issue in report.issues:

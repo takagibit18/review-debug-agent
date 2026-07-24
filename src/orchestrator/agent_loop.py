@@ -13,6 +13,8 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from src.analyzer.context_builder import ContextBuilder
+from src.analyzer.code_graph import attach_changed_hunks, extract_changed_anchors
+from src.analyzer.context_planner import ChangeCenteredContextPlanner
 from src.analyzer.finding_verifier import (
     DeterministicValidationStats,
     FindingVerifier,
@@ -35,7 +37,11 @@ from src.analyzer.schemas import (
 )
 from src.analyzer.schemas import FindingVerificationBatch
 from src.analyzer.trace import TraceRecorder
+from src.analyzer.language_resolver import UnavailableLspResolver
+from src.analyzer.persistent_index import RelationGraphIndex
+from src.analyzer.root_cause import RootCauseConsolidator
 from src.analyzer.verifier_context import capture_verifier_tool_evidence
+from src.analyzer.verifier_context import build_candidate_verifier_context
 from src.analyzer.result_processor import ResultProcessor
 from src.config import get_settings
 from src.models.client import ModelClient
@@ -130,6 +136,12 @@ class AgentOrchestrator:
         self._high_confidence_info_issue_count = 0
         self._severity_reviewed_count = 0
         self._severity_promoted_count = 0
+        self._consolidator_block_count = 0
+        self._consolidator_proposal_count = 0
+        self._consolidator_accepted_cluster_count = 0
+        self._consolidator_rejected_cluster_count = 0
+        self._final_root_cause_count = 0
+        self._finding_inflation_ratio = 0.0
         self._verifier_tool_evidence: list[dict[str, Any]] = []
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
@@ -153,6 +165,7 @@ class AgentOrchestrator:
                 review_context=review_context,
             )
         state = self.prepare_context(request)
+        self._prepare_relation_context(state, request)
         await self._maybe_prefetch_review_changed_files(state, request)
         if self._workflow_enforcement != "off":
             if request.diff_mode:
@@ -193,6 +206,173 @@ class AgentOrchestrator:
         self._close_event_log()
         return response
 
+    def _prepare_relation_context(
+        self,
+        state: ContextState,
+        request: ReviewRequest,
+    ) -> None:
+        """Build/reuse the graph and place exact planned manifests in model state."""
+
+        if (
+            not self._settings.relation_graph_enabled
+            or not request.diff_mode
+            or not (request.diff_text or "").strip()
+            or self._workspace_root is None
+        ):
+            state.relation_graph_summary = {
+                "enabled": bool(self._settings.relation_graph_enabled),
+                "status": "disabled_or_not_applicable",
+            }
+            return
+        index_path = Path(self._settings.relation_graph_index_path)
+        if not index_path.is_absolute():
+            index_path = self._workspace_root / index_path
+        resolver = (
+            UnavailableLspResolver()
+            if self._settings.relation_graph_resolver_mode == "lsp"
+            else None
+        )
+        try:
+            index_result = RelationGraphIndex(
+                self._workspace_root,
+                persistence_enabled=self._settings.relation_graph_persistence_enabled,
+                index_path=index_path,
+                resolver_mode=self._settings.relation_graph_resolver_mode,
+                language_resolver=resolver,
+                max_files=self._settings.relation_graph_max_files,
+            ).build()
+            graph = index_result.graph
+            anchors = extract_changed_anchors(request.diff_text or "", graph)
+            attach_changed_hunks(graph, anchors)
+            plan = ChangeCenteredContextPlanner(
+                self._workspace_root,
+                max_depth=self._settings.relation_graph_max_depth,
+                max_nodes=self._settings.relation_graph_max_nodes,
+                max_context_tokens=self._settings.relation_graph_max_context_tokens,
+                min_evidence_confidence=(
+                    self._settings.relation_graph_min_evidence_confidence
+                ),
+            ).plan(graph, anchors)
+        except Exception as exc:  # noqa: BLE001
+            state.relation_graph_summary = {
+                "enabled": True,
+                "status": "fallback_v022",
+                "error": exc.__class__.__name__,
+            }
+            self._record_event(
+                EventType.PIPELINE_FALLBACK,
+                "relation_graph",
+                {
+                    "stage": "relation_graph_context",
+                    "fallback": "v022_tool_context",
+                    "error": exc.__class__.__name__,
+                    "message": str(exc)[:300],
+                },
+            )
+            return
+
+        state.candidate_context_manifests = [
+            manifest.prompt_payload() for manifest in plan.manifests
+        ]
+        state.relation_graph_summary = {
+            "enabled": True,
+            "status": index_result.status,
+            "repository_id": index_result.repository_id,
+            "revision": index_result.revision,
+            "cache_hit": index_result.cache_hit,
+            "cache_hit_rate": index_result.cache_hit_rate,
+            "node_count": len(graph.nodes),
+            "edge_count": len(graph.edges),
+            "changed_anchor_count": len(anchors),
+            "manifest_count": len(plan.manifests),
+            "context_token_cost": plan.total_token_cost,
+            "included_graph_path_count": plan.total_included_paths,
+            "discarded_graph_path_count": plan.total_discarded_paths,
+            "parsed_file_count": index_result.parsed_file_count,
+            "build_latency_seconds": index_result.build_latency_seconds,
+            "incremental_update_latency_seconds": (
+                index_result.incremental_update_latency_seconds
+            ),
+            "resolver_mode": self._settings.relation_graph_resolver_mode,
+        }
+        self._record_event(
+            EventType.INDEX_LIFECYCLE,
+            "relation_graph",
+            {
+                "status": index_result.status,
+                "cache_hit": index_result.cache_hit,
+                "cache_hit_rate": index_result.cache_hit_rate,
+                "file_count": index_result.file_count,
+                "changed_file_count": len(index_result.changed_files),
+                "deleted_file_count": len(index_result.deleted_files),
+                "affected_file_count": len(index_result.affected_files),
+                "parsed_file_count": index_result.parsed_file_count,
+                "fallback": index_result.fallback,
+                "build_latency_seconds": index_result.build_latency_seconds,
+                "incremental_update_latency_seconds": (
+                    index_result.incremental_update_latency_seconds
+                ),
+            },
+        )
+        self._record_event(
+            EventType.CHANGED_ANCHORS_EXTRACTED,
+            "relation_graph",
+            {
+                "changed_anchor_count": len(anchors),
+                "anchors": [
+                    {
+                        "anchor_id": anchor.anchor_id,
+                        "file": anchor.file,
+                        "line": anchor.line,
+                        "end_line": anchor.end_line,
+                        "symbol_id": anchor.symbol_id,
+                        "change_kind": anchor.change_kind,
+                    }
+                    for anchor in anchors
+                ],
+            },
+        )
+        self._record_event(
+            EventType.RELATION_GRAPH_BUILT,
+            "relation_graph",
+            {
+                "node_count": len(graph.nodes),
+                "edge_count": len(graph.edges),
+                "diagnostic_count": len(graph.diagnostics),
+                "resolver_mode": self._settings.relation_graph_resolver_mode,
+            },
+        )
+        self._record_event(
+            EventType.CONTEXT_PLAN_COMPLETED,
+            "context_planner",
+            {
+                "manifest_count": len(plan.manifests),
+                "token_cost": plan.total_token_cost,
+                "included_node_count": plan.total_included_nodes,
+                "included_path_count": plan.total_included_paths,
+                "discarded_path_count": plan.total_discarded_paths,
+            },
+        )
+        for manifest in plan.manifests:
+            self._record_event(
+                EventType.CONTEXT_MANIFEST_CREATED,
+                "context_planner",
+                {
+                    "candidate_id": manifest.candidate_id,
+                    "anchor_id": manifest.changed_anchor.anchor_id,
+                    "file": manifest.changed_anchor.file,
+                    "line": manifest.changed_anchor.line,
+                    "token_cost": manifest.token_cost,
+                    "included_span_count": len(manifest.included_spans),
+                    "included_path_count": len(manifest.included_graph_paths),
+                    "excluded_low_confidence_path_count": len(
+                        manifest.excluded_low_confidence_paths
+                    ),
+                    "discarded_path_count": len(manifest.discarded_paths),
+                    "truncation_reasons": manifest.truncation_reasons,
+                },
+            )
+
     async def _verify_review_response(
         self,
         response: ReviewResponse,
@@ -214,6 +394,16 @@ class AgentOrchestrator:
             for item in candidates
             if item.issue.evidence.strip() and item.issue.location.strip()
         )
+        structured_hypothesis_count = sum(
+            item.issue.is_structured_hypothesis for item in candidates
+        )
+        evidence_complete_count = sum(
+            bool(item.issue.cause_evidence)
+            and bool(item.issue.contract_evidence)
+            and (not item.issue.trigger or bool(item.issue.trigger_evidence))
+            and (not item.issue.impact or bool(item.issue.impact_evidence))
+            for item in candidates
+        )
         self._record_event(
             EventType.FINDING_CANDIDATES_BUILT,
             "verify_findings",
@@ -222,6 +412,8 @@ class AgentOrchestrator:
                 "model_raw_issue_count": self._model_raw_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "evidence_bound_count": evidence_bound_count,
+                "structured_hypothesis_count": structured_hypothesis_count,
+                "evidence_complete_count": evidence_complete_count,
                 "high_confidence_info_issue_count": self._high_confidence_info_issue_count,
                 "severity_reviewed_count": self._severity_reviewed_count,
                 "severity_promoted_count": self._severity_promoted_count,
@@ -281,6 +473,7 @@ class AgentOrchestrator:
                 candidates,
                 returned_batch,
                 request,
+                state,
             )
             self._consume_verifier_tokens(verifier)
         except Exception as exc:  # noqa: BLE001
@@ -325,6 +518,7 @@ class AgentOrchestrator:
                         repair_candidates,
                         returned_repaired,
                         request,
+                        state,
                     )
                 )
                 self._consume_verifier_tokens(verifier)
@@ -448,6 +642,161 @@ class AgentOrchestrator:
             batch,
             mode=self._finding_verifier_mode,
         )
+        response = self._consolidate_verified_findings(
+            response,
+            batch,
+            request,
+            state,
+        )
+        return response
+
+    def _consolidate_verified_findings(
+        self,
+        response: ReviewResponse,
+        batch: FindingVerificationBatch,
+        request: ReviewRequest,
+        state: ContextState,
+    ) -> ReviewResponse:
+        if not self._settings.root_cause_consolidation_enabled:
+            return response
+        accepted_ids = {
+            item.candidate_id for item in batch.results if item.status == "accepted"
+        }
+        verified_risk = [
+            issue
+            for issue in response.report.issues
+            if issue.severity.value in {"critical", "warning"}
+            and issue.candidate_id in accepted_ids
+        ]
+        untouched = [
+            issue for issue in response.report.issues if issue not in verified_risk
+        ]
+        if not verified_risk:
+            return response
+        result = RootCauseConsolidator(
+            max_block_size=(self._settings.root_cause_consolidation_max_block_size),
+            conservative_mode=(
+                self._settings.root_cause_consolidation_conservative_mode
+            ),
+            extra_retrieval_enabled=(
+                self._settings.root_cause_consolidation_extra_retrieval_enabled
+            ),
+        ).consolidate(
+            ReviewReport(summary=response.report.summary, issues=verified_risk),
+            diff_text=request.diff_text or "",
+            manifests=state.candidate_context_manifests,
+        )
+        response.report = ReviewReport(
+            summary=response.report.summary,
+            issues=[*result.report.issues, *untouched],
+            schema_version=response.report.schema_version,
+        )
+        metrics = result.metrics
+        self._consolidator_block_count = metrics.block_count
+        self._consolidator_proposal_count = metrics.proposal_count
+        self._consolidator_accepted_cluster_count = metrics.accepted_cluster_count
+        self._consolidator_rejected_cluster_count = metrics.rejected_cluster_count
+        self._final_root_cause_count = metrics.final_root_cause_count
+        self._finding_inflation_ratio = metrics.finding_inflation_ratio
+        self._record_event(
+            EventType.FINDING_BLOCKS_BUILT,
+            "root_cause_consolidation",
+            {
+                "block_count": metrics.block_count,
+                "average_block_size": metrics.average_block_size,
+                "signal_count": result.blocking.signal_count,
+                "blocks": [
+                    {
+                        "block_id": block.block_id,
+                        "finding_ids": block.finding_ids,
+                        "signal_kinds": sorted(
+                            {signal.kind for signal in block.signals}
+                        ),
+                    }
+                    for block in result.blocking.blocks
+                ],
+            },
+        )
+        for proposal in result.proposals:
+            self._record_event(
+                EventType.ROOT_CAUSE_MERGE_PROPOSED,
+                "root_cause_consolidation",
+                {
+                    "root_cause_id": proposal.root_cause_id,
+                    "member_findings": proposal.member_findings,
+                    "counterfactual_result": proposal.counterfactual_result,
+                    "absorbed_roles": proposal.absorbed_roles,
+                    "allowed_context_manifest_ids": (
+                        proposal.allowed_context_manifest_ids
+                    ),
+                },
+            )
+        for verdict in result.verifications:
+            self._record_event(
+                EventType.CONSOLIDATION_VERIFICATION_COMPLETED,
+                "consolidation_verifier",
+                {
+                    "root_cause_id": verdict.root_cause_id,
+                    "accepted": verdict.accepted,
+                    "reasons": verdict.reasons,
+                },
+            )
+            if not verdict.accepted:
+                self._record_event(
+                    EventType.CONSOLIDATION_REJECTED,
+                    "consolidation_verifier",
+                    {
+                        "root_cause_id": verdict.root_cause_id,
+                        "reasons": verdict.reasons,
+                        "fallback": "original_findings_separate",
+                    },
+                )
+        manifest_hashes = {
+            str(span.get("context_hash", ""))
+            for manifest in state.candidate_context_manifests
+            for span in manifest.get("included_spans", [])
+            if isinstance(span, dict) and span.get("context_hash")
+        }
+        used_hashes = {
+            evidence.context_hash
+            for issue in result.report.issues
+            for evidence in issue.all_evidence()
+            if evidence.context_hash
+        }
+        edge_confidences = [
+            float(evidence.edge_confidence)
+            for issue in result.report.issues
+            for evidence in issue.all_evidence()
+            if evidence.edge_confidence is not None
+        ]
+        consolidation_payload = metrics.model_dump(mode="json")
+        consolidation_payload.update(
+            {
+                "unused_context_ratio": (
+                    1.0 - len(manifest_hashes & used_hashes) / len(manifest_hashes)
+                    if manifest_hashes
+                    else 0.0
+                ),
+                "edge_confidence_contribution": (
+                    sum(edge_confidences) / len(edge_confidences)
+                    if edge_confidences
+                    else 0.0
+                ),
+                "evidence_complete_count": sum(
+                    bool(issue.cause_evidence)
+                    and bool(issue.contract_evidence)
+                    and (not issue.trigger or bool(issue.trigger_evidence))
+                    and (not issue.impact or bool(issue.impact_evidence))
+                    for issue in result.report.issues
+                    if issue.severity.value in {"critical", "warning"}
+                ),
+            }
+        )
+        self._record_event(
+            EventType.ROOT_CAUSE_CONSOLIDATION_COMPLETED,
+            "root_cause_consolidation",
+            consolidation_payload,
+        )
         return response
 
     async def _maybe_recover_review_workflow(
@@ -554,12 +903,13 @@ class AgentOrchestrator:
             await verify(candidates, request, state)
         )
 
-    @staticmethod
     def _normalize_verifier_result(
+        self,
         verifier: Any,
         candidates: list[Any],
         returned_batch: FindingVerificationBatch,
         request: ReviewRequest,
+        state: ContextState,
     ) -> tuple[
         FindingVerificationBatch,
         FindingVerificationBatch,
@@ -576,6 +926,14 @@ class AgentOrchestrator:
             candidates,
             returned_batch,
             request,
+            candidate_context=build_candidate_verifier_context(
+                candidates,
+                request,
+                list(self._verifier_tool_evidence),
+                context_manifests=[
+                    dict(item) for item in state.candidate_context_manifests
+                ],
+            ),
         )
         return returned_batch, post_batch, stats
 
@@ -636,6 +994,16 @@ class AgentOrchestrator:
                 "verifier_rejected_count": self._verifier_rejected_count,
                 "verifier_needs_evidence_count": self._verifier_needs_evidence_count,
                 "verifier_downgraded_count": self._verifier_downgraded_count,
+                "consolidator_block_count": self._consolidator_block_count,
+                "consolidator_proposal_count": self._consolidator_proposal_count,
+                "consolidator_accepted_cluster_count": (
+                    self._consolidator_accepted_cluster_count
+                ),
+                "consolidator_rejected_cluster_count": (
+                    self._consolidator_rejected_cluster_count
+                ),
+                "final_root_cause_count": self._final_root_cause_count,
+                "finding_inflation_ratio": self._finding_inflation_ratio,
                 "workflow_filtered_issue_count": workflow_filtered_issue_count,
                 "final_effective_issue_count": len(response.report.issues),
                 "workflow_invalid": workflow_invalid,
@@ -1419,6 +1787,12 @@ class AgentOrchestrator:
         self._high_confidence_info_issue_count = 0
         self._severity_reviewed_count = 0
         self._severity_promoted_count = 0
+        self._consolidator_block_count = 0
+        self._consolidator_proposal_count = 0
+        self._consolidator_accepted_cluster_count = 0
+        self._consolidator_rejected_cluster_count = 0
+        self._final_root_cause_count = 0
+        self._finding_inflation_ratio = 0.0
         self._verifier_tool_evidence = []
         self._record_event(
             EventType.PHASE_START,
@@ -1435,6 +1809,13 @@ class AgentOrchestrator:
                 "pre_budget_submit_token_ratio": self._settings.pre_budget_submit_token_ratio,
                 "review_diff_first_changed_files": self._review_diff_first_changed_files,
                 "review_diff_first_changed_files_max": self._settings.review_diff_first_changed_files_max,
+                "root_cause_consolidation_enabled": (
+                    self._settings.root_cause_consolidation_enabled
+                ),
+                "relation_graph_enabled": self._settings.relation_graph_enabled,
+                "relation_graph_persistence_enabled": (
+                    self._settings.relation_graph_persistence_enabled
+                ),
             },
         )
 

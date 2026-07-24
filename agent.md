@@ -33,6 +33,7 @@ docs/
 ├── execute_tools_design.md # execute 类工具（run_command/run_tests）设计与安全规范
 ├── cli_tools_orchestrator_contract.md  # CLI/编排/工具层确定性契约
 ├── mvp_plus_roadmap.md     # MVP+ 增量与「已落地/待办」对照
+├── v023_v025_root_cause_relation_graph.md # 根因归并、关系图、Manifest 与增量索引
 └── project_plan.md         # 项目规划与里程碑（由根目录计划文档迁移）
 
 root/
@@ -49,6 +50,7 @@ root/
 - execute 工具策略、白名单、沙箱后端、EXECUTE_* → `docs/execute_tools_design.md`
 - CLI/编排高危门控、phase 约束 → `docs/cli_tools_orchestrator_contract.md`
 - MVP+ 增量清单与基线更新 → `docs/mvp_plus_roadmap.md`
+- 根因 finding、代码关系图、证据 provenance 与增量索引 → `docs/v023_v025_root_cause_relation_graph.md`
 - 里程碑、分工、演进路线 → `docs/project_plan.md`
 - 提交流程、分支规范、代码风格 → `CONTRIBUTING.md`
 - 评测标准与基线策略 → `eval/README.md`

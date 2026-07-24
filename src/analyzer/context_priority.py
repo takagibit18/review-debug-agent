@@ -65,20 +65,18 @@ def split_diff_hunks(diff_text: str) -> list[str]:
     return _split_section_at_hunks(diff_text) or [diff_text]
 
 
-def _meta_dict_review(
-    request: ReviewRequest, context: ContextState
-) -> dict[str, Any]:
+def _meta_dict_review(request: ReviewRequest, context: ContextState) -> dict[str, Any]:
     return {
         "repo_path": request.repo_path,
         "diff_mode": request.diff_mode,
         "has_diff_text": bool(request.diff_text),
         "constraints": list(context.constraints),
+        "candidate_context_manifest_count": len(context.candidate_context_manifests),
+        "relation_graph_summary": context.relation_graph_summary,
     }
 
 
-def _meta_dict_debug(
-    request: DebugRequest, context: ContextState
-) -> dict[str, Any]:
+def _meta_dict_debug(request: DebugRequest, context: ContextState) -> dict[str, Any]:
     return {
         "repo_path": request.repo_path,
         "error_log_path": request.error_log_path,
@@ -268,6 +266,8 @@ def assemble_review_payload(
         "files": files_out,
         "project_structure": structure_out,
         "constraints": context.constraints,
+        "candidate_context_manifests": context.candidate_context_manifests,
+        "relation_graph_summary": context.relation_graph_summary,
         "truncated": truncated,
     }
 
@@ -321,7 +321,9 @@ def assemble_debug_payload(
         "summarized": summarized_bases,
     }
     raw_error_log_text = request.error_log_text
-    if raw_error_log_text and (truncated["error_log"] or error_out != raw_error_log_text):
+    if raw_error_log_text and (
+        truncated["error_log"] or error_out != raw_error_log_text
+    ):
         raw_error_log_text = None
 
     return {

@@ -10,7 +10,12 @@ from pydantic import BaseModel, Field
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
 from src.tools.path_utils import ensure_path_allowed
 from src.tools.review_context import ReviewToolContext
-from src.tools.symbol_backends import StaticSymbolBackend, SymbolBackend, SymbolRecord, SymbolReference
+from src.tools.symbol_backends import (
+    StaticSymbolBackend,
+    SymbolBackend,
+    SymbolRecord,
+    SymbolReference,
+)
 
 
 class FindSymbolContextInput(BaseModel):
@@ -115,7 +120,9 @@ class FindSymbolContextTool(BaseTool):
                 definitions = definitions[: data.max_results]
                 truncated = True
         if data.mode in {"references", "all"}:
-            found = self._backend.find_references(data.symbol, scope, data.max_results + 1)
+            found = self._backend.find_references(
+                data.symbol, scope, data.max_results + 1
+            )
             if len(found) > data.max_results:
                 truncated = True
                 found = found[: data.max_results]
@@ -131,7 +138,8 @@ class FindSymbolContextTool(BaseTool):
                 self._record_payload(item, data.context_radius) for item in definitions
             ],
             "references": [
-                self._reference_payload(item, data.context_radius) for item in references
+                self._reference_payload(item, data.context_radius)
+                for item in references
             ],
             "enclosing_symbols": [
                 self._record_payload(item, data.context_radius) for item in enclosing
@@ -148,17 +156,32 @@ class FindSymbolContextTool(BaseTool):
             "kind": record.kind,
             "name": record.name,
             "signature": record.signature,
-            "context": self._render_context(record.path, record.line, record.end_line, radius),
+            "context": self._render_context(
+                record.path, record.line, record.end_line, radius
+            ),
             "confidence": record.confidence,
+            "binding_confidence": record.confidence,
+            "symbol_id": record.symbol_id,
+            "qualified_name": record.qualified_name,
+            "resolver": record.resolver,
+            "confidence_tier": record.confidence_tier,
         }
 
-    def _reference_payload(self, reference: SymbolReference, radius: int) -> dict[str, Any]:
+    def _reference_payload(
+        self, reference: SymbolReference, radius: int
+    ) -> dict[str, Any]:
         return {
             "path": reference.path,
             "line": reference.line,
             "line_text": reference.line_text,
-            "context": self._render_context(reference.path, reference.line, reference.line, radius),
+            "context": self._render_context(
+                reference.path, reference.line, reference.line, radius
+            ),
             "confidence": reference.confidence,
+            "symbol_id": reference.symbol_id,
+            "resolver": reference.resolver,
+            "confidence_tier": reference.confidence_tier,
+            "evidence_eligibility": reference.evidence_eligibility,
         }
 
     def _render_context(self, path: str, line: int, end_line: int, radius: int) -> str:

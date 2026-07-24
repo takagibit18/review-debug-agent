@@ -174,3 +174,16 @@ Interpretation: this report proves the MVP+ eval execution path is observable an
 - `eval/fixtures/review_checklist.md`：人工审核清单（用于修正 LLM 草稿）
 - `eval/outputs/*_report.json`：机器可读评测报告
 - `eval/outputs/*_human_review.md`：人工可接受度打分模板（0-5）
+
+## v0.2.3–v0.2.5 根因质量与消融 benchmark
+
+通用 golden runner 现在可聚合 Root-Cause Coverage、Over/Under-Merge Rate、Repair-Unit Accuracy、Evidence Completeness、Final Finding Count、Finding Inflation Ratio，以及 Context Planner、关系图、cache 和 consolidator 过程指标。
+
+不调用 provider 的最小可复现消融工具覆盖 A–I：
+
+```bash
+python -m eval.root_cause_benchmark --ablations A,B,C,D,E,F,G,H,I \
+  --output artifacts/v025_benchmark.json
+```
+
+该工具使用 SafeHashWrapper 与 Vosk cache/独立问题 fixture，并实际构建代码图、Context Manifest、SQLite cache、增量更新和 resolver fallback。它不会伪造模型 token 或 tool-call 数据：因为没有 provider call，这两项记录为 0。完整指标定义和消融映射见 [根因级审查架构文档](../docs/v023_v025_root_cause_relation_graph.md#benchmark-与消融)。

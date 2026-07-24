@@ -20,6 +20,10 @@ class SymbolRecord:
     name: str
     signature: str
     confidence: float
+    symbol_id: str = ""
+    qualified_name: str = ""
+    resolver: str = "static_rule_parser"
+    confidence_tier: str = "EXTRACTED"
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,10 @@ class SymbolReference:
     line: int
     line_text: str
     confidence: float
+    symbol_id: str = ""
+    resolver: str = "textual_symbol_search"
+    confidence_tier: str = "TEXTUAL"
+    evidence_eligibility: str = "exploratory"
 
 
 class SymbolBackend(Protocol):
@@ -40,7 +48,9 @@ class SymbolBackend(Protocol):
     def document_symbols(self, path: Path) -> list[SymbolRecord]:
         """Return symbols declared in a document."""
 
-    def find_definitions(self, symbol: str, path: Path | None = None) -> list[SymbolRecord]:
+    def find_definitions(
+        self, symbol: str, path: Path | None = None
+    ) -> list[SymbolRecord]:
         """Return candidate definitions for a symbol."""
 
     def find_references(
@@ -69,7 +79,9 @@ class StaticSymbolBackend:
         r"\b(?:public|private|protected|internal)\s+(?:static\s+)?(?:async\s+)?"
         r"[A-Za-z_][\w<>\[\],.?]*\s+([A-Za-z_]\w*)\s*\("
     )
-    _CS_CTOR_PATTERN = re.compile(r"\b(?:public|private|protected|internal)\s+([A-Za-z_]\w*)\s*\(")
+    _CS_CTOR_PATTERN = re.compile(
+        r"\b(?:public|private|protected|internal)\s+([A-Za-z_]\w*)\s*\("
+    )
     _RS_PATTERN = re.compile(
         r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?P<kind>fn|struct|enum|trait|mod)\s+"
         r"(?P<name>[A-Za-z_]\w*)"
@@ -90,7 +102,9 @@ class StaticSymbolBackend:
             return self._csharp_symbols(resolved)
         return []
 
-    def find_definitions(self, symbol: str, path: Path | None = None) -> list[SymbolRecord]:
+    def find_definitions(
+        self, symbol: str, path: Path | None = None
+    ) -> list[SymbolRecord]:
         candidates = self._candidate_files(path)
         matches: list[SymbolRecord] = []
         for candidate in candidates:
@@ -99,7 +113,11 @@ class StaticSymbolBackend:
                 matches.extend(self._fallback_definition_matches(symbol, candidate))
                 continue
             matches.extend(
-                record for record in self.document_symbols(candidate) if record.name == symbol
+                record
+                for record in self.document_symbols(candidate)
+                if record.name == symbol
+                or record.qualified_name == symbol
+                or record.symbol_id == symbol
             )
         return sorted(matches, key=lambda item: (item.path, item.line))
 
@@ -111,13 +129,16 @@ class StaticSymbolBackend:
     ) -> list[SymbolReference]:
         if not symbol:
             return []
-        regex = re.compile(rf"\b{re.escape(symbol)}\b")
+        bare_symbol = symbol.split("::")[-1].split(".")[-1].split("|")[-1]
+        regex = re.compile(rf"\b{re.escape(bare_symbol)}\b")
         references: list[SymbolReference] = []
         for candidate in self._candidate_files(path):
             language = self.language_for_path(candidate)
-            confidence = 0.35 if language == "unknown" else 0.65
+            confidence = 0.35 if language == "unknown" else 0.45
             try:
-                lines = candidate.read_text(encoding="utf-8", errors="ignore").splitlines()
+                lines = candidate.read_text(
+                    encoding="utf-8", errors="ignore"
+                ).splitlines()
             except OSError:
                 continue
             rel = self._relative(candidate)
@@ -130,6 +151,9 @@ class StaticSymbolBackend:
                         line=line_number,
                         line_text=line_text,
                         confidence=confidence,
+                        resolver="textual_symbol_search",
+                        confidence_tier="TEXTUAL",
+                        evidence_eligibility="exploratory",
                     )
                 )
                 if len(references) >= max_results:
@@ -162,23 +186,80 @@ class StaticSymbolBackend:
             return []
         lines = source.splitlines()
         records: list[SymbolRecord] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                records.append(self._python_record(path, lines, node, "class", node.name))
-            elif isinstance(node, ast.AsyncFunctionDef):
-                records.append(self._python_record(path, lines, node, "function", node.name))
-            elif isinstance(node, ast.FunctionDef):
-                records.append(self._python_record(path, lines, node, "function", node.name))
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self, backend: "StaticSymbolBackend") -> None:
+                self.backend = backend
+                self.scope: list[str] = []
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+                qualified = ".".join([*self.scope, node.name])
+                records.append(
+                    self.backend._python_record(
+                        path, lines, node, "class", node.name, qualified
+                    )
+                )
+                self.scope.append(node.name)
+                self.generic_visit(node)
+                self.scope.pop()
+
+            def _visit_function(
+                self, node: ast.FunctionDef | ast.AsyncFunctionDef
+            ) -> None:
+                qualified = ".".join([*self.scope, node.name])
+                # Keep the legacy tool kind for callers that key on "function";
+                # qualified_name/symbol_id now disambiguate class methods.
+                kind = "function"
+                records.append(
+                    self.backend._python_record(
+                        path, lines, node, kind, node.name, qualified
+                    )
+                )
+                self.scope.append(node.name)
+                self.generic_visit(node)
+                self.scope.pop()
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+                self._visit_function(node)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+                self._visit_function(node)
+
+            def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
                 for alias in node.names:
                     name = alias.asname or alias.name.split(".")[-1]
-                    records.append(self._python_record(path, lines, node, "import", name))
-            elif isinstance(node, ast.Assign):
+                    qualified = ".".join([*self.scope, name])
+                    records.append(
+                        self.backend._python_record(
+                            path, lines, node, "import", name, qualified
+                        )
+                    )
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+                self.visit_Import(node)  # type: ignore[arg-type]
+
+            def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        records.append(self._python_record(path, lines, node, "assign", target.id))
-            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                records.append(self._python_record(path, lines, node, "assign", node.target.id))
+                        qualified = ".".join([*self.scope, target.id])
+                        records.append(
+                            self.backend._python_record(
+                                path, lines, node, "assign", target.id, qualified
+                            )
+                        )
+                self.generic_visit(node)
+
+            def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+                if isinstance(node.target, ast.Name):
+                    qualified = ".".join([*self.scope, node.target.id])
+                    records.append(
+                        self.backend._python_record(
+                            path, lines, node, "assign", node.target.id, qualified
+                        )
+                    )
+                self.generic_visit(node)
+
+        Visitor(self).visit(tree)
         return sorted(records, key=lambda item: (item.line, item.end_line, item.name))
 
     def _python_record(
@@ -188,17 +269,24 @@ class StaticSymbolBackend:
         node: ast.AST,
         kind: str,
         name: str,
+        qualified_scope: str,
     ) -> SymbolRecord:
         line = int(getattr(node, "lineno", 1))
         end_line = int(getattr(node, "end_lineno", line))
+        rel = self._relative(path)
+        symbol_id = f"python|{rel}|{qualified_scope}|{kind}|{line}:{end_line}"
         return SymbolRecord(
-            path=self._relative(path),
+            path=rel,
             line=line,
             end_line=end_line,
             kind=kind,
             name=name,
             signature=lines[line - 1].strip() if 0 <= line - 1 < len(lines) else name,
             confidence=0.9,
+            symbol_id=symbol_id,
+            qualified_name=f"{rel}::{qualified_scope}",
+            resolver="python_ast",
+            confidence_tier="EXTRACTED",
         )
 
     def _rust_symbols(self, path: Path) -> list[SymbolRecord]:
@@ -211,17 +299,23 @@ class StaticSymbolBackend:
             impl_match = self._RS_IMPL_PATTERN.search(line)
             if impl_match:
                 records.append(
-                    self._line_record(path, index, "impl", impl_match.group("name"), line, 0.75)
+                    self._line_record(
+                        path, index, "impl", impl_match.group("name"), line, 0.75
+                    )
                 )
                 continue
             match = self._RS_PATTERN.search(line)
             if match is None:
                 if line.strip().startswith("use "):
                     name = line.strip().removeprefix("use ").rstrip(";").split("::")[-1]
-                    records.append(self._line_record(path, index, "use", name, line, 0.75))
+                    records.append(
+                        self._line_record(path, index, "use", name, line, 0.75)
+                    )
                 continue
             kind = "function" if match.group("kind") == "fn" else match.group("kind")
-            records.append(self._line_record(path, index, kind, match.group("name"), line, 0.8))
+            records.append(
+                self._line_record(path, index, kind, match.group("name"), line, 0.8)
+            )
         return records
 
     def _csharp_symbols(self, path: Path) -> list[SymbolRecord]:
@@ -236,26 +330,44 @@ class StaticSymbolBackend:
             if type_match:
                 name = type_match.group(2)
                 class_names.add(name)
-                records.append(self._line_record(path, index, type_match.group(1), name, line, 0.8))
+                records.append(
+                    self._line_record(path, index, type_match.group(1), name, line, 0.8)
+                )
             if line.strip().startswith("using "):
                 name = line.strip().removeprefix("using ").rstrip(";").split(".")[-1]
-                records.append(self._line_record(path, index, "using", name, line, 0.75))
+                records.append(
+                    self._line_record(path, index, "using", name, line, 0.75)
+                )
         for index, line in enumerate(lines, start=1):
             ctor_match = self._CS_CTOR_PATTERN.search(line)
             if ctor_match and ctor_match.group(1) in class_names:
-                records.append(self._line_record(path, index, "constructor", ctor_match.group(1), line, 0.8))
+                records.append(
+                    self._line_record(
+                        path, index, "constructor", ctor_match.group(1), line, 0.8
+                    )
+                )
                 continue
             method_match = self._CS_METHOD_PATTERN.search(line)
             if method_match:
-                records.append(self._line_record(path, index, "method", method_match.group(1), line, 0.75))
+                records.append(
+                    self._line_record(
+                        path, index, "method", method_match.group(1), line, 0.75
+                    )
+                )
                 continue
             if "(" not in line:
                 field_match = self._CS_FIELD_PATTERN.search(line)
                 if field_match:
-                    records.append(self._line_record(path, index, "field", field_match.group(1), line, 0.75))
+                    records.append(
+                        self._line_record(
+                            path, index, "field", field_match.group(1), line, 0.75
+                        )
+                    )
         return sorted(records, key=lambda item: (item.line, item.kind, item.name))
 
-    def _fallback_definition_matches(self, symbol: str, path: Path) -> list[SymbolRecord]:
+    def _fallback_definition_matches(
+        self, symbol: str, path: Path
+    ) -> list[SymbolRecord]:
         references = self.find_references(symbol, path, max_results=20)
         return [
             SymbolRecord(
@@ -266,6 +378,10 @@ class StaticSymbolBackend:
                 name=symbol,
                 signature=reference.line_text.strip(),
                 confidence=0.35,
+                symbol_id="",
+                qualified_name=f"{reference.path}::{symbol}",
+                resolver="textual_definition_fallback",
+                confidence_tier="TEXTUAL",
             )
             for reference in references
         ]
@@ -279,14 +395,22 @@ class StaticSymbolBackend:
         signature: str,
         confidence: float,
     ) -> SymbolRecord:
+        rel = self._relative(path)
+        language = self.language_for_path(path)
+        end_line = line
+        symbol_id = f"{language}|{rel}|{name}|{kind}|{line}:{end_line}"
         return SymbolRecord(
-            path=self._relative(path),
+            path=rel,
             line=line,
             end_line=line,
             kind=kind,
             name=name,
             signature=signature.strip(),
             confidence=confidence,
+            symbol_id=symbol_id,
+            qualified_name=f"{rel}::{name}",
+            resolver="static_rule_parser",
+            confidence_tier="INFERRED",
         )
 
     def _candidate_files(self, path: Path | None) -> list[Path]:
@@ -307,7 +431,9 @@ class StaticSymbolBackend:
         return sorted(candidates, key=lambda item: str(item))
 
     def _resolve(self, path: Path) -> Path:
-        return path.resolve() if path.is_absolute() else (self.repo_root / path).resolve()
+        return (
+            path.resolve() if path.is_absolute() else (self.repo_root / path).resolve()
+        )
 
     def _relative(self, path: Path) -> str:
         try:

@@ -17,7 +17,8 @@ def build_tool_schemas(specs: list[ToolSpec]) -> list[dict[str, Any]]:
                 "function": {
                     "name": spec.name,
                     "description": spec.description,
-                    "parameters": spec.parameters or {"type": "object", "properties": {}},
+                    "parameters": spec.parameters
+                    or {"type": "object", "properties": {}},
                 },
             }
         )
@@ -26,6 +27,52 @@ def build_tool_schemas(specs: list[ToolSpec]) -> list[dict[str, Any]]:
 
 def build_submit_tool_schemas() -> list[dict[str, Any]]:
     """Pseudo-tools used for structured final output submission."""
+    anchor_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "file": {"type": "string"},
+            "line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+            "symbol_id": {"type": "string"},
+        },
+        "required": ["file", "line", "symbol_id"],
+    }
+    evidence_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "candidate_id": {"type": "string", "minLength": 1},
+            "context_manifest_id": {"type": "string", "minLength": 1},
+            "retrieval_source": {"type": "string", "minLength": 1},
+            "file": {"type": "string", "minLength": 1},
+            "line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+            "symbol_id": {"type": "string", "minLength": 1},
+            "context_hash": {"type": "string", "minLength": 1},
+            "edge_kind": {"type": "string"},
+            "edge_confidence": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 1.0,
+            },
+            "resolver": {"type": "string", "minLength": 1},
+            "evidence_eligibility": {
+                "type": "string",
+                "enum": ["strong", "exploratory", "none"],
+            },
+            "statement": {"type": "string", "minLength": 1},
+        },
+        "required": [
+            "candidate_id",
+            "context_manifest_id",
+            "retrieval_source",
+            "file",
+            "line",
+            "symbol_id",
+            "context_hash",
+            "resolver",
+            "statement",
+        ],
+    }
     return [
         {
             "type": "function",
@@ -56,7 +103,12 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                 "properties": {
                                     "severity": {
                                         "type": "string",
-                                        "enum": ["critical", "warning", "info", "style"],
+                                        "enum": [
+                                            "critical",
+                                            "warning",
+                                            "info",
+                                            "style",
+                                        ],
                                     },
                                     "location": {
                                         "type": "string",
@@ -74,12 +126,90 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                             "or non-blocking concerns."
                                         ),
                                     },
+                                    "schema_version": {
+                                        "type": "string",
+                                        "enum": ["2.0"],
+                                    },
+                                    "finding_id": {
+                                        "type": "string",
+                                        "description": "Reviewer-local id such as F-01. Do not emit root_cause_id.",
+                                    },
+                                    "primary_anchor": anchor_schema,
+                                    "related_locations": {
+                                        "type": "array",
+                                        "items": {
+                                            **anchor_schema,
+                                            "properties": {
+                                                **anchor_schema["properties"],
+                                                "role": {
+                                                    "type": "string",
+                                                    "enum": [
+                                                        "cause",
+                                                        "contract",
+                                                        "trigger",
+                                                        "impact",
+                                                        "related",
+                                                    ],
+                                                },
+                                                "description": {"type": "string"},
+                                            },
+                                        },
+                                    },
+                                    "observed_behavior": {"type": "string"},
+                                    "causal_mechanism": {"type": "string"},
+                                    "violated_invariant": {"type": "string"},
+                                    "repair_intent": {
+                                        "type": "object",
+                                        "properties": {
+                                            "action": {"type": "string"},
+                                            "targets": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                            },
+                                            "boundary": {"type": "string"},
+                                        },
+                                        "required": ["action", "targets", "boundary"],
+                                    },
+                                    "trigger": {"type": "string"},
+                                    "impact": {"type": "string"},
+                                    "cause_evidence": {
+                                        "type": "array",
+                                        "items": evidence_schema,
+                                    },
+                                    "contract_evidence": {
+                                        "type": "array",
+                                        "items": evidence_schema,
+                                    },
+                                    "trigger_evidence": {
+                                        "type": "array",
+                                        "items": evidence_schema,
+                                    },
+                                    "impact_evidence": {
+                                        "type": "array",
+                                        "items": evidence_schema,
+                                    },
+                                    "context_manifest_id": {"type": "string"},
                                 },
                                 "required": [
                                     "severity",
                                     "location",
                                     "evidence",
                                     "suggestion",
+                                    "schema_version",
+                                    "finding_id",
+                                    "primary_anchor",
+                                    "related_locations",
+                                    "observed_behavior",
+                                    "causal_mechanism",
+                                    "violated_invariant",
+                                    "repair_intent",
+                                    "trigger",
+                                    "impact",
+                                    "cause_evidence",
+                                    "contract_evidence",
+                                    "trigger_evidence",
+                                    "impact_evidence",
+                                    "context_manifest_id",
                                 ],
                             },
                         },

@@ -11,6 +11,15 @@ import re
 
 from pydantic import BaseModel, Field
 
+from src.analyzer.finding_schema import (
+    CounterfactualResult,
+    EvidenceProvenance,
+    FINDING_SCHEMA_VERSION,
+    RelatedLocation,
+    RepairIntent,
+    SourceAnchor,
+)
+
 
 class Severity(str, Enum):
     """Issue severity levels."""
@@ -22,7 +31,12 @@ class Severity(str, Enum):
 
 
 class ReviewIssue(BaseModel):
-    """A single review finding."""
+    """A review finding hypothesis or a verified root-cause finding.
+
+    ``location``, ``evidence`` and ``suggestion`` remain required so existing
+    v0.2.2 callers and GitHub publishers keep working.  Structured v0.2.3
+    producers additionally populate the causal, repair and provenance fields.
+    """
 
     severity: Severity
     location: str = Field(
@@ -38,6 +52,59 @@ class ReviewIssue(BaseModel):
         default="",
         description="Stable semantic-verification identifier for this finding",
     )
+    schema_version: str = Field(
+        default="1.0",
+        description="1.0 for legacy issues; 2.0 for structured hypotheses.",
+    )
+    finding_id: str = Field(
+        default="",
+        description="Reviewer-local hypothesis identifier; not a root-cause id.",
+    )
+    root_cause_id: str = Field(
+        default="",
+        description="Assigned only after root-cause cluster construction.",
+    )
+    primary_anchor: SourceAnchor | None = None
+    related_locations: list[RelatedLocation] = Field(default_factory=list)
+    observed_behavior: str = ""
+    causal_mechanism: str = ""
+    violated_invariant: str = ""
+    repair_intent: RepairIntent = Field(default_factory=RepairIntent)
+    trigger: str = ""
+    impact: str = ""
+    cause_evidence: list[EvidenceProvenance] = Field(default_factory=list)
+    contract_evidence: list[EvidenceProvenance] = Field(default_factory=list)
+    trigger_evidence: list[EvidenceProvenance] = Field(default_factory=list)
+    impact_evidence: list[EvidenceProvenance] = Field(default_factory=list)
+    context_manifest_id: str = ""
+    member_findings: list[str] = Field(default_factory=list)
+    absorbed_roles: dict[str, str] = Field(default_factory=dict)
+    counterfactual_result: CounterfactualResult | None = None
+    merge_rejection_reasons: list[str] = Field(default_factory=list)
+
+    @property
+    def is_structured_hypothesis(self) -> bool:
+        return self.schema_version == FINDING_SCHEMA_VERSION
+
+    def all_evidence(self) -> list[EvidenceProvenance]:
+        return [
+            *self.cause_evidence,
+            *self.contract_evidence,
+            *self.trigger_evidence,
+            *self.impact_evidence,
+        ]
+
+    def v022_payload(self) -> dict[str, object]:
+        """Return the legacy single-anchor issue contract for old consumers."""
+
+        return {
+            "severity": self.severity.value,
+            "location": self.location,
+            "evidence": self.evidence,
+            "suggestion": self.suggestion,
+            "confidence": self.confidence,
+            "candidate_id": self.candidate_id,
+        }
 
 
 class ReviewReport(BaseModel):
@@ -45,6 +112,18 @@ class ReviewReport(BaseModel):
 
     issues: list[ReviewIssue] = Field(default_factory=list)
     summary: str = Field(default="")
+    schema_version: str = Field(
+        default=FINDING_SCHEMA_VERSION,
+        description="Version of the review-output compatibility envelope.",
+    )
+
+    def v022_payload(self) -> dict[str, object]:
+        """Compatibility conversion for integrations pinned to v0.2.2."""
+
+        return {
+            "summary": self.summary,
+            "issues": [issue.v022_payload() for issue in self.issues],
+        }
 
 
 class ReviewTriage(BaseModel):

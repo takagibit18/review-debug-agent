@@ -120,3 +120,9 @@ Only Warning/Critical findings require semantic verification. In `enforce` mode 
 ### v0.2.0 Durable Worker State
 
 The platform queue uses an atomic SQLite claim with `lease_owner`, `lease_expires_at`, `heartbeat_at`, and `attempt`. `run_checkpoints` records `review_pipeline` and `persist_artifacts` attempts. Expired leases are requeued from the first incomplete checkpoint. Artifact writes use same-directory atomic replacement with SHA-256 sidecars, usage records are idempotent per run attempt, and GitHub check runs use a stable external id for update-on-recovery behavior.
+
+### v0.2.3–v0.2.5 Root-Cause Review Pipeline
+
+Warning/Critical review hypotheses now pass through two distinct gates: a per-finding evidence verifier before consolidation and a cluster-level consolidation verifier after conservative blocking and complete-link grouping. A change-centered relation graph and exact Candidate Context Manifest constrain what the Reviewer and verifier may cite. The graph answers which code to inspect; it never defines root-cause clusters.
+
+The local static graph uses qualified symbol identities, evidence-aware edges, field read/write relations and an optional resolver interface. A versioned SQLite index supports hash-based incremental rebuilds and safe corruption/schema fallback. See [v023_v025_root_cause_relation_graph.md](./v023_v025_root_cause_relation_graph.md) for schemas, provenance rules, migrations and diagrams.
