@@ -556,7 +556,8 @@ class RelationGraphIndex:
 
 def repository_identity(repo_root: Path) -> str:
     remote = _git_output(repo_root, ["config", "--get", "remote.origin.url"])
-    raw = f"{repo_root.resolve()}|{remote.strip()}"
+    remote = remote.strip()
+    raw = f"remote:{remote}" if remote else f"path:{repo_root.resolve()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

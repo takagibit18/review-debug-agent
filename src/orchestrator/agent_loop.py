@@ -71,6 +71,7 @@ class AgentOrchestrator:
         finding_verifier_mode: Literal["off", "shadow", "enforce"] | None = None,
         review_workflow_enforcement: Literal["off", "warn", "enforce"] | None = None,
         review_diff_first_changed_files: bool | None = None,
+        relation_graph_index_path: str | Path | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -125,6 +126,7 @@ class AgentOrchestrator:
             if review_diff_first_changed_files is None
             else bool(review_diff_first_changed_files)
         )
+        self._relation_graph_index_path_override = relation_graph_index_path
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
@@ -224,7 +226,10 @@ class AgentOrchestrator:
                 "status": "disabled_or_not_applicable",
             }
             return
-        index_path = Path(self._settings.relation_graph_index_path)
+        index_path = Path(
+            self._relation_graph_index_path_override
+            or self._settings.relation_graph_index_path
+        )
         if not index_path.is_absolute():
             index_path = self._workspace_root / index_path
         resolver = (

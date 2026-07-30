@@ -11,8 +11,9 @@ from src.analyzer.code_graph import (
     NodeKind,
     StaticRelationGraphBuilder,
 )
+from src.analyzer import persistent_index
 from src.analyzer.language_resolver import CallableLanguageResolver, EnrichedRelation
-from src.analyzer.persistent_index import RelationGraphIndex
+from src.analyzer.persistent_index import RelationGraphIndex, repository_identity
 
 
 def _write(path: Path, content: str) -> Path:
@@ -243,6 +244,20 @@ def test_persistent_index_reuses_unchanged_graph(tmp_path: Path) -> None:
     assert second.cache_hit is True
     assert second.cache_hit_rate == 1.0
     assert second.parsed_file_count == 0
+
+
+def test_repository_identity_prefers_stable_remote_over_checkout_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        persistent_index,
+        "_git_output",
+        lambda repo_root, args: "https://github.com/example/repo.git",
+    )
+
+    assert repository_identity(tmp_path / "checkout-1") == repository_identity(
+        tmp_path / "checkout-2"
+    )
 
 
 def test_incremental_index_reparses_import_neighbor_but_not_unrelated_file(

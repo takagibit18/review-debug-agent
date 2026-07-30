@@ -37,6 +37,7 @@ from src.analyzer.schemas import (
     ReviewResponse,
 )
 from src.config import get_settings
+from src.analyzer.persistent_index import INDEX_SCHEMA_VERSION
 from src.orchestrator.agent_loop import AgentOrchestrator
 
 EVAL_EVENT_LOGS_OUTPUT_DIR = Path("eval") / "outputs" / "event_logs"
@@ -358,6 +359,25 @@ def _workspace_cache_key(repo_url: str) -> str:
     return f"{stem[-48:]}_{digest}.git"
 
 
+def _eval_relation_graph_index_path(fixture: Fixture) -> Path:
+    """Return a stable eval-owned index path outside temporary checkouts."""
+    workspace = fixture.input.workspace
+    source = (
+        workspace.repo_url
+        if workspace is not None and workspace.repo_url.strip()
+        else fixture.source.repo_full_name
+    )
+    source = source.strip() or fixture.id
+    digest = hashlib.sha256(
+        f"{source}|schema:{INDEX_SCHEMA_VERSION}".encode("utf-8")
+    ).hexdigest()[:16]
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", source.rstrip("/").removesuffix(".git"))
+    index_root = (
+        Path(get_settings().eval_workspace_cache_dir) / "relation_index"
+    ).resolve()
+    return index_root / f"{stem[-64:]}_{digest}.sqlite3"
+
+
 def _workspace_cache_lock(key: str) -> threading.Lock:
     with _CACHE_LOCKS_GUARD:
         lock = _CACHE_LOCKS.get(key)
@@ -396,14 +416,18 @@ async def run_single(
 ) -> EvalResult:
     """Run one fixture and return evaluation metadata."""
     expected_count = len(fixture.expected.issues)
+    stage_timings: dict[str, float] = {}
     try:
         with tempfile.TemporaryDirectory(prefix="eval-fixture-") as tmp_dir:
+            stage_started = perf_counter()
             repo_root = await asyncio.to_thread(
                 _prepare_fixture_workspace,
                 fixture,
                 Path(tmp_dir) / "repo",
                 workspace_cache_dir=Path(get_settings().eval_workspace_cache_dir),
             )
+            stage_timings["prepare_workspace_seconds"] = perf_counter() - stage_started
+            stage_started = perf_counter()
             diff_workspace_errors = await asyncio.to_thread(
                 _validate_diff_added_lines_against_workspace,
                 fixture,
@@ -414,12 +438,14 @@ async def run_single(
                 fixture,
                 repo_root,
             )
+            stage_timings["validate_fixture_seconds"] = perf_counter() - stage_started
             if validation_errors:
                 return EvalResult(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
                     schema_valid=False,
                     expected_count=expected_count,
+                    stage_timings=stage_timings,
                     error="; ".join(validation_errors),
                 )
             orchestrator = AgentOrchestrator(
@@ -432,6 +458,7 @@ async def run_single(
                     1, get_settings().eval_review_min_tool_iterations
                 ),
                 review_diff_first_changed_files=True,
+                relation_graph_index_path=_eval_relation_graph_index_path(fixture),
             )
             sandbox_context = _build_fixture_context(fixture, repo_root)
 
@@ -466,6 +493,7 @@ async def run_single(
                 )
                 actual_count = len(parsed_response.steps)
             latency = perf_counter() - start
+            stage_timings["agent_run_seconds"] = latency
 
             total_tokens = _read_total_tokens(repo_root, parsed_response.run_id)
             log_stats = _read_event_log_stats(repo_root, parsed_response.run_id)
@@ -501,6 +529,7 @@ async def run_single(
                 latency_seconds=latency,
                 total_tokens=total_tokens,
                 event_log_path=event_log_path,
+                stage_timings=stage_timings,
                 error=(
                     "Empty review output: no summary or issues."
                     if empty_business_output
@@ -536,6 +565,7 @@ async def run_single(
             fixture_type=fixture.type,
             schema_valid=False,
             expected_count=expected_count,
+            stage_timings=stage_timings,
             error=str(exc),
         )
 
