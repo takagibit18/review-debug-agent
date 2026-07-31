@@ -68,6 +68,7 @@ def test_new_config_defaults_are_enabled_and_invalid_ranges_are_rejected() -> No
     assert settings.relation_graph_enabled is True
     assert settings.relation_graph_persistence_enabled is True
     assert settings.relation_graph_resolver_mode in {"ast", "resolver", "lsp"}
+    assert settings.relation_graph_max_ambiguous_targets == 4
 
     with pytest.raises(ValidationError):
         Settings(root_cause_consolidation_max_block_size=1)
@@ -77,6 +78,10 @@ def test_new_config_defaults_are_enabled_and_invalid_ranges_are_rejected() -> No
         Settings(relation_graph_min_evidence_confidence=1.1)
     with pytest.raises(ValidationError):
         Settings(relation_graph_index_path="")
+    with pytest.raises(ValidationError):
+        Settings(relation_graph_max_ambiguous_targets=0)
+    with pytest.raises(ValidationError):
+        Settings(relation_graph_max_ambiguous_targets=101)
 
 
 def test_reviewer_submit_schema_requires_hypothesis_fields_and_forbids_root_id() -> (

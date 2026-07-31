@@ -333,6 +333,13 @@ class Settings(BaseModel):
         ge=1,
         le=100000,
     )
+    relation_graph_max_ambiguous_targets: int = Field(
+        default_factory=lambda: int(
+            os.getenv("RELATION_GRAPH_MAX_AMBIGUOUS_TARGETS", "4")
+        ),
+        ge=1,
+        le=100,
+    )
     review_workflow_enforcement: ReviewWorkflowEnforcement = Field(
         default_factory=lambda: cast(
             ReviewWorkflowEnforcement,
@@ -626,8 +633,7 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_budget_relationships(self) -> "Settings":
-        if self.token_hard_budget < self.token_budget:
-            self.token_hard_budget = self.token_budget
+        self.token_hard_budget = max(self.token_hard_budget, self.token_budget)
         if self.relation_graph_lsp_enrichment_enabled:
             self.relation_graph_resolver_mode = "lsp"
         return self

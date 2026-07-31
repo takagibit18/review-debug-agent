@@ -171,6 +171,44 @@ Fixture: `golden_astral-sh_ruff_pr24648`
 - Ruff workspace restore 需要 Windows 长路径缓解，例如使用更短 checkout root，或设置仓库级 `core.longpaths=true`。
 - 两个真实 eval 探针使用了较短模型/运行超时，并且使用 `--review-max-iterations 1`；这些结果只用于诊断性能和缓存，不作为质量指标。
 
+## 2026-07-31 冷构图修复
+
+后续代码分析确认，候选边数量之外还存在一个更直接的复杂度放大器：
+`CodeRelationGraph.add_edge()` 原先每次插入都会线性扫描全部已有边做去重，
+`outgoing()` / `incoming()` 也会反复扫描全图。单独插入 10,000 条唯一边的本地探针耗时
+约 21.449 秒，属于明显的二次复杂度退化。
+
+修复包括：
+
+- 使用非序列化的 edge-id 集合和出入边邻接索引，将插入、去重和邻接查询改为哈希查找；
+- 建立符号名称索引，避免每个 AST 表达式重新遍历全部节点；
+- 默认只保留最多 4 个歧义候选，超过上限时记录汇总诊断而不任意选择部分候选；
+- 只从强且置信度不低于 0.65 的调用或引用派生 `TESTED_BY`；
+- 缓存加载同时校验 builder version 和构建画像，配置变化时只重建对应仓库图。
+
+同一 10,000 边插入探针修复后耗时约 0.691 秒，提升约 31 倍。
+
+为了排除 GitHub 下载影响，另用 244 个 Python 文件、6,832 个节点的本地合成仓库模拟
+pytest 规模及高重复 attribute 名称：
+
+| 模式 | 冷构建及持久化 | Edges | SQLite 大小 | 省略候选 |
+| --- | ---: | ---: | ---: | ---: |
+| 默认上限 4 | 7.768s | 13,176 | 14.137 MB | 59,536 |
+| 不限制候选 | 15.391s | 132,248 | 104.660 MB | 0 |
+
+默认策略把该工作负载的持久化耗时降低约 49.5%，边数降低约 90.0%，SQLite 大小降低约
+86.5%；相对原真实 pytest fixture 的 739.780 秒冷构建，规模探针已超过 10 倍改善目标。
+
+当前 MergeWarden 工作树的真实仓库探针包含 160 个文件、3,580 个节点和 20,793 条边：
+冷构建及持久化为 25.441 秒，热加载为 4.829 秒，`status=reuse` 且
+`persistent_cache_hit_rate=1.0`。该图记录了 174 次高基数歧义截断、2,481 个省略候选以及
+598 条未派生的弱测试关系。
+
+真实 `golden_pytest-dev_pytest_pr9350` 复测尝试未进入构图：首次 mirror clone 超过 240 秒，
+改用浅层 partial clone 后又在 checkout 按需获取 blob 时达到 120 秒 Git 超时。因此本轮不能把
+真实 fixture 标记为已复测；失败仍位于 workspace materialization/network 阶段。Ruff 的 Windows
+长路径问题也继续作为独立 workspace/materialization 问题保留。
+
 ## 已验证命令
 
 ```powershell

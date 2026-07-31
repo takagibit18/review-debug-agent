@@ -6,11 +6,12 @@ import hashlib
 import json
 import sqlite3
 import subprocess
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterable, Iterator
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -20,9 +21,8 @@ from src.analyzer.code_graph import (
     StaticRelationGraphBuilder,
 )
 
-
 INDEX_SCHEMA_VERSION = 3
-INDEX_BUILD_VERSION = "v025.1"
+INDEX_BUILD_VERSION = "v025.2"
 
 
 class IndexSnapshot(BaseModel):
@@ -387,6 +387,7 @@ class RelationGraphIndex:
         resolver_mode: str = "ast",
         language_resolver: Any | None = None,
         max_files: int = 5_000,
+        max_ambiguous_targets: int = 4,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.persistence_enabled = persistence_enabled
@@ -400,6 +401,7 @@ class RelationGraphIndex:
             resolver_mode=resolver_mode,
             language_resolver=language_resolver,
             max_files=max_files,
+            max_ambiguous_targets=max_ambiguous_targets,
         )
 
     def build(self) -> IndexBuildResult:
@@ -447,7 +449,27 @@ class RelationGraphIndex:
             diagnostics.append(
                 {"stage": "persistent_index", "fallback": store.last_recovery}
             )
-        if snapshot is None:
+        rebuild_reason = ""
+        if snapshot is not None and snapshot.build_version != INDEX_BUILD_VERSION:
+            rebuild_reason = (
+                "build_version_changed:"
+                f"{snapshot.build_version or 'missing'}->{INDEX_BUILD_VERSION}"
+            )
+        elif (
+            snapshot is not None
+            and snapshot.graph.metadata.get("build_profile")
+            != self.builder.build_profile()
+        ):
+            rebuild_reason = "build_profile_changed"
+        if rebuild_reason:
+            diagnostics.append(
+                {
+                    "stage": "persistent_index",
+                    "fallback": "repository_graph_rebuild",
+                    "reason": rebuild_reason,
+                }
+            )
+        if snapshot is None or rebuild_reason:
             graph = self.builder.build(files=files)
             store.save(
                 repository_id=repository_id,
@@ -460,14 +482,16 @@ class RelationGraphIndex:
                 graph=graph,
                 repository_id=repository_id,
                 revision=revision,
-                status="rebuild" if store.last_recovery else "build",
+                status=(
+                    "rebuild" if store.last_recovery or rebuild_reason else "build"
+                ),
                 file_count=len(files),
                 changed_files=sorted(hashes),
                 affected_files=sorted(hashes),
                 parsed_file_count=len(files),
                 build_latency_seconds=perf_counter() - started,
                 persistence_enabled=True,
-                fallback=store.last_recovery,
+                fallback=rebuild_reason or store.last_recovery,
                 diagnostics=diagnostics,
             )
 
