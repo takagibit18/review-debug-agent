@@ -5,20 +5,86 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from src.analyzer import persistent_index
 from src.analyzer.code_graph import (
+    CodeNode,
+    CodeRelationGraph,
     ConfidenceTier,
     EdgeKind,
     NodeKind,
+    RelationEdge,
     StaticRelationGraphBuilder,
 )
 from src.analyzer.language_resolver import CallableLanguageResolver, EnrichedRelation
-from src.analyzer.persistent_index import RelationGraphIndex
+from src.analyzer.persistent_index import RelationGraphIndex, repository_identity
 
 
 def _write(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
+
+
+def _relation_edge(sequence: int, *, source: str = "source") -> RelationEdge:
+    return RelationEdge(
+        source=source,
+        target=f"target-{sequence}",
+        kind=EdgeKind.CALLS,
+        path="service.py",
+        line=max(1, sequence),
+        resolver="test",
+        confidence=0.9,
+        confidence_tier=ConfidenceTier.RESOLVED,
+        evidence_eligibility="strong",
+        reason="test relation",
+    )
+
+
+def test_edge_indexes_survive_serialization_copy_and_file_removal() -> None:
+    graph = CodeRelationGraph(
+        nodes={
+            "source": CodeNode(
+                node_id="source",
+                kind=NodeKind.FUNCTION,
+                language="python",
+                path="service.py",
+            ),
+            "target-1": CodeNode(
+                node_id="target-1",
+                kind=NodeKind.FUNCTION,
+                language="python",
+                path="target.py",
+            ),
+        }
+    )
+    edge = _relation_edge(1)
+    graph.add_edge(edge)
+    graph.add_edge(edge.model_copy(deep=True))
+
+    restored = CodeRelationGraph.model_validate_json(graph.model_dump_json())
+    copied = restored.model_copy(deep=True)
+
+    assert len(restored.edges) == 1
+    assert restored.outgoing("source") == restored.edges
+    assert restored.incoming("target-1") == restored.edges
+    copied.remove_files({"target.py"})
+    assert copied.edges == []
+    assert copied.outgoing("source") == []
+    assert copied.incoming("target-1") == []
+
+
+def test_large_edge_batch_is_deduplicated_without_changing_order() -> None:
+    graph = CodeRelationGraph()
+    edges = [_relation_edge(index) for index in range(1, 5_001)]
+
+    for edge in edges:
+        graph.add_edge(edge)
+    for edge in edges:
+        graph.add_edge(edge)
+
+    assert len(graph.edges) == 5_000
+    assert graph.edges == edges
+    assert len(graph.outgoing("source")) == 5_000
 
 
 def test_qualified_symbol_identity_separates_same_bare_method_names(
@@ -111,6 +177,92 @@ def test_ambiguous_bare_call_remains_exploratory(tmp_path: Path) -> None:
     assert all(edge.confidence_tier == ConfidenceTier.AMBIGUOUS for edge in calls)
     assert all(edge.evidence_eligibility == "exploratory" for edge in calls)
     assert all(edge.confidence < 0.65 for edge in calls)
+
+
+def test_ambiguous_attribute_candidates_are_kept_at_limit(tmp_path: Path) -> None:
+    files = [
+        _write(
+            tmp_path / f"service_{index}.py",
+            f"class Service{index}:\n    def execute(self):\n        return {index}\n",
+        )
+        for index in range(4)
+    ]
+    files.append(
+        _write(
+            tmp_path / "caller.py",
+            "def invoke(client):\n    return client.execute()\n",
+        )
+    )
+
+    graph = StaticRelationGraphBuilder(tmp_path, max_ambiguous_targets=4).build(
+        files=files
+    )
+    invoke = next(node for node in graph.nodes.values() if node.name == "invoke")
+    calls = graph.outgoing(invoke.node_id, {EdgeKind.CALLS})
+
+    assert len(calls) == 4
+    assert all(edge.resolver == "ast_attribute_candidates" for edge in calls)
+    assert graph.metadata["ambiguous_resolution_truncation_count"] == 0
+
+
+def test_ambiguous_attribute_candidates_over_limit_are_omitted(
+    tmp_path: Path,
+) -> None:
+    files = [
+        _write(
+            tmp_path / f"service_{index}.py",
+            f"class Service{index}:\n    def execute(self):\n        return {index}\n",
+        )
+        for index in range(5)
+    ]
+    files.append(
+        _write(
+            tmp_path / "tests" / "test_service.py",
+            "def test_execute(client):\n    return client.execute()\n",
+        )
+    )
+
+    graph = StaticRelationGraphBuilder(tmp_path, max_ambiguous_targets=4).build(
+        files=files
+    )
+    test_node = next(
+        node for node in graph.nodes.values() if node.name == "test_execute"
+    )
+
+    assert graph.outgoing(test_node.node_id, {EdgeKind.CALLS}) == []
+    assert not any(edge.kind == EdgeKind.TESTED_BY for edge in graph.edges)
+    assert graph.metadata["ambiguous_resolution_truncation_count"] == 1
+    assert graph.metadata["omitted_ambiguous_candidate_count"] == 5
+    assert any(
+        diagnostic.get("resolver") == "ast_attribute_candidates"
+        and diagnostic.get("fallback") == "ambiguous_candidates_omitted"
+        for diagnostic in graph.diagnostics
+    )
+
+
+def test_weak_test_call_does_not_derive_tested_by(tmp_path: Path) -> None:
+    files = [
+        _write(
+            tmp_path / f"service_{index}.py",
+            f"class Service{index}:\n    def execute(self):\n        return {index}\n",
+        )
+        for index in range(2)
+    ]
+    files.append(
+        _write(
+            tmp_path / "tests" / "test_service.py",
+            "def test_execute(client):\n    return client.execute()\n",
+        )
+    )
+
+    graph = StaticRelationGraphBuilder(tmp_path).build(files=files)
+
+    assert any(
+        edge.kind == EdgeKind.CALLS and edge.evidence_eligibility == "exploratory"
+        for edge in graph.edges
+    )
+    assert not any(edge.kind == EdgeKind.TESTED_BY for edge in graph.edges)
+    assert graph.metadata["skipped_weak_test_relation_count"] == 2
 
 
 def test_python_field_reads_and_writes_include_direct_parameter_metadata(
@@ -245,6 +397,88 @@ def test_persistent_index_reuses_unchanged_graph(tmp_path: Path) -> None:
     assert second.parsed_file_count == 0
 
 
+def test_persistent_index_rebuilds_when_build_profile_changes(tmp_path: Path) -> None:
+    _write(tmp_path / "stable.py", "def stable():\n    return 1\n")
+    index_path = tmp_path / ".mergewarden" / "profile.sqlite3"
+
+    first = RelationGraphIndex(
+        tmp_path,
+        index_path=index_path,
+        resolver_mode="ast",
+        max_files=100,
+        max_ambiguous_targets=4,
+    ).build()
+    reused = RelationGraphIndex(
+        tmp_path,
+        index_path=index_path,
+        resolver_mode="ast",
+        max_files=100,
+        max_ambiguous_targets=4,
+    ).build()
+    changed_limit = RelationGraphIndex(
+        tmp_path,
+        index_path=index_path,
+        resolver_mode="ast",
+        max_files=100,
+        max_ambiguous_targets=3,
+    ).build()
+    changed_files = RelationGraphIndex(
+        tmp_path,
+        index_path=index_path,
+        resolver_mode="ast",
+        max_files=99,
+        max_ambiguous_targets=3,
+    ).build()
+    changed_resolver = RelationGraphIndex(
+        tmp_path,
+        index_path=index_path,
+        resolver_mode="resolver",
+        max_files=99,
+        max_ambiguous_targets=3,
+    ).build()
+
+    assert first.status == "build"
+    assert reused.status == "reuse"
+    for result in (changed_limit, changed_files, changed_resolver):
+        assert result.status == "rebuild"
+        assert result.cache_hit is False
+        assert result.fallback == "build_profile_changed"
+
+
+def test_persistent_index_rebuilds_when_builder_version_changes(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path / "stable.py", "def stable():\n    return 1\n")
+    index_path = tmp_path / ".mergewarden" / "version.sqlite3"
+    RelationGraphIndex(tmp_path, index_path=index_path).build()
+    connection = sqlite3.connect(index_path)
+    try:
+        connection.execute("UPDATE repositories SET build_version = 'v-old'")
+        connection.commit()
+    finally:
+        connection.close()
+
+    result = RelationGraphIndex(tmp_path, index_path=index_path).build()
+
+    assert result.status == "rebuild"
+    assert result.cache_hit is False
+    assert result.fallback.startswith("build_version_changed:v-old->")
+
+
+def test_repository_identity_prefers_stable_remote_over_checkout_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        persistent_index,
+        "_git_output",
+        lambda repo_root, args: "https://github.com/example/repo.git",
+    )
+
+    assert repository_identity(tmp_path / "checkout-1") == repository_identity(
+        tmp_path / "checkout-2"
+    )
+
+
 def test_incremental_index_reparses_import_neighbor_but_not_unrelated_file(
     tmp_path: Path,
 ) -> None:
@@ -369,6 +603,8 @@ def test_optional_language_resolver_adds_provenanced_edge(tmp_path: Path) -> Non
     assert edge.confidence_tier == ConfidenceTier.RESOLVED
     assert edge.evidence_eligibility == "strong"
     assert edge.metadata == {"fallback": "ast", "enriched": True}
+    assert graph.outgoing(edge.source, {EdgeKind.REFERENCES}) == [edge]
+    assert graph.incoming(edge.target, {EdgeKind.REFERENCES}) == [edge]
 
 
 def test_optional_language_resolver_failure_retains_ast_graph(tmp_path: Path) -> None:

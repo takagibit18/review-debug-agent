@@ -544,6 +544,44 @@ def test_run_single_forces_eval_prefetch_and_tool_round(monkeypatch, tmp_path: P
     assert captured["review_diff_first_changed_files"] is True
     assert captured["review_min_tool_iterations"] >= 1
     assert captured["review_max_iterations"] >= 2
+    assert Path(captured["relation_graph_index_path"]).parent.name == "relation_index"
+    assert result.stage_timings["prepare_workspace_seconds"] >= 0
+    assert result.stage_timings["validate_fixture_seconds"] >= 0
+    assert result.stage_timings["agent_run_seconds"] >= 0
+
+
+def test_eval_relation_graph_index_path_is_stable_per_repo(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("EVAL_WORKSPACE_CACHE_DIR", str(tmp_path / "cache"))
+    base = {
+        "id": "workspace-fixture",
+        "type": "review",
+        "source": {"repo_full_name": "example/repo", "pr_number": 1},
+        "input": {
+            "diff_text": "",
+            "files": {},
+            "workspace": {
+                "kind": "git",
+                "repo_url": "https://github.com/example/repo.git",
+                "checkout_sha": "head-1",
+            },
+        },
+        "expected": {"issues": []},
+    }
+    first = Fixture.model_validate(base)
+    second_payload = json.loads(json.dumps(base))
+    second_payload["input"]["workspace"]["checkout_sha"] = "head-2"
+    second = Fixture.model_validate(second_payload)
+
+    assert runner_module._eval_relation_graph_index_path(first) == (
+        runner_module._eval_relation_graph_index_path(second)
+    )
+    assert runner_module._eval_relation_graph_index_path(first).is_absolute()
+    assert (
+        runner_module._eval_relation_graph_index_path(first).parent
+        == (tmp_path / "cache" / "relation_index").resolve()
+    )
 
 
 def test_resolve_fixture_paths_prefers_manifest(tmp_path: Path) -> None:

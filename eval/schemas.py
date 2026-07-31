@@ -206,6 +206,7 @@ class EvalResult(BaseModel):
         description="Absolute path to persisted event log under eval/outputs/event_logs (if available)",
     )
     error: str | None = None
+    stage_timings: dict[str, float] = Field(default_factory=dict)
     issue_matches: list[EvalIssueMatch] = Field(default_factory=list)
     raw_output: dict[str, Any] = Field(default_factory=dict)
     placeholder_summary: bool = Field(

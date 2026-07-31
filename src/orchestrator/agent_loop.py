@@ -12,9 +12,12 @@ from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
-from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.code_graph import attach_changed_hunks, extract_changed_anchors
+from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_planner import ChangeCenteredContextPlanner
+from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
+from src.analyzer.diff_lines import changed_new_lines_by_file
+from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.finding_verifier import (
     DeterministicValidationStats,
     FindingVerifier,
@@ -23,31 +26,30 @@ from src.analyzer.finding_verifier import (
     review_candidate_severities,
     validate_verifications_with_stats,
 )
-from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
-from src.analyzer.diff_lines import changed_new_lines_by_file
-from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.inference_engine import InferenceEngine
+from src.analyzer.language_resolver import UnavailableLspResolver
 from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.persistent_index import RelationGraphIndex
+from src.analyzer.result_processor import ResultProcessor
+from src.analyzer.root_cause import RootCauseConsolidator
 from src.analyzer.schemas import (
     AnalysisPlan,
     DebugRequest,
     DebugResponse,
+    FindingVerificationBatch,
     ReviewRequest,
     ReviewResponse,
 )
-from src.analyzer.schemas import FindingVerificationBatch
 from src.analyzer.trace import TraceRecorder
-from src.analyzer.language_resolver import UnavailableLspResolver
-from src.analyzer.persistent_index import RelationGraphIndex
-from src.analyzer.root_cause import RootCauseConsolidator
-from src.analyzer.verifier_context import capture_verifier_tool_evidence
-from src.analyzer.verifier_context import build_candidate_verifier_context
-from src.analyzer.result_processor import ResultProcessor
+from src.analyzer.verifier_context import (
+    build_candidate_verifier_context,
+    capture_verifier_tool_evidence,
+)
 from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError, ModelTimeoutError
-from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
 from src.orchestrator.review_workflow import ReviewWorkflowTracker
+from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
 from src.tools import create_default_registry
 from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
@@ -71,6 +73,7 @@ class AgentOrchestrator:
         finding_verifier_mode: Literal["off", "shadow", "enforce"] | None = None,
         review_workflow_enforcement: Literal["off", "warn", "enforce"] | None = None,
         review_diff_first_changed_files: bool | None = None,
+        relation_graph_index_path: str | Path | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -125,6 +128,7 @@ class AgentOrchestrator:
             if review_diff_first_changed_files is None
             else bool(review_diff_first_changed_files)
         )
+        self._relation_graph_index_path_override = relation_graph_index_path
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
@@ -224,7 +228,10 @@ class AgentOrchestrator:
                 "status": "disabled_or_not_applicable",
             }
             return
-        index_path = Path(self._settings.relation_graph_index_path)
+        index_path = Path(
+            self._relation_graph_index_path_override
+            or self._settings.relation_graph_index_path
+        )
         if not index_path.is_absolute():
             index_path = self._workspace_root / index_path
         resolver = (
@@ -240,6 +247,9 @@ class AgentOrchestrator:
                 resolver_mode=self._settings.relation_graph_resolver_mode,
                 language_resolver=resolver,
                 max_files=self._settings.relation_graph_max_files,
+                max_ambiguous_targets=(
+                    self._settings.relation_graph_max_ambiguous_targets
+                ),
             ).build()
             graph = index_result.graph
             anchors = extract_changed_anchors(request.diff_text or "", graph)
@@ -294,6 +304,15 @@ class AgentOrchestrator:
                 index_result.incremental_update_latency_seconds
             ),
             "resolver_mode": self._settings.relation_graph_resolver_mode,
+            "ambiguous_resolution_truncation_count": graph.metadata.get(
+                "ambiguous_resolution_truncation_count", 0
+            ),
+            "omitted_ambiguous_candidate_count": graph.metadata.get(
+                "omitted_ambiguous_candidate_count", 0
+            ),
+            "skipped_weak_test_relation_count": graph.metadata.get(
+                "skipped_weak_test_relation_count", 0
+            ),
         }
         self._record_event(
             EventType.INDEX_LIFECYCLE,
@@ -340,6 +359,15 @@ class AgentOrchestrator:
                 "edge_count": len(graph.edges),
                 "diagnostic_count": len(graph.diagnostics),
                 "resolver_mode": self._settings.relation_graph_resolver_mode,
+                "ambiguous_resolution_truncation_count": graph.metadata.get(
+                    "ambiguous_resolution_truncation_count", 0
+                ),
+                "omitted_ambiguous_candidate_count": graph.metadata.get(
+                    "omitted_ambiguous_candidate_count", 0
+                ),
+                "skipped_weak_test_relation_count": graph.metadata.get(
+                    "skipped_weak_test_relation_count", 0
+                ),
             },
         )
         self._record_event(
@@ -1994,7 +2022,7 @@ class AgentOrchestrator:
     def _select_changed_files_for_prefetch(self, diff_text: str) -> list[str]:
         selected: list[str] = []
         seen: set[str] = set()
-        for path in self._context_builder._extract_diff_paths(diff_text):  # noqa: SLF001
+        for path in self._context_builder._extract_diff_paths(diff_text):
             if path in seen:
                 continue
             seen.add(path)

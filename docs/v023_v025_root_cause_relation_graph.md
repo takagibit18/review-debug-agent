@@ -302,6 +302,7 @@ LSP 不是硬依赖。所有 enrichment 必须记录 resolver、confidence、fal
 | `RELATION_GRAPH_LSP_ENRICHMENT_ENABLED` | `false` | true 时把 resolver mode 规范为 `lsp` |
 | `RELATION_GRAPH_RESOLVER_MODE` | `ast` | `ast/resolver/lsp` |
 | `RELATION_GRAPH_MAX_FILES` | `5000` | 1–100000 |
+| `RELATION_GRAPH_MAX_AMBIGUOUS_TARGETS` | `4` | 1–100；超过上限的歧义候选不物化为边，只记录汇总诊断 |
 
 非法值由 Pydantic Settings 在启动时给出明确 validation error。
 

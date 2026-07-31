@@ -11,12 +11,13 @@ from __future__ import annotations
 import ast
 import hashlib
 import re
+from collections.abc import Iterable, Iterator
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterable, Iterator
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from src.analyzer.finding_schema import normalize_repo_path
 from src.tools.symbol_backends import StaticSymbolBackend
@@ -84,7 +85,7 @@ class RelationEdge(BaseModel):
     reason: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, __context: Any, /) -> None:
         if not self.edge_id:
             raw = "|".join(
                 (
@@ -120,6 +121,29 @@ class CodeRelationGraph(BaseModel):
     edges: list[RelationEdge] = Field(default_factory=list)
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    _edge_ids: set[str] = PrivateAttr(default_factory=set)
+    _outgoing_edges: dict[str, list[RelationEdge]] = PrivateAttr(default_factory=dict)
+    _incoming_edges: dict[str, list[RelationEdge]] = PrivateAttr(default_factory=dict)
+
+    def model_post_init(self, __context: Any, /) -> None:
+        self.rebuild_edge_indexes()
+
+    def rebuild_edge_indexes(self) -> None:
+        """Rebuild non-serialized lookup indexes after bulk graph replacement."""
+
+        self._edge_ids = set()
+        self._outgoing_edges = {}
+        self._incoming_edges = {}
+        deduplicated: list[RelationEdge] = []
+        for edge in self.edges:
+            if edge.edge_id in self._edge_ids:
+                continue
+            self._edge_ids.add(edge.edge_id)
+            deduplicated.append(edge)
+            self._outgoing_edges.setdefault(edge.source, []).append(edge)
+            self._incoming_edges.setdefault(edge.target, []).append(edge)
+        if len(deduplicated) != len(self.edges):
+            self.edges = deduplicated
 
     def add_node(self, node: CodeNode) -> CodeNode:
         existing = self.nodes.get(node.node_id)
@@ -129,27 +153,33 @@ class CodeRelationGraph(BaseModel):
         return existing
 
     def add_edge(self, edge: RelationEdge) -> RelationEdge:
-        if not any(item.edge_id == edge.edge_id for item in self.edges):
-            self.edges.append(edge)
+        if edge.edge_id in self._edge_ids:
+            return edge
+        self._edge_ids.add(edge.edge_id)
+        self.edges.append(edge)
+        self._outgoing_edges.setdefault(edge.source, []).append(edge)
+        self._incoming_edges.setdefault(edge.target, []).append(edge)
         return edge
 
     def outgoing(
         self, node_id: str, kinds: set[EdgeKind] | None = None
     ) -> list[RelationEdge]:
-        return [
-            edge
-            for edge in self.edges
-            if edge.source == node_id and (kinds is None or edge.kind in kinds)
-        ]
+        edges = self._outgoing_edges.get(node_id, [])
+        return (
+            list(edges)
+            if kinds is None
+            else [edge for edge in edges if edge.kind in kinds]
+        )
 
     def incoming(
         self, node_id: str, kinds: set[EdgeKind] | None = None
     ) -> list[RelationEdge]:
-        return [
-            edge
-            for edge in self.edges
-            if edge.target == node_id and (kinds is None or edge.kind in kinds)
-        ]
+        edges = self._incoming_edges.get(node_id, [])
+        return (
+            list(edges)
+            if kinds is None
+            else [edge for edge in edges if edge.kind in kinds]
+        )
 
     def nodes_for_file(self, path: str) -> list[CodeNode]:
         normalized = normalize_repo_path(path)
@@ -192,6 +222,7 @@ class CodeRelationGraph(BaseModel):
             and edge.target not in removed_ids
             and edge.path not in normalized
         ]
+        self.rebuild_edge_indexes()
 
 
 class _PythonDocument:
@@ -210,8 +241,8 @@ class _PythonDocument:
 class StaticRelationGraphBuilder:
     """Build a bounded repository graph with precise Python AST relations."""
 
-    SUPPORTED_SUFFIXES = {".py", ".rs", ".cs"}
-    EXCLUDED_PARTS = {
+    SUPPORTED_SUFFIXES: ClassVar[set[str]] = {".py", ".rs", ".cs"}
+    EXCLUDED_PARTS: ClassVar[set[str]] = {
         ".git",
         ".mergewarden",
         ".venv",
@@ -232,12 +263,17 @@ class StaticRelationGraphBuilder:
         resolver_mode: str = "ast",
         language_resolver: Any | None = None,
         max_files: int = 5_000,
+        max_ambiguous_targets: int = 4,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.resolver_mode = resolver_mode
         self.language_resolver = language_resolver
         self.max_files = max(1, max_files)
+        self.max_ambiguous_targets = max(1, max_ambiguous_targets)
         self._backend = StaticSymbolBackend(self.repo_root)
+        self._symbols_by_name_index: dict[str, list[CodeNode]] = {}
+        self._ambiguous_truncations: dict[str, dict[str, int]] = {}
+        self._skipped_weak_test_relations = 0
 
     def discover_files(self) -> list[Path]:
         if not self.repo_root.is_dir():
@@ -260,6 +296,15 @@ class StaticRelationGraphBuilder:
             output.append(path)
         return sorted(output, key=lambda value: value.as_posix())
 
+    def build_profile(self) -> dict[str, Any]:
+        """Return the persisted settings that affect graph contents."""
+
+        return {
+            "resolver_mode": self.resolver_mode,
+            "max_files": self.max_files,
+            "max_ambiguous_targets": self.max_ambiguous_targets,
+        }
+
     def build(
         self,
         *,
@@ -272,6 +317,9 @@ class StaticRelationGraphBuilder:
             if base_graph is not None
             else CodeRelationGraph()
         )
+        graph.rebuild_edge_indexes()
+        self._ambiguous_truncations = {}
+        self._skipped_weak_test_relations = 0
         paths = [self._resolve(path) for path in (files or self.discover_files())]
         paths = [path for path in paths if path.is_file()]
         if base_graph is not None:
@@ -307,6 +355,7 @@ class StaticRelationGraphBuilder:
 
         for path in fallback_paths:
             self._extract_fallback_definitions(graph, path)
+        self._rebuild_symbol_name_index(graph)
         for document in python_docs:
             self._extract_python_relations(graph, document)
         self._extract_fallback_relations(graph, fallback_paths)
@@ -318,8 +367,28 @@ class StaticRelationGraphBuilder:
                 "node_count": len(graph.nodes),
                 "edge_count": len(graph.edges),
                 "resolver_mode": self.resolver_mode,
+                "build_profile": self.build_profile(),
+                "ambiguous_resolution_truncation_count": sum(
+                    item["resolution_count"]
+                    for item in self._ambiguous_truncations.values()
+                ),
+                "omitted_ambiguous_candidate_count": sum(
+                    item["candidate_count"]
+                    for item in self._ambiguous_truncations.values()
+                ),
+                "skipped_weak_test_relation_count": (self._skipped_weak_test_relations),
             }
         )
+        for resolver, counts in sorted(self._ambiguous_truncations.items()):
+            graph.diagnostics.append(
+                {
+                    "stage": "relation_resolution",
+                    "resolver": resolver,
+                    "fallback": "ambiguous_candidates_omitted",
+                    "max_ambiguous_targets": self.max_ambiguous_targets,
+                    **counts,
+                }
+            )
         return graph
 
     def _extract_python_definitions(
@@ -651,6 +720,12 @@ class StaticRelationGraphBuilder:
                 if not targets:
                     continue
                 unique = len(targets) == 1
+                if not unique:
+                    targets = self._bounded_ambiguous_candidates(
+                        targets, "python_ast_base_candidates"
+                    )
+                if not targets:
+                    continue
                 for target in targets:
                     is_protocol = bool(
                         target.metadata.get("is_protocol")
@@ -690,6 +765,12 @@ class StaticRelationGraphBuilder:
                 )
                 if targets:
                     unique = len(targets) == 1
+                    if not unique:
+                        targets = self._bounded_ambiguous_candidates(
+                            targets, "ast_import_alias_candidates"
+                        )
+                    if not targets:
+                        return self._unresolved_expression()
                     return (
                         targets,
                         0.93 if unique else 0.45,
@@ -711,6 +792,12 @@ class StaticRelationGraphBuilder:
             candidates = self._symbols_by_name(graph, expression.id)
             if candidates:
                 unique = len(candidates) == 1
+                if not unique:
+                    candidates = self._bounded_ambiguous_candidates(
+                        candidates, "ast_bare_name_candidates"
+                    )
+                if not candidates:
+                    return self._unresolved_expression()
                 return (
                     candidates,
                     0.85 if unique else 0.4,
@@ -749,6 +836,12 @@ class StaticRelationGraphBuilder:
                 )
                 if candidates:
                     unique = len(candidates) == 1
+                    if not unique:
+                        candidates = self._bounded_ambiguous_candidates(
+                            candidates, "ast_import_attribute_candidates"
+                        )
+                    if not candidates:
+                        return self._unresolved_expression()
                     return (
                         candidates,
                         0.92 if unique else 0.45,
@@ -761,6 +854,12 @@ class StaticRelationGraphBuilder:
             candidates = self._symbols_by_name(graph, expression.attr)
             if candidates:
                 unique = len(candidates) == 1
+                if not unique:
+                    candidates = self._bounded_ambiguous_candidates(
+                        candidates, "ast_attribute_candidates"
+                    )
+                if not candidates:
+                    return self._unresolved_expression()
                 return (
                     candidates,
                     0.75 if unique else 0.35,
@@ -770,6 +869,12 @@ class StaticRelationGraphBuilder:
                     else "ast_attribute_candidates",
                     "attribute receiver type unavailable",
                 )
+        return self._unresolved_expression()
+
+    @staticmethod
+    def _unresolved_expression() -> tuple[
+        list[CodeNode], float, ConfidenceTier, str, str
+    ]:
         return (
             [],
             0.0,
@@ -777,6 +882,18 @@ class StaticRelationGraphBuilder:
             "unresolved_ast_expression",
             "no safe binding",
         )
+
+    def _bounded_ambiguous_candidates(
+        self, candidates: list[CodeNode], resolver: str
+    ) -> list[CodeNode]:
+        if len(candidates) <= self.max_ambiguous_targets:
+            return candidates
+        counts = self._ambiguous_truncations.setdefault(
+            resolver, {"resolution_count": 0, "candidate_count": 0}
+        )
+        counts["resolution_count"] += 1
+        counts["candidate_count"] += len(candidates)
+        return []
 
     def _extract_fallback_definitions(
         self, graph: CodeRelationGraph, path: Path
@@ -882,6 +999,9 @@ class StaticRelationGraphBuilder:
                 continue
             if target.kind == NodeKind.TEST:
                 continue
+            if edge.evidence_eligibility != "strong" or edge.confidence < 0.65:
+                self._skipped_weak_test_relations += 1
+                continue
             tested = self._edge(
                 target,
                 source,
@@ -921,6 +1041,7 @@ class StaticRelationGraphBuilder:
                 graph.nodes = result.nodes
                 graph.edges = result.edges
                 graph.diagnostics.extend(result.diagnostics)
+                graph.rebuild_edge_indexes()
         except Exception as exc:  # noqa: BLE001
             graph.diagnostics.append(
                 {
@@ -1124,8 +1245,8 @@ class StaticRelationGraphBuilder:
             else []
         )
 
-    @staticmethod
     def _symbols_by_name(
+        self,
         graph: CodeRelationGraph,
         name: str,
         *,
@@ -1133,21 +1254,28 @@ class StaticRelationGraphBuilder:
         kinds: set[NodeKind] | None = None,
     ) -> list[CodeNode]:
         excluded = {NodeKind.FILE, NodeKind.CHANGED_HUNK, NodeKind.FIELD}
-        return sorted(
-            [
-                node
-                for node in graph.nodes.values()
-                if node.name == name
-                and (path is None or node.path == path)
-                and (
-                    kinds is not None
-                    and node.kind in kinds
-                    or kinds is None
-                    and node.kind not in excluded
-                )
-            ],
-            key=lambda node: (node.path, node.start_line, node.qualified_name),
-        )
+        candidates = self._symbols_by_name_index.get(name, [])
+        return [
+            node
+            for node in candidates
+            if (path is None or node.path == path)
+            and (
+                kinds is not None
+                and node.kind in kinds
+                or kinds is None
+                and node.kind not in excluded
+            )
+        ]
+
+    def _rebuild_symbol_name_index(self, graph: CodeRelationGraph) -> None:
+        index: dict[str, list[CodeNode]] = {}
+        for node in graph.nodes.values():
+            index.setdefault(node.name, []).append(node)
+        for nodes in index.values():
+            nodes.sort(
+                key=lambda node: (node.path, node.start_line, node.qualified_name)
+            )
+        self._symbols_by_name_index = index
 
     def _enclosing_code_node(
         self, document: _PythonDocument, node_ast: ast.AST
