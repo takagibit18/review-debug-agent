@@ -1319,6 +1319,7 @@ def _semantic_match_tokens(value: str) -> set[str]:
         "duplicate": "duplicate",
         "redundant": "duplicate",
         "revert": "remove",
+        "second": "duplicate",
         "twice": "duplicate",
         "application": "apply",
         "applied": "apply",

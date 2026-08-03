@@ -6,7 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from eval.runner import _match_issues
+from eval.runner import _match_issues, _semantic_text_matches
 from eval.schemas import EVAL_MATCHER_VERSION, EvalVariant, Fixture
 from src.analyzer.context_state import ContextState
 from src.analyzer.context_strategy import (
@@ -284,4 +284,11 @@ def test_eval_matcher_is_variant_independent_and_semantic() -> None:
             graph_cache_mode="disabled",
         ).id
         == "A-agent-search"
+    )
+
+
+def test_eval_matcher_treats_second_time_as_duplicate_action() -> None:
+    assert _semantic_text_matches(
+        "discount.*twice|double.*discount|subtract.*again",
+        "The caller subtracts the discount a second time after the helper.",
     )
