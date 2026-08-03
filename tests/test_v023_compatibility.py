@@ -65,6 +65,7 @@ def test_new_config_defaults_are_enabled_and_invalid_ranges_are_rejected() -> No
     settings = Settings()
 
     assert settings.root_cause_consolidation_enabled is True
+    assert settings.review_context_mode == "graph_hybrid"
     assert settings.relation_graph_enabled is True
     assert settings.relation_graph_persistence_enabled is True
     assert settings.relation_graph_resolver_mode in {"ast", "resolver", "lsp"}
@@ -84,7 +85,7 @@ def test_new_config_defaults_are_enabled_and_invalid_ranges_are_rejected() -> No
         Settings(relation_graph_max_ambiguous_targets=101)
 
 
-def test_reviewer_submit_schema_requires_hypothesis_fields_and_forbids_root_id() -> (
+def test_reviewer_submit_schema_keeps_graph_fields_optional_and_forbids_root_id() -> (
     None
 ):
     review_tool = next(
@@ -105,6 +106,15 @@ def test_reviewer_submit_schema_requires_hypothesis_fields_and_forbids_root_id()
         "contract_evidence",
         "trigger_evidence",
         "impact_evidence",
-        "context_manifest_id",
     }.issubset(required)
+    assert "context_manifest_id" in item_schema["properties"]
+    assert "context_hash" in item_schema["properties"]
+    assert "context_manifest_id" not in required
+    assert "context_hash" not in required
+    evidence_schema = item_schema["properties"]["cause_evidence"]["items"]
+    evidence_required = set(evidence_schema["required"])
+    assert "context_manifest_id" not in evidence_required
+    assert "context_hash" not in evidence_required
+    assert "symbol_id" not in evidence_required
+    assert "resolver" not in evidence_required
     assert "root_cause_id" not in item_schema["properties"]

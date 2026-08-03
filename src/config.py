@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from src.analyzer.context_mode import ReviewContextMode
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_REPO_ROOT / ".env", override=True)
 
@@ -108,6 +110,17 @@ def _default_agent_trace_detail() -> TraceDetailMode:
     if raw in {"off", "compact", "full"}:
         return cast(TraceDetailMode, raw)
     return "off"
+
+
+def _default_review_context_mode() -> ReviewContextMode:
+    raw = str(os.getenv("REVIEW_CONTEXT_MODE", "")).strip().lower()
+    if raw in {"agent_search", "graph_hybrid"}:
+        return cast(ReviewContextMode, raw)
+    return (
+        "graph_hybrid"
+        if _parse_bool_env("RELATION_GRAPH_ENABLED", True)
+        else "agent_search"
+    )
 
 
 def _default_execute_docker_workdir() -> str:
@@ -279,8 +292,13 @@ class Settings(BaseModel):
             "ROOT_CAUSE_CONSOLIDATION_EXTRA_RETRIEVAL_ENABLED", False
         ),
     )
+    review_context_mode: ReviewContextMode = Field(
+        default_factory=_default_review_context_mode,
+        description="Explicit review context strategy. Constructor value overrides environment compatibility inputs.",
+    )
     relation_graph_enabled: bool = Field(
         default_factory=lambda: _parse_bool_env("RELATION_GRAPH_ENABLED", True),
+        description="Compatibility alias derived from review_context_mode.",
     )
     relation_graph_persistence_enabled: bool = Field(
         default_factory=lambda: _parse_bool_env(
@@ -357,6 +375,12 @@ class Settings(BaseModel):
         gt=0.0,
         le=600.0,
         description="Hard wall-clock timeout for one orchestrator tool call.",
+    )
+    agent_max_tool_calls: int = Field(
+        default_factory=lambda: int(os.getenv("AGENT_MAX_TOOL_CALLS", "64")),
+        ge=1,
+        le=1000,
+        description="Maximum successfully dispatched tool calls in one agent run.",
     )
     pre_budget_submit_token_ratio: float = Field(
         default_factory=lambda: float(
@@ -634,6 +658,14 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def _normalize_budget_relationships(self) -> "Settings":
         self.token_hard_budget = max(self.token_hard_budget, self.token_budget)
+        if (
+            "review_context_mode" not in self.model_fields_set
+            and "relation_graph_enabled" in self.model_fields_set
+        ):
+            self.review_context_mode = (
+                "graph_hybrid" if self.relation_graph_enabled else "agent_search"
+            )
+        self.relation_graph_enabled = self.review_context_mode == "graph_hybrid"
         if self.relation_graph_lsp_enrichment_enabled:
             self.relation_graph_resolver_mode = "lsp"
         return self

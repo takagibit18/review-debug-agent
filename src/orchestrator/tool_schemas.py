@@ -63,13 +63,9 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
         },
         "required": [
             "candidate_id",
-            "context_manifest_id",
             "retrieval_source",
             "file",
             "line",
-            "symbol_id",
-            "context_hash",
-            "resolver",
             "statement",
         ],
     }
@@ -189,6 +185,7 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                         "items": evidence_schema,
                                     },
                                     "context_manifest_id": {"type": "string"},
+                                    "context_hash": {"type": "string"},
                                 },
                                 "required": [
                                     "severity",
@@ -209,7 +206,6 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                     "contract_evidence",
                                     "trigger_evidence",
                                     "impact_evidence",
-                                    "context_manifest_id",
                                 ],
                             },
                         },

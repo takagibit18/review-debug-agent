@@ -12,10 +12,10 @@ from eval.artifacts import write_eval_artifacts
 from eval.crawler.fixture_generator import FixtureGenerator
 from eval.diagnostics import load_diagnostics_report
 from eval.metrics import build_eval_report, write_human_review_template
-from eval.run_summary import summarize_event_log
 from eval.report import render_report, save_report_json
+from eval.run_summary import summarize_event_log
 from eval.runner import load_fixtures, run_suite
-from eval.schemas import EvalReport, EvalResult
+from eval.schemas import EVAL_MATCHER_VERSION, EvalReport, EvalResult, EvalVariant
 from eval.trend import build_quality_trend, expand_report_inputs
 from src.config import get_settings
 
@@ -86,6 +86,12 @@ def crawl_cmd(
 @main.command("eval")
 @click.option("--suite", default="golden", help="Fixture suite to run.")
 @click.option(
+    "--fixtures-dir",
+    default=(Path("eval") / "fixtures").as_posix(),
+    type=click.Path(exists=True, file_okay=False),
+    help="Fixture directory. Development baselines use eval/development_fixtures.",
+)
+@click.option(
     "--include-unreviewed",
     is_flag=True,
     default=False,
@@ -122,6 +128,23 @@ def crawl_cmd(
     help="Model sampling temperature for eval runs. Defaults to EVAL_TEMPERATURE or 0.0.",
 )
 @click.option(
+    "--variant-id",
+    default=None,
+    help="Stable eval variant id recorded in every result.",
+)
+@click.option(
+    "--context-mode",
+    default=None,
+    type=click.Choice(["agent_search", "graph_hybrid"]),
+    help="Explicit context strategy; overrides REVIEW_CONTEXT_MODE for this eval.",
+)
+@click.option(
+    "--graph-cache-mode",
+    default=None,
+    type=click.Choice(["disabled", "cold", "warm"]),
+    help="Graph cache contract for this variant.",
+)
+@click.option(
     "--output-json",
     default=None,
     type=click.Path(exists=False),
@@ -141,21 +164,43 @@ def crawl_cmd(
 )
 def eval_cmd(
     suite: str,
+    fixtures_dir: str,
     include_unreviewed: bool,
     samples: int | None,
     concurrency: int | None,
     fixture_concurrency: int | None,
     review_max_iterations: int | None,
     temperature: float | None,
+    variant_id: str | None,
+    context_mode: str | None,
+    graph_cache_mode: str | None,
     output_json: str | None,
     repo_filters: tuple[str, ...],
     fixture_id_filters: tuple[str, ...],
 ) -> None:
     """Run evaluation for one suite."""
     settings = get_settings()
+    selected_mode = context_mode or settings.review_context_mode
+    selected_cache_mode = graph_cache_mode or (
+        "disabled" if selected_mode == "agent_search" else "warm"
+    )
+    try:
+        variant = EvalVariant(
+            id=variant_id
+            or (
+                "A-agent-search"
+                if selected_mode == "agent_search"
+                else "B-graph-hybrid"
+            ),
+            context_mode=selected_mode,
+            graph_cache_mode=selected_cache_mode,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     asyncio.run(
         _evaluate(
             suite=suite,
+            fixtures_dir=fixtures_dir,
             include_unreviewed=include_unreviewed,
             samples=samples if samples is not None else settings.eval_samples,
             concurrency=(
@@ -177,6 +222,7 @@ def eval_cmd(
             output_json=output_json,
             repo_filters=repo_filters,
             fixture_id_filters=fixture_id_filters,
+            variant=variant,
         )
     )
 
@@ -191,7 +237,9 @@ def eval_cmd(
 )
 def report_cmd(input_path: str, diagnostics: bool) -> None:
     """Render report from existing JSON."""
-    report = EvalReport.model_validate_json(Path(input_path).read_text(encoding="utf-8"))
+    report = EvalReport.model_validate_json(
+        Path(input_path).read_text(encoding="utf-8")
+    )
     render_report(report, diagnostics=diagnostics)
 
 
@@ -265,7 +313,9 @@ def merge_reports_cmd(inputs: tuple[str, ...], suite: str, output_json: str) -> 
     artifact_paths = write_eval_artifacts(report, report_path)
     render_report(report)
     click.echo(f"Merged {len(reports)} reports into {report_path.as_posix()}")
-    click.echo(f"Diagnostics saved to: {Path(artifact_paths.diagnostics_path).as_posix()}")
+    click.echo(
+        f"Diagnostics saved to: {Path(artifact_paths.diagnostics_path).as_posix()}"
+    )
 
 
 async def _crawl(
@@ -298,15 +348,21 @@ def _load_curated_repos(path: Path, *, enabled: bool) -> list[str] | None:
     if not enabled:
         return None
     if not path.exists():
-        raise click.ClickException(f"Curated repository file not found: {path.as_posix()}")
+        raise click.ClickException(
+            f"Curated repository file not found: {path.as_posix()}"
+        )
 
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
-        raise click.ClickException("Curated repository file must contain a JSON object.")
+        raise click.ClickException(
+            "Curated repository file must contain a JSON object."
+        )
 
     repos = raw.get("repos")
     if not isinstance(repos, list):
-        raise click.ClickException("Curated repository file must include a 'repos' list.")
+        raise click.ClickException(
+            "Curated repository file must include a 'repos' list."
+        )
 
     names: list[str] = []
     for item in repos:
@@ -327,6 +383,7 @@ async def _evaluate(
     suite: str,
     include_unreviewed: bool = False,
     *,
+    fixtures_dir: str | Path = Path("eval") / "fixtures",
     samples: int = 1,
     concurrency: int = 1,
     fixture_concurrency: int = 1,
@@ -335,8 +392,13 @@ async def _evaluate(
     output_json: str | None = None,
     repo_filters: tuple[str, ...] = (),
     fixture_id_filters: tuple[str, ...] = (),
+    variant: EvalVariant | None = None,
 ) -> None:
-    fixtures = load_fixtures(suite=suite, reviewed_only=not include_unreviewed)
+    fixtures = load_fixtures(
+        fixtures_dir=fixtures_dir,
+        suite=suite,
+        reviewed_only=not include_unreviewed,
+    )
     fixtures = _filter_fixtures(
         fixtures,
         repo_filters=repo_filters,
@@ -352,6 +414,7 @@ async def _evaluate(
         fixture_concurrency=max(1, fixture_concurrency),
         review_max_iterations=max(1, review_max_iterations),
         temperature=temperature,
+        variant=variant,
     )
     results: list[EvalResult] = [item.runs[0] for item in sampled_results if item.runs]
     report = build_eval_report(
@@ -359,6 +422,8 @@ async def _evaluate(
         results=results,
         sampled_results=sampled_results,
     )
+    report.variant = variant
+    report.matcher_version = EVAL_MATCHER_VERSION
     report_path = save_report_json(report, output_path=output_json)
     artifact_paths = write_eval_artifacts(report, report_path)
     review_sheet = write_human_review_template(
@@ -367,7 +432,9 @@ async def _evaluate(
     )
     render_report(report)
     click.echo(f"Report saved to: {report_path.as_posix()}")
-    click.echo(f"Diagnostics saved to: {Path(artifact_paths.diagnostics_path).as_posix()}")
+    click.echo(
+        f"Diagnostics saved to: {Path(artifact_paths.diagnostics_path).as_posix()}"
+    )
     click.echo(
         f"Run summaries saved to: {Path(artifact_paths.run_summaries_path).as_posix()}"
     )
@@ -395,4 +462,3 @@ def _filter_fixtures(
 
 if __name__ == "__main__":
     main()
-

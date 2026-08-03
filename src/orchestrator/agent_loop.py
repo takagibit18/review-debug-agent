@@ -12,10 +12,10 @@ from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
-from src.analyzer.code_graph import attach_changed_hunks, extract_changed_anchors
 from src.analyzer.context_builder import ContextBuilder
-from src.analyzer.context_planner import ChangeCenteredContextPlanner
+from src.analyzer.context_mode import ReviewContextMode
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
+from src.analyzer.context_strategy import ContextStrategy, build_context_strategy
 from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.finding_verifier import (
@@ -27,9 +27,7 @@ from src.analyzer.finding_verifier import (
     validate_verifications_with_stats,
 )
 from src.analyzer.inference_engine import InferenceEngine
-from src.analyzer.language_resolver import UnavailableLspResolver
 from src.analyzer.output_formatter import ReviewReport
-from src.analyzer.persistent_index import RelationGraphIndex
 from src.analyzer.result_processor import ResultProcessor
 from src.analyzer.root_cause import RootCauseConsolidator
 from src.analyzer.schemas import (
@@ -74,6 +72,8 @@ class AgentOrchestrator:
         review_workflow_enforcement: Literal["off", "warn", "enforce"] | None = None,
         review_diff_first_changed_files: bool | None = None,
         relation_graph_index_path: str | Path | None = None,
+        context_mode: ReviewContextMode | None = None,
+        context_strategy: ContextStrategy | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -129,6 +129,10 @@ class AgentOrchestrator:
             else bool(review_diff_first_changed_files)
         )
         self._relation_graph_index_path_override = relation_graph_index_path
+        self._context_mode: ReviewContextMode = (
+            context_mode or self._settings.review_context_mode
+        )
+        self._context_strategy_override = context_strategy
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
@@ -147,6 +151,11 @@ class AgentOrchestrator:
         self._final_root_cause_count = 0
         self._finding_inflation_ratio = 0.0
         self._verifier_tool_evidence: list[dict[str, Any]] = []
+        self._tool_call_count = 0
+        self._tool_name_counts: dict[str, int] = {}
+        self._reviewer_latency_seconds = 0.0
+        self._verifier_latency_seconds = 0.0
+        self._consolidation_latency_seconds = 0.0
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
             max_chars=self._settings.agent_trace_max_chars,
@@ -169,7 +178,8 @@ class AgentOrchestrator:
                 review_context=review_context,
             )
         state = self.prepare_context(request)
-        self._prepare_relation_context(state, request)
+        await self._prepare_review_context(state, request)
+        reviewer_started = perf_counter()
         await self._maybe_prefetch_review_changed_files(state, request)
         if self._workflow_enforcement != "off":
             if request.diff_mode:
@@ -205,201 +215,44 @@ class AgentOrchestrator:
         response = await self._maybe_force_submit_review(state, request, response)
         assert isinstance(response, ReviewResponse)
         response = await self._maybe_recover_review_workflow(response, request, state)
+        self._reviewer_latency_seconds = perf_counter() - reviewer_started
+        verifier_started = perf_counter()
         response = await self._verify_review_response(response, request, state)
+        verifier_total = perf_counter() - verifier_started
+        self._verifier_latency_seconds = max(
+            0.0, verifier_total - self._consolidation_latency_seconds
+        )
         response = self._finalize_review_workflow(response, state)
+        self._record_review_telemetry(state)
         self._close_event_log()
         return response
 
-    def _prepare_relation_context(
+    async def _prepare_review_context(
         self,
         state: ContextState,
         request: ReviewRequest,
     ) -> None:
-        """Build/reuse the graph and place exact planned manifests in model state."""
+        """Apply exactly one explicit context strategy to the shared review state."""
 
-        if (
-            not self._settings.relation_graph_enabled
-            or not request.diff_mode
-            or not (request.diff_text or "").strip()
-            or self._workspace_root is None
-        ):
-            state.relation_graph_summary = {
-                "enabled": bool(self._settings.relation_graph_enabled),
-                "status": "disabled_or_not_applicable",
-            }
-            return
-        index_path = Path(
-            self._relation_graph_index_path_override
-            or self._settings.relation_graph_index_path
+        strategy = self._context_strategy_override or build_context_strategy(
+            self._context_mode,
+            settings=self._settings,
+            workspace_root=self._workspace_root,
+            relation_graph_index_path=self._relation_graph_index_path_override,
+            record_event=self._record_event,
         )
-        if not index_path.is_absolute():
-            index_path = self._workspace_root / index_path
-        resolver = (
-            UnavailableLspResolver()
-            if self._settings.relation_graph_resolver_mode == "lsp"
-            else None
-        )
-        try:
-            index_result = RelationGraphIndex(
-                self._workspace_root,
-                persistence_enabled=self._settings.relation_graph_persistence_enabled,
-                index_path=index_path,
-                resolver_mode=self._settings.relation_graph_resolver_mode,
-                language_resolver=resolver,
-                max_files=self._settings.relation_graph_max_files,
-                max_ambiguous_targets=(
-                    self._settings.relation_graph_max_ambiguous_targets
-                ),
-            ).build()
-            graph = index_result.graph
-            anchors = extract_changed_anchors(request.diff_text or "", graph)
-            attach_changed_hunks(graph, anchors)
-            plan = ChangeCenteredContextPlanner(
-                self._workspace_root,
-                max_depth=self._settings.relation_graph_max_depth,
-                max_nodes=self._settings.relation_graph_max_nodes,
-                max_context_tokens=self._settings.relation_graph_max_context_tokens,
-                min_evidence_confidence=(
-                    self._settings.relation_graph_min_evidence_confidence
-                ),
-            ).plan(graph, anchors)
-        except Exception as exc:  # noqa: BLE001
-            state.relation_graph_summary = {
-                "enabled": True,
-                "status": "fallback_v022",
-                "error": exc.__class__.__name__,
-            }
-            self._record_event(
-                EventType.PIPELINE_FALLBACK,
-                "relation_graph",
-                {
-                    "stage": "relation_graph_context",
-                    "fallback": "v022_tool_context",
-                    "error": exc.__class__.__name__,
-                    "message": str(exc)[:300],
-                },
-            )
-            return
-
-        state.candidate_context_manifests = [
-            manifest.prompt_payload() for manifest in plan.manifests
-        ]
-        state.relation_graph_summary = {
-            "enabled": True,
-            "status": index_result.status,
-            "repository_id": index_result.repository_id,
-            "revision": index_result.revision,
-            "cache_hit": index_result.cache_hit,
-            "cache_hit_rate": index_result.cache_hit_rate,
-            "node_count": len(graph.nodes),
-            "edge_count": len(graph.edges),
-            "changed_anchor_count": len(anchors),
-            "manifest_count": len(plan.manifests),
-            "context_token_cost": plan.total_token_cost,
-            "included_graph_path_count": plan.total_included_paths,
-            "discarded_graph_path_count": plan.total_discarded_paths,
-            "parsed_file_count": index_result.parsed_file_count,
-            "build_latency_seconds": index_result.build_latency_seconds,
-            "incremental_update_latency_seconds": (
-                index_result.incremental_update_latency_seconds
-            ),
-            "resolver_mode": self._settings.relation_graph_resolver_mode,
-            "ambiguous_resolution_truncation_count": graph.metadata.get(
-                "ambiguous_resolution_truncation_count", 0
-            ),
-            "omitted_ambiguous_candidate_count": graph.metadata.get(
-                "omitted_ambiguous_candidate_count", 0
-            ),
-            "skipped_weak_test_relation_count": graph.metadata.get(
-                "skipped_weak_test_relation_count", 0
-            ),
-        }
+        prepared = await strategy.prepare(request)
+        state.context_mode = prepared.context_mode
+        state.candidate_context_manifests = list(prepared.candidate_context_manifests)
+        state.relation_graph_summary = dict(prepared.graph_telemetry)
         self._record_event(
-            EventType.INDEX_LIFECYCLE,
-            "relation_graph",
+            EventType.CONTEXT_TELEMETRY,
+            "context_strategy",
             {
-                "status": index_result.status,
-                "cache_hit": index_result.cache_hit,
-                "cache_hit_rate": index_result.cache_hit_rate,
-                "file_count": index_result.file_count,
-                "changed_file_count": len(index_result.changed_files),
-                "deleted_file_count": len(index_result.deleted_files),
-                "affected_file_count": len(index_result.affected_files),
-                "parsed_file_count": index_result.parsed_file_count,
-                "fallback": index_result.fallback,
-                "build_latency_seconds": index_result.build_latency_seconds,
-                "incremental_update_latency_seconds": (
-                    index_result.incremental_update_latency_seconds
-                ),
+                "context_mode": prepared.context_mode,
+                **prepared.graph_telemetry,
             },
         )
-        self._record_event(
-            EventType.CHANGED_ANCHORS_EXTRACTED,
-            "relation_graph",
-            {
-                "changed_anchor_count": len(anchors),
-                "anchors": [
-                    {
-                        "anchor_id": anchor.anchor_id,
-                        "file": anchor.file,
-                        "line": anchor.line,
-                        "end_line": anchor.end_line,
-                        "symbol_id": anchor.symbol_id,
-                        "change_kind": anchor.change_kind,
-                    }
-                    for anchor in anchors
-                ],
-            },
-        )
-        self._record_event(
-            EventType.RELATION_GRAPH_BUILT,
-            "relation_graph",
-            {
-                "node_count": len(graph.nodes),
-                "edge_count": len(graph.edges),
-                "diagnostic_count": len(graph.diagnostics),
-                "resolver_mode": self._settings.relation_graph_resolver_mode,
-                "ambiguous_resolution_truncation_count": graph.metadata.get(
-                    "ambiguous_resolution_truncation_count", 0
-                ),
-                "omitted_ambiguous_candidate_count": graph.metadata.get(
-                    "omitted_ambiguous_candidate_count", 0
-                ),
-                "skipped_weak_test_relation_count": graph.metadata.get(
-                    "skipped_weak_test_relation_count", 0
-                ),
-            },
-        )
-        self._record_event(
-            EventType.CONTEXT_PLAN_COMPLETED,
-            "context_planner",
-            {
-                "manifest_count": len(plan.manifests),
-                "token_cost": plan.total_token_cost,
-                "included_node_count": plan.total_included_nodes,
-                "included_path_count": plan.total_included_paths,
-                "discarded_path_count": plan.total_discarded_paths,
-            },
-        )
-        for manifest in plan.manifests:
-            self._record_event(
-                EventType.CONTEXT_MANIFEST_CREATED,
-                "context_planner",
-                {
-                    "candidate_id": manifest.candidate_id,
-                    "anchor_id": manifest.changed_anchor.anchor_id,
-                    "file": manifest.changed_anchor.file,
-                    "line": manifest.changed_anchor.line,
-                    "token_cost": manifest.token_cost,
-                    "included_span_count": len(manifest.included_spans),
-                    "included_path_count": len(manifest.included_graph_paths),
-                    "excluded_low_confidence_path_count": len(
-                        manifest.excluded_low_confidence_paths
-                    ),
-                    "discarded_path_count": len(manifest.discarded_paths),
-                    "truncation_reasons": manifest.truncation_reasons,
-                },
-            )
 
     async def _verify_review_response(
         self,
@@ -701,6 +554,7 @@ class AgentOrchestrator:
         ]
         if not verified_risk:
             return response
+        consolidation_started = perf_counter()
         result = RootCauseConsolidator(
             max_block_size=(self._settings.root_cause_consolidation_max_block_size),
             conservative_mode=(
@@ -825,6 +679,7 @@ class AgentOrchestrator:
             "root_cause_consolidation",
             consolidation_payload,
         )
+        self._consolidation_latency_seconds += perf_counter() - consolidation_started
         return response
 
     async def _maybe_recover_review_workflow(
@@ -961,6 +816,7 @@ class AgentOrchestrator:
                 context_manifests=[
                     dict(item) for item in state.candidate_context_manifests
                 ],
+                context_mode=state.context_mode,
             ),
         )
         return returned_batch, post_batch, stats
@@ -1397,6 +1253,24 @@ class AgentOrchestrator:
         executed_feedback: list[dict[str, Any]] = []
         index = 0
         while index < len(plan.tool_calls):
+            if self._tool_call_count >= self._settings.agent_max_tool_calls:
+                state.errors.append(
+                    ErrorDetail(
+                        file="",
+                        message="Agent tool-call budget exhausted.",
+                        category="runtime",
+                    )
+                )
+                self._record_event(
+                    EventType.DECISION,
+                    "execute_tools",
+                    {
+                        "iteration": self._iteration,
+                        "reason": "tool_budget_exhausted",
+                        "tool_budget": self._settings.agent_max_tool_calls,
+                    },
+                )
+                break
             raw_call = plan.tool_calls[index]
             call = self._parse_tool_call(raw_call)
             tool_name = call["name"]
@@ -1547,7 +1421,10 @@ class AgentOrchestrator:
                 (raw_call, tool_name, tool, args)
             ]
             scan = index + 1
-            while scan < len(plan.tool_calls):
+            remaining_budget = (
+                self._settings.agent_max_tool_calls - self._tool_call_count
+            )
+            while scan < len(plan.tool_calls) and len(batch_calls) < remaining_budget:
                 next_raw = plan.tool_calls[scan]
                 next_call = self._parse_tool_call(next_raw)
                 next_name = next_call["name"]
@@ -1822,6 +1699,11 @@ class AgentOrchestrator:
         self._final_root_cause_count = 0
         self._finding_inflation_ratio = 0.0
         self._verifier_tool_evidence = []
+        self._tool_call_count = 0
+        self._tool_name_counts = {}
+        self._reviewer_latency_seconds = 0.0
+        self._verifier_latency_seconds = 0.0
+        self._consolidation_latency_seconds = 0.0
         self._record_event(
             EventType.PHASE_START,
             "prepare",
@@ -1833,6 +1715,7 @@ class AgentOrchestrator:
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
                 "agent_run_timeout_seconds": self._settings.agent_run_timeout_seconds,
                 "agent_tool_timeout_seconds": self._settings.agent_tool_timeout_seconds,
+                "agent_max_tool_calls": self._settings.agent_max_tool_calls,
                 "model_max_tokens": self._settings.model_max_tokens,
                 "pre_budget_submit_token_ratio": self._settings.pre_budget_submit_token_ratio,
                 "review_diff_first_changed_files": self._review_diff_first_changed_files,
@@ -1840,7 +1723,10 @@ class AgentOrchestrator:
                 "root_cause_consolidation_enabled": (
                     self._settings.root_cause_consolidation_enabled
                 ),
-                "relation_graph_enabled": self._settings.relation_graph_enabled,
+                # Report the effective runtime mode, not the deprecated compatibility
+                # setting.  Agent-search runs must never look Graph-enabled in audit logs.
+                "relation_graph_enabled": self._context_mode == "graph_hybrid",
+                "context_mode": self._context_mode,
                 "relation_graph_persistence_enabled": (
                     self._settings.relation_graph_persistence_enabled
                 ),
@@ -2139,6 +2025,8 @@ class AgentOrchestrator:
         result: ToolResult,
         elapsed_ms: int,
     ) -> dict[str, Any]:
+        self._tool_call_count += 1
+        self._tool_name_counts[name] = self._tool_name_counts.get(name, 0) + 1
         payload: dict[str, Any] = {
             "iteration": self._iteration,
             "name": name,
@@ -2153,6 +2041,51 @@ class AgentOrchestrator:
             if error_type:
                 payload["error_type"] = error_type
         return payload
+
+    def _record_review_telemetry(self, state: ContextState) -> None:
+        """Emit one complete, mode-aware review telemetry envelope."""
+
+        graph = dict(state.relation_graph_summary)
+        payload: dict[str, Any] = {
+            "context_mode": state.context_mode,
+            "model": self._settings.model_name,
+            "review_iterations": self._iteration + 1,
+            "tool_call_count": self._tool_call_count,
+            "grep_calls": self._tool_name_counts.get("grep_files", 0),
+            "read_file_calls": self._tool_name_counts.get("read_file", 0),
+            "symbol_lookup_calls": sum(
+                self._tool_name_counts.get(name, 0)
+                for name in ("find_symbol_context", "symbol_context")
+            ),
+            "reviewer_latency_seconds": self._reviewer_latency_seconds,
+            "verifier_latency_seconds": self._verifier_latency_seconds,
+            "consolidation_latency_seconds": self._consolidation_latency_seconds,
+            "end_to_end_latency_seconds": self._run_elapsed_seconds(),
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": self._total_tokens,
+            "candidate_finding_count": self._verifier_candidate_count,
+            "accepted_finding_count": self._verifier_accepted_count,
+            "verifier_rejection_count": self._verifier_rejected_count,
+            "final_root_cause_finding_count": self._final_root_cause_count,
+            "graph_status": graph.get("graph_status", graph.get("status")),
+            "graph_cache_mode": graph.get("graph_cache_mode", "not_applicable"),
+            "graph_build_latency_seconds": graph.get("build_latency_seconds"),
+            "incremental_update_latency_seconds": graph.get(
+                "incremental_update_latency_seconds"
+            ),
+            "parsed_file_count": graph.get("parsed_file_count"),
+            "graph_node_count": graph.get("node_count"),
+            "graph_edge_count": graph.get("edge_count"),
+            "manifest_count": graph.get("manifest_count", 0),
+            "manifest_token_cost": graph.get(
+                "manifest_token_cost", graph.get("context_token_cost", 0)
+            ),
+            "cache_hit": graph.get("cache_hit"),
+            "cache_hit_rate": graph.get("cache_hit_rate"),
+            "fallback_reason": graph.get("fallback_reason", ""),
+        }
+        self._record_event(EventType.PHASE_END, "review_complete", payload)
 
     @staticmethod
     def _tool_error_hint(*, tool_name: str, message: str) -> dict[str, Any]:

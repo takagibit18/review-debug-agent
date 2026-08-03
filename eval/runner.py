@@ -15,21 +15,24 @@ from statistics import mean, pstdev
 from time import perf_counter, sleep
 from typing import Any
 
+from eval.run_summary import extract_review_process_metrics
 from eval.schemas import (
+    EVAL_MATCHER_VERSION,
     EvalIssueMatch,
     EvalResult,
+    EvalVariant,
     Fixture,
     FixtureManifest,
     FixtureWorkspace,
     SampledFixtureResult,
 )
-from eval.run_summary import extract_review_process_metrics
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import (
     Severity,
     has_specific_code_evidence,
     has_specific_diff_evidence,
 )
+from src.analyzer.persistent_index import INDEX_SCHEMA_VERSION
 from src.analyzer.schemas import (
     DebugRequest,
     DebugResponse,
@@ -37,7 +40,6 @@ from src.analyzer.schemas import (
     ReviewResponse,
 )
 from src.config import get_settings
-from src.analyzer.persistent_index import INDEX_SCHEMA_VERSION
 from src.orchestrator.agent_loop import AgentOrchestrator
 
 EVAL_EVENT_LOGS_OUTPUT_DIR = Path("eval") / "outputs" / "event_logs"
@@ -83,8 +85,7 @@ def _run_git(args: list[str], *, cwd: Path | None = None) -> str:
             command,
             cwd=cwd,
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             encoding="utf-8",
             timeout=timeout,
@@ -369,7 +370,7 @@ def _eval_relation_graph_index_path(fixture: Fixture) -> Path:
     )
     source = source.strip() or fixture.id
     digest = hashlib.sha256(
-        f"{source}|schema:{INDEX_SCHEMA_VERSION}".encode("utf-8")
+        f"{source}|schema:{INDEX_SCHEMA_VERSION}".encode()
     ).hexdigest()[:16]
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", source.rstrip("/").removesuffix(".git"))
     index_root = (
@@ -404,7 +405,9 @@ def _resolve_fixture_paths(root: Path) -> list[Path]:
             if resolved:
                 return sorted(resolved)
         except Exception:  # noqa: BLE001
-            pass
+            return sorted(
+                path for path in root.glob("*.json") if path.name != "manifest.json"
+            )
     return sorted(path for path in root.glob("*.json") if path.name != "manifest.json")
 
 
@@ -413,9 +416,11 @@ async def run_single(
     *,
     temperature: float = 0.0,
     review_max_iterations: int | None = None,
+    variant: EvalVariant | None = None,
 ) -> EvalResult:
     """Run one fixture and return evaluation metadata."""
     expected_count = len(fixture.expected.issues)
+    selected_variant = variant or _default_eval_variant()
     stage_timings: dict[str, float] = {}
     try:
         with tempfile.TemporaryDirectory(prefix="eval-fixture-") as tmp_dir:
@@ -443,10 +448,18 @@ async def run_single(
                 return EvalResult(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
+                    **_variant_result_fields(selected_variant),
                     schema_valid=False,
                     expected_count=expected_count,
                     stage_timings=stage_timings,
                     error="; ".join(validation_errors),
+                )
+            relation_graph_index_path: Path | None = None
+            if selected_variant.context_mode == "graph_hybrid":
+                relation_graph_index_path = (
+                    _eval_relation_graph_index_path(fixture)
+                    if selected_variant.graph_cache_mode == "warm"
+                    else repo_root / ".mergewarden" / "cold-eval-relation-index.sqlite3"
                 )
             orchestrator = AgentOrchestrator(
                 permission_mode="default",
@@ -458,7 +471,8 @@ async def run_single(
                     1, get_settings().eval_review_min_tool_iterations
                 ),
                 review_diff_first_changed_files=True,
-                relation_graph_index_path=_eval_relation_graph_index_path(fixture),
+                relation_graph_index_path=relation_graph_index_path,
+                context_mode=selected_variant.context_mode,
             )
             sandbox_context = _build_fixture_context(fixture, repo_root)
 
@@ -519,6 +533,7 @@ async def run_single(
             return EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
+                **_variant_result_fields(selected_variant),
                 run_id=parsed_response.run_id,
                 schema_valid=schema_valid,
                 expected_count=expected_count,
@@ -563,6 +578,7 @@ async def run_single(
         return EvalResult(
             fixture_id=fixture.id,
             fixture_type=fixture.type,
+            **_variant_result_fields(selected_variant),
             schema_valid=False,
             expected_count=expected_count,
             stage_timings=stage_timings,
@@ -578,6 +594,7 @@ async def run_suite(
     fixture_concurrency: int = 1,
     review_max_iterations: int | None = None,
     temperature: float = 0.0,
+    variant: EvalVariant | None = None,
 ) -> list[SampledFixtureResult]:
     """Run all fixtures with optional K-sample aggregation."""
     max_fixture_concurrency = max(1, min(fixture_concurrency, len(fixtures) or 1))
@@ -585,13 +602,15 @@ async def run_suite(
 
     async def _run_fixture(fixture: Fixture) -> SampledFixtureResult:
         async with semaphore:
-            return await run_single_sampled(
-                fixture,
-                samples=samples,
-                concurrency=concurrency,
-                review_max_iterations=review_max_iterations,
-                temperature=temperature,
-            )
+            kwargs: dict[str, Any] = {
+                "samples": samples,
+                "concurrency": concurrency,
+                "review_max_iterations": review_max_iterations,
+                "temperature": temperature,
+            }
+            if variant is not None:
+                kwargs["variant"] = variant
+            return await run_single_sampled(fixture, **kwargs)
 
     return await asyncio.gather(*(_run_fixture(fixture) for fixture in fixtures))
 
@@ -603,6 +622,7 @@ async def run_single_sampled(
     concurrency: int,
     review_max_iterations: int | None = None,
     temperature: float = 0.0,
+    variant: EvalVariant | None = None,
 ) -> SampledFixtureResult:
     """Run one fixture K times and aggregate stability metrics."""
     sample_count = max(1, samples)
@@ -615,6 +635,7 @@ async def run_single_sampled(
                 fixture,
                 temperature=temperature,
                 review_max_iterations=review_max_iterations,
+                variant=variant,
             )
 
     runs = await asyncio.gather(*(_run() for _ in range(sample_count)))
@@ -644,6 +665,10 @@ def _aggregate_sampled_result(
     return SampledFixtureResult(
         fixture_id=fixture.id,
         fixture_type=fixture.type,
+        variant_id=(runs[0].variant_id if runs else ""),
+        context_mode=(runs[0].context_mode if runs else "graph_hybrid"),
+        graph_cache_mode=(runs[0].graph_cache_mode if runs else "warm"),
+        matcher_version=EVAL_MATCHER_VERSION,
         expected_count=expected_count,
         samples=len(runs) or 1,
         runs=runs,
@@ -808,7 +833,7 @@ def _changed_new_lines_by_file(diff_text: str) -> dict[str, set[int]]:
             marker = raw_line[4:].strip()
             current_path = ""
             if marker != "/dev/null":
-                current_path = marker[2:] if marker.startswith("b/") else marker
+                current_path = marker.removeprefix("b/")
                 changed.setdefault(current_path, set())
             new_line = None
             continue
@@ -837,7 +862,7 @@ def _added_new_lines_by_file(diff_text: str) -> dict[str, dict[int, str]]:
             marker = raw_line[4:].strip()
             current_path = ""
             if marker != "/dev/null":
-                current_path = marker[2:] if marker.startswith("b/") else marker
+                current_path = marker.removeprefix("b/")
                 added.setdefault(current_path, {})
             new_line = None
             continue
@@ -945,7 +970,8 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
     if not log_path.exists():
         return 0
 
-    total = 0
+    model_total = 0
+    completed_total: int | None = None
     for raw_line in log_path.read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
             continue
@@ -953,11 +979,17 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
             event = json.loads(raw_line)
         except json.JSONDecodeError:
             continue
-        if event.get("event_type") != "model_call":
-            continue
         payload = event.get("payload", {})
-        total += int(payload.get("tokens", 0) or 0)
-    return total
+        if event.get("event_type") == "model_call":
+            model_total += int(payload.get("tokens", 0) or 0)
+        elif (
+            event.get("event_type") == "phase_end"
+            and event.get("phase") == "review_complete"
+        ):
+            raw_total = payload.get("total_tokens")
+            if isinstance(raw_total, int):
+                completed_total = max(0, raw_total)
+    return completed_total if completed_total is not None else model_total
 
 
 def _resolve_event_log_path(repo_root: Path, run_id: str) -> str | None:
@@ -1133,12 +1165,28 @@ def _repair_unit_matches(expected: str, issue: Any) -> bool:
             str(getattr(repair, "action", "")),
             *[str(value) for value in getattr(repair, "targets", [])],
             str(getattr(repair, "boundary", "")),
+            str(getattr(issue, "causal_mechanism", "")),
+            str(getattr(issue, "violated_invariant", "")),
+            str(getattr(issue, "suggestion", "")),
         ]
     )
     normalized_actual = " ".join(actual.lower().replace("_", " ").split())
-    return (
+    if (
         normalized_expected == normalized_actual
         or normalized_expected in normalized_actual
+    ):
+        return True
+    expected_tokens = _semantic_match_tokens(expected) - {
+        "a",
+        "an",
+        "at",
+        "boundary",
+        "the",
+        "to",
+    }
+    actual_tokens = _semantic_match_tokens(actual)
+    return bool(expected_tokens) and (
+        len(expected_tokens & actual_tokens) / len(expected_tokens) >= 0.6
     )
 
 
@@ -1215,11 +1263,90 @@ def _semantic_location_matches(expected_issue: Any, location: str) -> bool:
 
 def _issue_matches_expected_location(expected_issue: Any, issue: Any) -> bool:
     location = str(getattr(issue, "location", "") or "")
-    return (
+    location_matches = (
         _semantic_location_matches(expected_issue, location)
         or _location_matches(expected_issue.location_pattern, location)
         or _issue_evidence_mentions_expected_line(expected_issue, issue)
     )
+    if not location_matches:
+        return False
+    if not _semantic_text_matches(
+        str(getattr(expected_issue, "mechanism_pattern", "") or ""),
+        str(getattr(issue, "causal_mechanism", "") or ""),
+    ):
+        return False
+    if not _semantic_text_matches(
+        str(getattr(expected_issue, "invariant_pattern", "") or ""),
+        str(getattr(issue, "violated_invariant", "") or ""),
+    ):
+        return False
+    expected_paths = {
+        str(path).strip().replace("\\", "/")
+        for path in getattr(expected_issue, "affected_paths", [])
+        if str(path).strip()
+    }
+    if not expected_paths:
+        return True
+    actual_paths = {normalize_location(location).path}
+    actual_paths.update(
+        str(getattr(item, "file", "") or "").strip().replace("\\", "/")
+        for item in getattr(issue, "related_locations", [])
+    )
+    return expected_paths.issubset(actual_paths)
+
+
+def _semantic_text_matches(pattern: str, value: str) -> bool:
+    if not pattern:
+        return True
+    try:
+        if re.search(pattern, value, re.IGNORECASE) is not None:
+            return True
+    except re.error:
+        pass
+    normalized_value = _semantic_match_tokens(value)
+    alternatives = [item for item in pattern.split("|") if item.strip()]
+    return any(
+        _semantic_match_tokens(alternative).issubset(normalized_value)
+        for alternative in alternatives
+    )
+
+
+def _semantic_match_tokens(value: str) -> set[str]:
+    aliases = {
+        "single": "once",
+        "one": "once",
+        "double": "duplicate",
+        "duplicate": "duplicate",
+        "redundant": "duplicate",
+        "revert": "remove",
+        "twice": "duplicate",
+        "application": "apply",
+        "applied": "apply",
+        "applies": "apply",
+        "subtracting": "subtract",
+        "subtraction": "subtract",
+        "subtracts": "subtract",
+    }
+    words = re.findall(r"[a-z0-9]+", value.lower().replace("_", " "))
+    return {aliases.get(word, word) for word in words}
+
+
+def _default_eval_variant() -> EvalVariant:
+    mode = get_settings().review_context_mode
+    return EvalVariant(
+        id="default-agent-search" if mode == "agent_search" else "default-graph-hybrid",
+        context_mode=mode,
+        graph_cache_mode="disabled" if mode == "agent_search" else "warm",
+    )
+
+
+def _variant_result_fields(variant: EvalVariant) -> dict[str, str]:
+    return {
+        "variant_id": variant.id,
+        "context_mode": variant.context_mode,
+        "graph_cache_mode": variant.graph_cache_mode,
+        "matcher_version": EVAL_MATCHER_VERSION,
+    }
 
 
 def _issue_evidence_mentions_expected_line(expected_issue: Any, issue: Any) -> bool:

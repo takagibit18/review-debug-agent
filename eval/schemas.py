@@ -6,11 +6,30 @@ from datetime import UTC, datetime
 from statistics import mean, pstdev
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from src.analyzer.context_mode import ReviewContextMode
 from src.analyzer.output_formatter import Severity
 
 FixtureType = Literal["review", "debug"]
+EvalGraphCacheMode = Literal["disabled", "cold", "warm"]
+EVAL_MATCHER_VERSION = "semantic-v2"
+
+
+class EvalVariant(BaseModel):
+    """Explicit context variant injected into an eval run."""
+
+    id: str = Field(min_length=1)
+    context_mode: ReviewContextMode
+    graph_cache_mode: EvalGraphCacheMode
+
+    @model_validator(mode="after")
+    def _mode_cache_contract(self) -> EvalVariant:
+        if self.context_mode == "agent_search" and self.graph_cache_mode != "disabled":
+            raise ValueError("agent_search requires graph_cache_mode=disabled")
+        if self.context_mode == "graph_hybrid" and self.graph_cache_mode == "disabled":
+            raise ValueError("graph_hybrid requires graph_cache_mode=cold or warm")
+        return self
 
 
 class FixtureSource(BaseModel):
@@ -45,6 +64,18 @@ class ExpectedIssue(BaseModel):
     repair_unit: str = Field(
         default="",
         description="Optional normalized minimal-repair annotation.",
+    )
+    mechanism_pattern: str = Field(
+        default="",
+        description="Optional semantic pattern for the causal mechanism.",
+    )
+    invariant_pattern: str = Field(
+        default="",
+        description="Optional semantic pattern for the violated invariant.",
+    )
+    affected_paths: list[str] = Field(
+        default_factory=list,
+        description="Optional paths that must be covered by primary or related locations.",
     )
 
 
@@ -111,6 +142,29 @@ class ReviewProcessMetrics(BaseModel):
     """Process-level evidence collected from one review run timeline."""
 
     model_raw_issue_count: int = Field(default=0, ge=0)
+    context_mode: ReviewContextMode = "graph_hybrid"
+    model: str = ""
+    review_iterations: int = Field(default=0, ge=0)
+    tool_call_count: int = Field(default=0, ge=0)
+    grep_calls: int = Field(default=0, ge=0)
+    read_file_calls: int = Field(default=0, ge=0)
+    symbol_lookup_calls: int = Field(default=0, ge=0)
+    reviewer_latency_seconds: float = Field(default=0.0, ge=0.0)
+    verifier_latency_seconds: float = Field(default=0.0, ge=0.0)
+    consolidation_latency_seconds: float = Field(default=0.0, ge=0.0)
+    end_to_end_latency_seconds: float = Field(default=0.0, ge=0.0)
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+    graph_status: str = ""
+    graph_cache_mode: str = "not_applicable"
+    manifest_count: int = Field(default=0, ge=0)
+    manifest_token_cost: int = Field(default=0, ge=0)
+    parsed_file_count: int | None = Field(default=None, ge=0)
+    graph_node_count: int | None = Field(default=None, ge=0)
+    graph_edge_count: int | None = Field(default=None, ge=0)
+    graph_cache_hit: bool | None = None
+    graph_fallback_reason: str = ""
     verifier_candidate_count: int = Field(default=0, ge=0)
     candidate_issue_count: int = Field(default=0, ge=0)
     evidence_bound_issue_count: int = Field(default=0, ge=0)
@@ -185,6 +239,10 @@ class EvalResult(BaseModel):
 
     fixture_id: str
     fixture_type: FixtureType
+    variant_id: str = ""
+    context_mode: ReviewContextMode = "graph_hybrid"
+    graph_cache_mode: EvalGraphCacheMode = "warm"
+    matcher_version: str = EVAL_MATCHER_VERSION
     run_id: str = Field(default="")
     schema_valid: bool = Field(default=False)
     expected_count: int = Field(default=0, ge=0)
@@ -228,6 +286,10 @@ class SampledFixtureResult(BaseModel):
 
     fixture_id: str
     fixture_type: FixtureType
+    variant_id: str = ""
+    context_mode: ReviewContextMode = "graph_hybrid"
+    graph_cache_mode: EvalGraphCacheMode = "warm"
+    matcher_version: str = EVAL_MATCHER_VERSION
     expected_count: int = Field(default=0, ge=0)
     samples: int = Field(default=1, ge=1)
     runs: list[EvalResult] = Field(default_factory=list)
@@ -318,7 +380,7 @@ class MetricSummary(BaseModel):
         return float(ordered[rank])
 
     @classmethod
-    def from_results(cls, results: list[EvalResult]) -> "MetricSummary":
+    def from_results(cls, results: list[EvalResult]) -> MetricSummary:
         if not results:
             return cls()
 
@@ -363,7 +425,7 @@ class MetricSummary(BaseModel):
     @classmethod
     def from_sampled_results(
         cls, sampled_results: list[SampledFixtureResult]
-    ) -> "MetricSummary":
+    ) -> MetricSummary:
         if not sampled_results:
             return cls()
 
@@ -589,6 +651,8 @@ class EvalReport(BaseModel):
     """Suite-level report."""
 
     suite: str = Field(default="golden")
+    variant: EvalVariant | None = None
+    matcher_version: str = EVAL_MATCHER_VERSION
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     fixture_count: int = Field(default=0, ge=0)
     metrics: MetricSummary = Field(default_factory=MetricSummary)

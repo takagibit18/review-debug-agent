@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.analyzer.context_builder import ContextBuilder
 from src.analyzer.context_compressor import ContextCompressor
@@ -69,6 +69,52 @@ SYSTEM_PROMPT_REVIEW = (
     "When paths are uncertain, use list_dir first before glob/grep/read_file. "
     "After any Directory/File not found error, validate parent directory first and avoid blind retries."
 )
+
+_MANIFEST_SCHEMA_REQUIREMENT = "and context_manifest_id. Never invent or emit root_cause_id; only the later consolidator assigns it. "
+_GRAPH_EVIDENCE_REQUIREMENT = (
+    "Evidence may cite only code present in the supplied candidate_context_manifests or later successful "
+    "tool results. Copy the manifest id and exact context_hash into each evidence provenance entry. "
+    "A graph edge is navigation context, not proof of runtime identity; exploratory/low-confidence edges "
+    "cannot alone support a warning. "
+)
+
+# The common policy is byte-for-byte identical for every A/B variant.  Only the
+# strategy-specific suffix below changes.
+COMMON_REVIEW_PROMPT = SYSTEM_PROMPT_REVIEW.replace(
+    _MANIFEST_SCHEMA_REQUIREMENT,
+    "and optional context_manifest_id. Never invent or emit root_cause_id; only the later consolidator assigns it. ",
+).replace(_GRAPH_EVIDENCE_REQUIREMENT, "")
+AGENT_SEARCH_POLICY = (
+    "Context policy: agent_search. No graph or candidate context manifest exists for this run. "
+    "Evidence may come from the supplied diff or successful read-only tool calls. "
+    "For tool evidence, record its real retrieval source, repository-relative file, line/span, "
+    "and a concrete content summary; never invent graph provenance, context_manifest_id, or context_hash. "
+    "Leave manifest-only fields empty. If evidence is insufficient, continue a targeted read/grep/symbol "
+    "search when a tool round remains, otherwise do not submit that finding. "
+)
+GRAPH_CONTEXT_POLICY = (
+    "Context policy: graph_hybrid. Candidate context manifests are first-pass navigation context, not a "
+    "complete world model. A graph edge indicates only its named structural relation and is not runtime fact. "
+    "When citing manifest evidence, use the real manifest id and exact context_hash. Successful read-only "
+    "tool results outside a manifest remain valid independent tool provenance. Low-confidence or exploratory "
+    "graph edges cannot alone support warning or critical findings. "
+)
+
+
+def review_prompt_parts(context_mode: str) -> tuple[str, str]:
+    """Return the invariant prompt core and the selected context policy."""
+
+    policy = (
+        AGENT_SEARCH_POLICY if context_mode == "agent_search" else GRAPH_CONTEXT_POLICY
+    )
+    return COMMON_REVIEW_PROMPT, policy
+
+
+def review_system_prompt(context_mode: str) -> str:
+    common, policy = review_prompt_parts(context_mode)
+    return common + policy
+
+
 SYSTEM_PROMPT_DEBUG = (
     "You are a senior debugging assistant. Produce structured hypotheses and steps. "
     "When paths are uncertain, use list_dir first before glob/grep/read_file. "
@@ -152,7 +198,7 @@ def build_review_messages(
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context)
     return [
-        Message(role="system", content=SYSTEM_PROMPT_REVIEW),
+        Message(role="system", content=review_system_prompt(context.context_mode)),
         Message(
             role="user",
             content=USER_PREFIX_REVIEW + json.dumps(payload, ensure_ascii=True),
@@ -196,7 +242,7 @@ async def build_review_messages_async(
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context)
     return [
-        Message(role="system", content=SYSTEM_PROMPT_REVIEW),
+        Message(role="system", content=review_system_prompt(context.context_mode)),
         Message(
             role="user",
             content=USER_PREFIX_REVIEW + json.dumps(payload, ensure_ascii=True),
@@ -371,8 +417,7 @@ def _measure_context_parts(
 
 
 def _context_part_kind(label: str) -> str:
-    if label.startswith(SUMMARY_LABEL_PREFIX):
-        label = label[len(SUMMARY_LABEL_PREFIX) :]
+    label = label.removeprefix(SUMMARY_LABEL_PREFIX)
     if label.startswith("diff_hunk_"):
         return "diff_hunk"
     if label.startswith("file:"):

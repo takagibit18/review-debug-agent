@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from src.analyzer.diff_lines import parse_unified_diff_hunks
+from src.analyzer.evidence_policy import evidence_policy_for_mode
 from src.analyzer.location import normalize_location
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
 
@@ -63,6 +64,7 @@ def build_candidate_verifier_context(
     *,
     max_chars: int = 12_000,
     context_manifests: list[dict[str, Any]] | None = None,
+    context_mode: str = "graph_hybrid",
 ) -> list[dict[str, Any]]:
     """Build bounded hunk/window/symbol evidence associated with each candidate."""
     if not candidates:
@@ -72,6 +74,15 @@ def build_candidate_verifier_context(
     contexts: list[dict[str, Any]] = []
     for candidate in candidates:
         location = normalize_location(candidate.issue.location)
+        relevant_paths = {
+            path
+            for path in (
+                location.path,
+                *[item.file for item in candidate.issue.all_evidence()],
+                *[item.file for item in candidate.issue.related_locations],
+            )
+            if path
+        }
         context: dict[str, Any] = {
             "candidate_id": candidate.candidate_id,
             "location": location.canonical,
@@ -83,6 +94,10 @@ def build_candidate_verifier_context(
             "included_spans": [],
             "included_graph_paths": [],
             "excluded_low_confidence_paths": [],
+            "context_mode": context_mode,
+            "evidence_policy": evidence_policy_for_mode(
+                "agent_search" if context_mode == "agent_search" else "graph_hybrid"
+            ).model_dump(mode="json"),
         }
         if not location.valid or not location.path:
             contexts.append(context)
@@ -136,6 +151,7 @@ def build_candidate_verifier_context(
                 candidate_path=location.path,
                 candidate_start=start,
                 candidate_end=end,
+                relevant_paths=relevant_paths,
                 budget=budget,
             )
         contexts.append(context)
@@ -149,6 +165,7 @@ def _append_matching_tool_context(
     candidate_path: str,
     candidate_start: int | None,
     candidate_end: int | None,
+    relevant_paths: set[str],
     budget: int,
 ) -> None:
     tool_name = str(entry.get("tool_name", "")).strip()
@@ -161,14 +178,13 @@ def _append_matching_tool_context(
     data_path = _entry_path(data, arguments)
 
     if tool_name in {"get_changed_context", "changed_context"}:
-        if data_path != candidate_path:
+        if data_path not in relevant_paths:
             return
         hunk = data.get("hunk")
-        if isinstance(hunk, dict) and _payload_matches_range(
-            hunk,
-            candidate_start,
-            candidate_end,
-        ):
+        hunk_relevant = data_path != candidate_path or _payload_matches_range(
+            hunk if isinstance(hunk, dict) else {}, candidate_start, candidate_end
+        )
+        if isinstance(hunk, dict) and hunk_relevant:
             _append_bounded(
                 context,
                 "diff_hunks",
@@ -176,11 +192,10 @@ def _append_matching_tool_context(
                 budget,
             )
         window = data.get("file_window")
-        if isinstance(window, dict) and _payload_matches_range(
-            window,
-            candidate_start,
-            candidate_end,
-        ):
+        window_relevant = data_path != candidate_path or _payload_matches_range(
+            window if isinstance(window, dict) else {}, candidate_start, candidate_end
+        )
+        if isinstance(window, dict) and window_relevant:
             _append_bounded(
                 context,
                 "file_windows",
@@ -199,12 +214,14 @@ def _append_matching_tool_context(
         return
 
     if tool_name == "read_file":
-        if data_path != candidate_path:
+        if data_path not in relevant_paths:
             return
         start_line = _as_int(data.get("start_line"))
         line_count = _as_int(data.get("line_count")) or 0
         end_line = start_line + max(0, line_count - 1) if start_line else None
-        if not _ranges_overlap(candidate_start, candidate_end, start_line, end_line):
+        if data_path == candidate_path and not _ranges_overlap(
+            candidate_start, candidate_end, start_line, end_line
+        ):
             return
         _append_bounded(
             context,
@@ -227,11 +244,11 @@ def _append_matching_tool_context(
         if not isinstance(raw_records, list):
             continue
         records.extend(item for item in raw_records if isinstance(item, dict))
-    scoped_to_candidate = _normalized_path(arguments.get("path", "")) == candidate_path
+    scoped_to_relevant = _normalized_path(arguments.get("path", "")) in relevant_paths
     directly_relevant = any(
-        _normalized_path(item.get("path", "")) == candidate_path for item in records
+        _normalized_path(item.get("path", "")) in relevant_paths for item in records
     )
-    if not scoped_to_candidate and not directly_relevant:
+    if not scoped_to_relevant and not directly_relevant:
         return
     _append_bounded(
         context,
@@ -365,20 +382,74 @@ def provenance_in_candidate_context(
     *,
     min_edge_confidence: float = 0.65,
 ) -> bool:
-    """Validate manifest id, span hash, and any graph-edge eligibility."""
+    """Validate diff/tool/manifest provenance under the selected source policy."""
 
     if context is None:
         return False
+    policy_raw = context.get("evidence_policy", {})
+    mode = str(context.get("context_mode", "graph_hybrid"))
+    policy = evidence_policy_for_mode(
+        "agent_search" if mode == "agent_search" else "graph_hybrid"
+    )
+    if isinstance(policy_raw, dict) and policy_raw:
+        try:
+            policy = policy.model_validate(policy_raw)
+        except Exception:  # noqa: BLE001
+            policy = evidence_policy_for_mode(
+                "agent_search" if mode == "agent_search" else "graph_hybrid"
+            )
     manifest_id = str(context.get("context_manifest_id", ""))
     evidence_manifest = str(getattr(evidence, "context_manifest_id", ""))
-    if not manifest_id or evidence_manifest != manifest_id:
-        return False
     file = _normalized_path(getattr(evidence, "file", ""))
     line = _as_int(getattr(evidence, "line", None))
     end_line = _as_int(getattr(evidence, "end_line", None)) or line
     digest = str(getattr(evidence, "context_hash", ""))
-    if not file or line is None or not digest:
+    retrieval_source = str(getattr(evidence, "retrieval_source", "")).strip().lower()
+    if not file or line is None or not retrieval_source:
         return False
+
+    if evidence_manifest:
+        if not policy.allow_manifest_evidence:
+            return False
+        if not manifest_id or evidence_manifest != manifest_id:
+            return False
+        if policy.require_context_hash_for_manifest and not digest:
+            return False
+        return _manifest_provenance_valid(
+            context,
+            evidence,
+            file=file,
+            line=line,
+            end_line=end_line or line,
+            digest=digest,
+            min_edge_confidence=min_edge_confidence,
+        )
+
+    if policy.require_manifest:
+        return False
+    if getattr(evidence, "edge_kind", ""):
+        return False
+    if retrieval_source in {"git_diff", "diff", "review_diff", "changed_hunk"}:
+        return policy.allow_diff_evidence and _location_in_records(
+            context.get("diff_hunks"), file, line, end_line or line
+        )
+    if not policy.allow_tool_evidence:
+        return False
+    return _location_in_tool_context(context, file, line, end_line or line)
+
+
+def _manifest_provenance_valid(
+    context: dict[str, Any],
+    evidence: Any,
+    *,
+    file: str,
+    line: int,
+    end_line: int,
+    digest: str,
+    min_edge_confidence: float,
+) -> bool:
+    """Validate exact manifest span/hash and strong graph-edge eligibility."""
+
     spans = context.get("included_spans")
     matching_span = False
     if isinstance(spans, list):
@@ -387,7 +458,7 @@ def provenance_in_candidate_context(
                 continue
             if str(span.get("context_hash", "")) != digest:
                 continue
-            if _location_overlaps_record(file, line, end_line or line, span):
+            if _location_overlaps_record(file, line, end_line, span):
                 matching_span = True
                 break
     if not matching_span:
@@ -420,6 +491,38 @@ def provenance_in_candidate_context(
                 and float(edge.get("confidence", 0.0) or 0.0) >= min_edge_confidence
                 and edge.get("evidence_eligibility") == "strong"
             ):
+                return True
+    return False
+
+
+def _location_in_records(records: Any, file: str, line: int, end_line: int) -> bool:
+    return isinstance(records, list) and any(
+        _location_overlaps_record(file, line, end_line, record) for record in records
+    )
+
+
+def _location_in_tool_context(
+    context: dict[str, Any], file: str, line: int, end_line: int
+) -> bool:
+    for key in ("file_windows", "enclosing_symbols"):
+        records = context.get(key)
+        if isinstance(records, list) and any(
+            isinstance(record, dict)
+            and str(record.get("source", "")) in VERIFIER_CONTEXT_TOOL_NAMES
+            and _location_overlaps_record(file, line, end_line, record)
+            for record in records
+        ):
+            return True
+    symbol_contexts = context.get("symbol_contexts")
+    if not isinstance(symbol_contexts, list):
+        return False
+    for symbol_context in symbol_contexts:
+        if not isinstance(symbol_context, dict):
+            continue
+        if str(symbol_context.get("source", "")) not in VERIFIER_CONTEXT_TOOL_NAMES:
+            continue
+        for key in ("definitions", "references", "enclosing_symbols"):
+            if _location_in_records(symbol_context.get(key), file, line, end_line):
                 return True
     return False
 

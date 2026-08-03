@@ -1,0 +1,72 @@
+contract_id: agent-baseline-v1
+contract_version: 1
+created_at: "2026-07-31T14:52:00+08:00"
+phase: graph-ab-phase-1
+formal_graph_ab_executed: false
+
+repository:
+  commit_sha: eac439c2f3ddf88b8874b9dcbfcdc156bb4d7da0
+  branch: main
+  working_tree_clean: false
+  implementation_snapshot_sha256: ba18bbc64f35c3ed5d8a112800cd7ee02d99d700b21f65c8128bb834e3a94b27
+  implementation_snapshot_file_count: 19
+  snapshot_algorithm: >-
+    sort repository-relative UTF-8 paths; normalize CRLF and CR to LF in file
+    bytes; SHA-256 each sequence path + NUL + normalized bytes + NUL
+  snapshot_scope: graph-ab phase-1 implementation, audit, development fixture, and tests; excludes generated contract/report and unrelated user-owned untracked files
+
+variant:
+  id: A-agent-search
+  context_mode: agent_search
+  graph_cache_mode: disabled
+
+runtime:
+  model: deepseek-v4-flash
+  temperature: 0.0
+  max_output_tokens: 2048
+  max_iterations: 3
+  tool_budget: 64
+  model_request_timeout_seconds: 90.0
+  tool_timeout_seconds: 30.0
+  run_timeout_seconds: 170.0
+
+contracts:
+  reviewer_prompt_sha256: 562bc613349ca4ac12aa7f99a1045fd4b27ba1cd6da3cfd4afe9b8381dbfcf5b
+  verifier_prompt_sha256: 57e313c76f4dc46840f89bed640c3033c28f094a3e080d4be378c2a1af66ada4
+  consolidator_prompt_kind: deterministic_policy_source
+  consolidator_prompt_sha256: 190b1d4bab46086810c52a54e554a1fcad1bbebd0b7e1cc21e6674a55be59e28
+  finding_schema_version: "2.0"
+  dataset_version: development-agent-search-v1
+  dataset_sha256: cd9a902c4ff859502e1036ced9489b866cc05fcf4e7e42eda4ec5338f7cad31f
+  matcher_version: semantic-v2
+  matcher_source_sha256: 4a3163b9114baeed1647b20ff5a03fc5d5c0a41feb44dcaede7471c01c97c216
+
+environment:
+  os: Windows 11 Pro
+  python: 3.12.13
+  dependencies:
+    pydantic: 2.13.4
+    httpx: 0.28.1
+    click: 8.4.2
+    pytest: 9.1.1
+    ruff: 0.16.1
+    mypy: 2.3.0
+
+baseline_run:
+  command: >-
+    .venv/Scripts/python.exe -m eval.run eval --suite development
+    --fixtures-dir eval/development_fixtures --variant-id A-agent-search
+    --context-mode agent_search --graph-cache-mode disabled --samples 1
+    --concurrency 1 --fixture-concurrency 1 --review-max-iterations 3
+    --temperature 0 --output-json eval/outputs/agent-baseline-v1.json
+  run_id: d48c8510-6e91-4922-867c-07fe4be7d184
+  report_json: eval/outputs/agent-baseline-v1.json
+  event_log: eval/outputs/event_logs/development_agent_search_cross_file_d48c8510-6e91-4922-867c-07fe4be7d184.jsonl
+
+freeze:
+  implementation_ready: true
+  git_commit_ready: true
+  tag_created: false
+  tag_name: eval/agent-baseline-v1
+  status: ready_after_user_commit
+  reason: automatic commits and tags were intentionally not created

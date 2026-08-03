@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -199,6 +199,65 @@ def extract_review_process_metrics(
             metrics.reviewer_tool_call_count += 1
             if payload.get("deduplicated") is True:
                 metrics.duplicate_tool_call_count += 1
+        elif (
+            event_type == "phase_end"
+            and str(event.get("phase", "")) == "review_complete"
+        ):
+            mode = str(payload.get("context_mode", "graph_hybrid"))
+            metrics.context_mode = (
+                "agent_search" if mode == "agent_search" else "graph_hybrid"
+            )
+            metrics.model = str(payload.get("model", ""))
+            metrics.review_iterations = _non_negative_int(
+                payload.get("review_iterations")
+            )
+            metrics.tool_call_count = _non_negative_int(payload.get("tool_call_count"))
+            metrics.grep_calls = _non_negative_int(payload.get("grep_calls"))
+            metrics.read_file_calls = _non_negative_int(payload.get("read_file_calls"))
+            metrics.symbol_lookup_calls = _non_negative_int(
+                payload.get("symbol_lookup_calls")
+            )
+            metrics.reviewer_latency_seconds = _non_negative_float(
+                payload.get("reviewer_latency_seconds")
+            )
+            metrics.verifier_latency_seconds = _non_negative_float(
+                payload.get("verifier_latency_seconds")
+            )
+            metrics.consolidation_latency_seconds = _non_negative_float(
+                payload.get("consolidation_latency_seconds")
+            )
+            metrics.end_to_end_latency_seconds = _non_negative_float(
+                payload.get("end_to_end_latency_seconds")
+            )
+            metrics.prompt_tokens = _optional_non_negative_int(
+                payload.get("prompt_tokens")
+            )
+            metrics.completion_tokens = _optional_non_negative_int(
+                payload.get("completion_tokens")
+            )
+            metrics.total_tokens = _non_negative_int(payload.get("total_tokens"))
+            metrics.graph_status = str(payload.get("graph_status", ""))
+            metrics.graph_cache_mode = str(
+                payload.get("graph_cache_mode", "not_applicable")
+            )
+            metrics.manifest_count = _non_negative_int(payload.get("manifest_count"))
+            metrics.manifest_token_cost = _non_negative_int(
+                payload.get("manifest_token_cost")
+            )
+            metrics.parsed_file_count = _optional_non_negative_int(
+                payload.get("parsed_file_count")
+            )
+            metrics.graph_node_count = _optional_non_negative_int(
+                payload.get("graph_node_count")
+            )
+            metrics.graph_edge_count = _optional_non_negative_int(
+                payload.get("graph_edge_count")
+            )
+            raw_cache_hit = payload.get("cache_hit")
+            metrics.graph_cache_hit = (
+                bool(raw_cache_hit) if isinstance(raw_cache_hit, bool) else None
+            )
+            metrics.graph_fallback_reason = str(payload.get("fallback_reason", ""))
     return metrics
 
 
@@ -207,6 +266,12 @@ def _non_negative_int(value: object) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _optional_non_negative_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value)
 
 
 def _non_negative_float(value: object) -> float:

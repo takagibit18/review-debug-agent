@@ -6,15 +6,15 @@ both CLI rendering and (future) API responses.
 
 from __future__ import annotations
 
-from enum import Enum
 import re
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
 from src.analyzer.finding_schema import (
+    FINDING_SCHEMA_VERSION,
     CounterfactualResult,
     EvidenceProvenance,
-    FINDING_SCHEMA_VERSION,
     RelatedLocation,
     RepairIntent,
     SourceAnchor,
@@ -77,6 +77,7 @@ class ReviewIssue(BaseModel):
     trigger_evidence: list[EvidenceProvenance] = Field(default_factory=list)
     impact_evidence: list[EvidenceProvenance] = Field(default_factory=list)
     context_manifest_id: str = ""
+    context_hash: str = ""
     member_findings: list[str] = Field(default_factory=list)
     absorbed_roles: dict[str, str] = Field(default_factory=dict)
     counterfactual_result: CounterfactualResult | None = None

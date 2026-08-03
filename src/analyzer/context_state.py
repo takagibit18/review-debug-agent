@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.analyzer.context_mode import ReviewContextMode
+
 
 class DecisionStep(BaseModel):
     """A single reasoning or decision record within a session."""
@@ -40,6 +42,10 @@ class ContextState(BaseModel):
     """
 
     goal: str = Field(default="", description="Current review or debug objective")
+    context_mode: ReviewContextMode = Field(
+        default="graph_hybrid",
+        description="Explicit context strategy selected for this review.",
+    )
     constraints: list[str] = Field(
         default_factory=list, description="Active constraints for this run"
     )

@@ -17,21 +17,21 @@ from src.analyzer.schemas import (
     FindingVerificationBatch,
     ReviewRequest,
 )
-from src.models.schemas import Message
 from src.analyzer.verifier_context import (
     build_candidate_verifier_context,
     location_in_candidate_context,
     provenance_in_candidate_context,
 )
+from src.models.schemas import Message
 
 RISK_SEVERITIES = {Severity.CRITICAL, Severity.WARNING}
 
-_VERIFIER_SYSTEM_PROMPT = """You are an independent semantic verifier for PR review findings.
+_COMMON_VERIFIER_SYSTEM_PROMPT = """You are an independent semantic verifier for PR review findings.
 Treat every candidate as untrusted. Verify that the cited code exists in the supplied diff,
 that observed_behavior and causal_mechanism follow from role-specific provenance, that the
 violated invariant has contract evidence, that trigger/impact do not exceed context actually
 received, that the PR introduced the behavior, and that repair_intent is actionable. A primary
-anchor must hit a changed line. Cross-file evidence must be in the candidate context manifest.
+anchor must hit a changed line.
 Graph CALLS/REFERENCES/READS_FIELD/WRITES_FIELD edges establish only their named structural
 relation; they do not prove argument identity, runtime object identity, write-to-read flow, or
 path execution. Exploratory or low-confidence graph edges cannot alone support acceptance.
@@ -39,6 +39,14 @@ Seek counterexamples. Return exactly one structured
 verdict per candidate through submit_finding_verification. Never accept a candidate merely
 because its confidence is high. Use candidate_context as candidate-scoped evidence from
 successful source reads; distinguish missing evidence from evidence that contradicts a claim."""
+
+_AGENT_VERIFIER_POLICY = """This is agent_search mode. Accept valid diff evidence and provenance
+from successful read-only tool calls without requiring a context manifest. Reject invented graph
+or manifest provenance."""
+
+_GRAPH_VERIFIER_POLICY = """This is graph_hybrid mode. Manifest evidence must match the exact
+manifest id and context hash. Valid diff or successful read-only tool evidence remains acceptable
+when no manifest is cited."""
 
 _HIGH_CONFIDENCE_INFO_THRESHOLD = 0.85
 _CONCRETE_RISK_PATTERN = re.compile(
@@ -119,6 +127,7 @@ class FindingVerifier:
             context_manifests=[
                 dict(item) for item in state.candidate_context_manifests
             ],
+            context_mode=state.context_mode,
         )
         payload = {
             "diff": request.diff_text or "",
@@ -129,7 +138,15 @@ class FindingVerifier:
         }
         response = await self._model_client.chat(
             messages=[
-                Message(role="system", content=_VERIFIER_SYSTEM_PROMPT),
+                Message(
+                    role="system",
+                    content=_COMMON_VERIFIER_SYSTEM_PROMPT
+                    + (
+                        _AGENT_VERIFIER_POLICY
+                        if state.context_mode == "agent_search"
+                        else _GRAPH_VERIFIER_POLICY
+                    ),
+                ),
                 Message(role="user", content=json.dumps(payload, ensure_ascii=True)),
             ],
             config=config,
@@ -334,7 +351,6 @@ def _structured_candidate_evidence_valid(
                 issue.violated_invariant,
                 issue.repair_intent.action,
                 issue.repair_intent.boundary,
-                issue.context_manifest_id,
             )
         )
         or not issue.repair_intent.targets
@@ -354,19 +370,21 @@ def _structured_candidate_evidence_valid(
             value.strip()
             for value in (
                 item.candidate_id,
-                item.context_manifest_id,
                 item.retrieval_source,
                 item.file,
-                item.symbol_id,
-                item.context_hash,
-                item.resolver,
                 item.statement,
             )
         )
         for item in evidence
     ):
         return False
-    if any(item.context_manifest_id != issue.context_manifest_id for item in evidence):
+    if issue.context_manifest_id and any(
+        item.context_manifest_id != issue.context_manifest_id for item in evidence
+    ):
+        return False
+    if not issue.context_manifest_id and any(
+        item.context_manifest_id for item in evidence
+    ):
         return False
     return all(provenance_in_candidate_context(context, item) for item in evidence)
 
