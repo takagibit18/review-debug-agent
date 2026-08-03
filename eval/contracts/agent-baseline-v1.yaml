@@ -1,19 +1,21 @@
 contract_id: agent-baseline-v1
 contract_version: 1
-created_at: "2026-07-31T14:52:00+08:00"
+created_at: "2026-08-03T16:04:19+08:00"
 phase: graph-ab-phase-1
 formal_graph_ab_executed: false
 
 repository:
-  commit_sha: eac439c2f3ddf88b8874b9dcbfcdc156bb4d7da0
+  implementation_commit_sha: 8cb385e702797601a32a239ebd52870449c32df7
   branch: main
-  working_tree_clean: false
-  implementation_snapshot_sha256: ba18bbc64f35c3ed5d8a112800cd7ee02d99d700b21f65c8128bb834e3a94b27
+  working_tree_clean_at_run: true
+  implementation_snapshot_sha256: 6a120e969d62dec49049ac610d60a03221647c9c65f32f41127b0078d9af5ec3
   implementation_snapshot_file_count: 19
   snapshot_algorithm: >-
     sort repository-relative UTF-8 paths; normalize CRLF and CR to LF in file
     bytes; SHA-256 each sequence path + NUL + normalized bytes + NUL
-  snapshot_scope: graph-ab phase-1 implementation, audit, development fixture, and tests; excludes generated contract/report and unrelated user-owned untracked files
+  snapshot_scope: >-
+    graph-ab phase-1 implementation, audit, development fixture, and tests;
+    excludes generated contract/report/artifact
 
 variant:
   id: A-agent-search
@@ -39,7 +41,7 @@ contracts:
   dataset_version: development-agent-search-v1
   dataset_sha256: cd9a902c4ff859502e1036ced9489b866cc05fcf4e7e42eda4ec5338f7cad31f
   matcher_version: semantic-v2
-  matcher_source_sha256: 4a3163b9114baeed1647b20ff5a03fc5d5c0a41feb44dcaede7471c01c97c216
+  matcher_source_sha256: 37b0b88c881f6b73b21cbebc747eb1abadf3f19bcd5c739d32912fab1094ea30
 
 environment:
   os: Windows 11 Pro
@@ -59,14 +61,18 @@ baseline_run:
     --context-mode agent_search --graph-cache-mode disabled --samples 1
     --concurrency 1 --fixture-concurrency 1 --review-max-iterations 3
     --temperature 0 --output-json eval/outputs/agent-baseline-v1.json
-  run_id: d48c8510-6e91-4922-867c-07fe4be7d184
-  report_json: eval/outputs/agent-baseline-v1.json
-  event_log: eval/outputs/event_logs/development_agent_search_cross_file_d48c8510-6e91-4922-867c-07fe4be7d184.jsonl
+  run_id: b3b1b4dd-584e-4282-aebe-e2d02cc8a2db
+  compact_artifact: eval/baselines/agent-baseline-v1.json
+  compact_artifact_sha256: ad07e9544715289bf22d8479c69fa53eeeccf7ff33be5be1b9bb3c61931ff4fe
+  raw_report_json: eval/outputs/agent-baseline-v1.json
+  event_log: eval/outputs/event_logs/development_agent_search_cross_file_b3b1b4dd-584e-4282-aebe-e2d02cc8a2db.jsonl
+  raw_report_sha256: 7e8a7c335e35c0da8d0580bcd09fb4bdba2b640d5cb279a3679ff1ca5739e6d3
+  event_log_sha256: 6610878cf0048a22daf6f7c57f061bcc59e0f75b295aff930c253b8cb0e2d585
 
 freeze:
   implementation_ready: true
   git_commit_ready: true
-  tag_created: false
   tag_name: eval/agent-baseline-v1
-  status: ready_after_user_commit
-  reason: automatic commits and tags were intentionally not created
+  tag_created: true
+  status: frozen
+  formal_graph_ab_executed: false
