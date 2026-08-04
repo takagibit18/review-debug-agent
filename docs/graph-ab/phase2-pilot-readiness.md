@@ -15,7 +15,7 @@
 - [x] Prompt、Verifier、Matcher、Finding Schema、Golden、阈值和冻结 baseline 未修改。
 - [x] held-out 未执行；正式大规模 A/B 未执行。
 - [x] 质量、成本、稳定性和可获取的 Agent 行为指标已进入 raw/compact 矩阵；不可获取字段为 `null`/`not_available`。
-- [x] 自动化验证通过：核心 128 passed；全量 516 passed、1 skipped；mypy/ruff PASS。
+- [x] 自动化验证通过：核心 129 passed；全量 517 passed、1 skipped；mypy/ruff PASS。
 - [x] Pilot 报告和 compact summary 已生成。
 
 ## 阻塞项

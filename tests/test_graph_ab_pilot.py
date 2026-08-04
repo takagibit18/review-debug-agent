@@ -204,6 +204,38 @@ def test_warm_contract_accepts_primed_cache_hit(tmp_path: Path) -> None:
     assert validate_variant_contract(variant, result, lifecycle).valid
 
 
+def test_warm_contract_rejects_logical_index_change(tmp_path: Path) -> None:
+    variant = EvalVariant(
+        id="B2-graph-hybrid-warm",
+        context_mode="graph_hybrid",
+        graph_cache_mode="warm",
+    )
+    prime_index = _index_artifact()
+    measured_index = _index_artifact()
+    measured_index["logical_sha256"] = "c" * 64
+    lifecycle = {
+        "priming": {
+            "measured": False,
+            "telemetry": {"graph_cache_mode": "cold", "cache_hit": False},
+            "index_artifact": prime_index,
+        },
+        "measured_index_artifact": measured_index,
+    }
+    result = _result(
+        tmp_path,
+        variant,
+        graph_status="ready",
+        actual_cache_mode="warm",
+        cache_hit=True,
+        manifest_count=1,
+    )
+
+    contract = validate_variant_contract(variant, result, lifecycle)
+
+    assert not contract.valid
+    assert "warm_index_logical_sha_unchanged" in contract.errors
+
+
 def test_index_lifecycle_clears_and_inspects_owned_sqlite(tmp_path: Path) -> None:
     path = tmp_path / "pilot.sqlite3"
     connection = sqlite3.connect(path)

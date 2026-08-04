@@ -54,12 +54,12 @@ A 的 event log 中无 `relation_graph_built`、`index_lifecycle` 或 `context_m
 
 | Run ID | Fixture | Variant | 顺序 | Cache | Contract | Matched/Expected |
 |---|---|---|---:|---|---|---:|
-| `9b5cbbba-5073-48f0-ba48-743a0d8af341` | development cross-file | A | 1 | N/A | valid | 1/1 |
-| `01248c37-4dec-47a5-b080-d8b845bc647e` | development cross-file | B1 | 2 | cold miss | valid | 0/1 |
-| `2030c412-24bd-4066-894a-947be6ccc409` | development cross-file | B2 | 3 | warm hit | valid | 0/1 |
-| `f19c8942-3912-4cf4-8fc8-c04848d74485` | local pytest approx | B2 | 1 | warm hit | valid | 0/1 |
-| `2e080f0c-bd02-40df-a0d1-8cc65c8b4b19` | local pytest approx | A | 2 | N/A | valid | 0/1 |
-| `73e44f6f-69cf-4b5f-a8ab-f08aeda82ee4` | local pytest approx | B1 | 3 | cold miss | valid | 0/1 |
+| `8631c318-2f45-4a84-8f50-6094e47d3845` | development cross-file | A | 1 | N/A | valid | 1/1 |
+| `caa8c72e-1cdd-48b9-80ac-c8279352ded1` | development cross-file | B1 | 2 | cold miss | valid | 0/1 |
+| `67577263-45cd-44f1-8673-eb27a1baafbe` | development cross-file | B2 | 3 | warm hit | valid | 0/1 |
+| `4ed6fd0c-dbd7-4fa8-8d29-f9873257120d` | local pytest approx | B2 | 1 | warm hit | valid | 0/1 |
+| `3ccd2ba2-c4e1-4d84-a473-2ea1a4b96ff9` | local pytest approx | A | 2 | N/A | valid | 0/1 |
+| `96403cdb-fa28-4c2d-b4d8-46e80775000f` | local pytest approx | B1 | 3 | cold miss | valid | 0/1 |
 
 ## 6. Invalid runs
 
@@ -93,9 +93,9 @@ Development cross-file 的 A 命中而 B1/B2 未命中；local pytest approx 三
 
 | Variant | Mean end-to-end | Mean tokens | Tool calls（总计） | Mean manifest tokens | Mean parsed files | Mean index size |
 |---|---:|---:|---:|---:|---:|---:|
-| A | 14.820 s | 14,940.5 | 7 | 0 | N/A | N/A |
-| B1 | 11.149 s | 20,804.0 | 7 | 363 | 2.5 | 49,152 B |
-| B2 | 15.616 s | 22,125.0 | 7 | 363 | 0 | 49,152 B |
+| A | 21.214 s | 18,364.5 | 7 | 0 | N/A | N/A |
+| B1 | 22.502 s | 25,693.0 | 7 | 363 | 2.5 | 49,152 B |
+| B2 | 26.687 s | 25,983.0 | 7 | 363 | 0 | 49,152 B |
 
 各 Variant 总工具调用均为 7；A/B1/B2 的 read-file 调用总数分别为 5/7/5，grep 与 symbol lookup 均为 0。`prompt_tokens`、`completion_tokens`、tool search success、out-of-scope read rate、candidate revision count 与 finding fingerprint distribution 无法由当前 telemetry 准确采集，保持 `null` 或 `not_available`，未伪造为 0。
 
@@ -103,10 +103,17 @@ Development cross-file 的 A 命中而 B1/B2 未命中；local pytest approx 三
 
 | Fixture | B1 build | B1 parsed/nodes/edges | B1 index SHA-256 | B2 priming | B2 measured cache | B2 index SHA-256 |
 |---|---:|---|---|---:|---|---|
-| development cross-file | 0.4879 s | 3 / 7 / 15 | `1ea364c4…25159` | 0.3170 s | warm hit | `f5f0fff8…7507` |
-| local pytest approx | 0.2960 s | 2 / 7 / 10 | `f6573a5e…d5be` | 0.2992 s | warm hit | `ab8c0bed…7599` |
+| development cross-file | 0.3026 s | 3 / 7 / 15 | `0bb52476…4c103` | 0.4763 s | warm hit | `b9b2cae9…cbce4` |
+| local pytest approx | 0.5118 s | 2 / 7 / 10 | `8bf5c93c…c5495` | 1.0383 s | warm hit | `eaa6879f…4d534` |
 
-每个 B1 measured run 前均删除并确认目标 index 不存在。每个 B2 先清理 index，再在与 measured run 相同的临时 workspace、repository snapshot 和 index path 上执行 Cold context priming；priming 的 latency 单独记录，token/Finding 为 `null`，不进入 B2 质量均值。B2 measured run 未删除 index，schema version 为 3，均命中同一 primed repository identity；若重建则契约会 invalid。
+每个 B1 measured run 前均删除并确认目标 index 不存在。每个 B2 先清理 index，再在与 measured run 相同的临时 workspace、repository snapshot 和 index path 上执行 Cold context priming；priming 的 latency 单独记录，token/Finding 为 `null`，不进入 B2 质量均值。B2 measured run 未删除 index，schema version 为 3，均命中同一 primed repository identity；priming 与 measured 的规范化 logical SHA-256 完全一致，若逻辑内容变化或重建则契约会 invalid。物理 SQLite 文件 SHA 另行保留，但不作为内容身份，因为只读打开和 WAL/checkpoint 可改变容器 header。
+
+### 实验真实性 Bug 记录
+
+- 原因：最初的 Warm 校验直接比较 SQLite 容器文件 SHA；只读 Warm measured 打开可因 WAL/checkpoint/header 状态改变物理字节，即使 schema、repository revision 和所有表内容不变，导致一个真实 Warm hit 被误标 invalid。
+- 影响 Variant：仅 B2 的有效性判定；A、B1 和 Graph 算法输出不受影响。
+- 最小修复：同时记录 physical SHA 和按 schema + 所有索引表有序内容计算的 logical SHA，以 logical SHA、schema、repository identity 和 cache hit 共同校验复用。
+- 是否需要重新冻结实验实现：不需要。阶段一冻结实现、Matcher 与 Graph 算法未修改；修复仅位于阶段二实验校验器。
 
 ## 10. 稳定性与 Agent 行为
 
@@ -120,8 +127,8 @@ Development cross-file 的 A 命中而 B1/B2 未命中；local pytest approx 三
 
 ## 12. 自动化验证
 
-- 阶段二 + Graph/Context/Verifier/Root Cause/Eval 核心回归：128 passed
-- 全量：516 passed, 1 skipped
+- 阶段二 + Graph/Context/Verifier/Root Cause/Eval 核心回归：129 passed
+- 全量：517 passed, 1 skipped
 - `mypy src/`：PASS（75 source files）
 - `ruff check`：PASS
 - `ruff format --check`：PASS
@@ -146,4 +153,3 @@ Development cross-file 的 A 命中而 B1/B2 未命中；local pytest approx 三
 1. 现有远程 reviewed fixture 的完整 mirror 恢复在 20 分钟窗口内无法完成，正式批量前必须证明固定 repository snapshots 可在目标执行环境可靠、可限时地恢复。
 2. 当前 Development/Validation Pilot 只有 2 个 fixture × 1 sample，只能作为 `pilot-smoke`，尚不足以验证批量运行稳定性。
 3. 需要在不运行 held-out、且不修改任何冻结规则的前提下，完成至少 3 个代表性 reviewed fixtures 的配对预演，并确认没有新的 workspace、timeout 或 schema invalid run。
-
