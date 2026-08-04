@@ -1,0 +1,68 @@
+{
+  "id": "golden_vybestack_llxprt-code_pr3012_reverse",
+  "type": "review",
+  "source": {
+    "repo_full_name": "vybestack/llxprt-code",
+    "pr_number": 3012,
+    "url": "https://github.com/vybestack/llxprt-code/pull/3012",
+    "merge_commit_sha": "dc9ce4a4e25fbbe1e77b15642c93e9109aa77b2e",
+    "title": "Reverse fixture: provider 403 is retried blindly across nested retry engines"
+  },
+  "input": {
+    "diff_text": "diff --git a/packages/core/src/utils/retry.ts b/packages/core/src/utils/retry.ts\nindex 847f71b..c9a43ed 100644\n--- a/packages/core/src/utils/retry.ts\n+++ b/packages/core/src/utils/retry.ts\n@@ -18,7 +18,7 @@ export interface HttpError extends Error {\n   status?: number;\n }\n \n-const RETRYABLE_STATUS_CODES = new Set([401, 429]);\n+const RETRYABLE_STATUS_CODES = new Set([401, 403, 429]);\n \n function isRetryableStatus(status: number): boolean {\n   return RETRYABLE_STATUS_CODES.has(status) || (status >= 500 && status < 600);\n@@ -238,9 +238,7 @@ export function isNetworkTransientError(error: unknown): boolean {\n  *    (centralized in isNetworkTransientError)\n  * 2. RetryableQuotaError → retry\n  * 3. Anthropic body-level errors (overloaded_error, rate_limit_error, api_error, no HTTP status) → retry\n- * 4. Generic status 401/429 or 5xx → retry; 403 → NEVER retry by status (a\n- *    403 \"forbidden\" is a terminal auth/config problem, not a throttle, so\n- *    blind status-based retry only stalls; issue #2917). 400 → NEVER retry\n+ * 4. Generic status 401/403/429 or 5xx → retry; 400 → NEVER retry\n  * 5. All others → do not retry\n  *\n  * @param error The error object.\n@@ -349,7 +347,7 @@ function updateErrorCounters(\n   is429: boolean,\n   isAuthError: boolean,\n   is500: boolean,\n-  canRecoverFromAuthError: boolean,\n+  canAttemptFailover: boolean,\n   failoverThreshold: number,\n   state: RetryLoopState,\n   logger: DebugLogger,\n@@ -372,7 +370,7 @@ function updateErrorCounters(\n     is500 && !is429 && !isAuthError ? state.consecutiveServerErrors + 1 : 0;\n \n   const shouldAttemptRefreshRetry =\n-    isAuthError && canRecoverFromAuthError && state.consecutiveAuthErrors === 1;\n+    isAuthError && canAttemptFailover && state.consecutiveAuthErrors === 1;\n   return { shouldAttemptRefreshRetry };\n }\n \n@@ -698,14 +696,7 @@ async function handleRetryFailure(\n     classified.is429,\n     classified.isAuthError,\n     classified.is500,\n-    // The onPersistent429-driven allowance is left unconditional (issue #1123:\n-    // a 403 must still get one refresh retry before bucket failover). The\n-    // onAuthError-driven allowance is budget-guarded to match\n-    // invokeAuthErrorCallback, which skips when attempt >= maxAttempts: granting\n-    // a refresh retry with no attempt left only burns a backoff cycle (issue #2917).\n-    context.options?.onPersistent429 !== undefined ||\n-      (context.options?.onAuthError !== undefined &&\n-        state.attempt < context.maxAttempts),\n+    context.options?.onPersistent429 !== undefined,\n     context.failoverThreshold,\n     state,\n     context.logger,\ndiff --git a/packages/providers/src/RetryOrchestrator.ts b/packages/providers/src/RetryOrchestrator.ts\nindex 5dc7972..8951864 100644\n--- a/packages/providers/src/RetryOrchestrator.ts\n+++ b/packages/providers/src/RetryOrchestrator.ts\n@@ -95,7 +95,6 @@ import { AttemptNotificationContext } from './retryAttemptNotifier.js';\n import {\n   getBucketFailoverHandlerFromOptions,\n   getOnAuthErrorHandlerFromOptions,\n-  hasAuthRecoveryHandler,\n } from './retryConfigHandlers.js';\n import { resolveAuthTokenFromOptions } from './retryAuthTokenResolver.js';\n import { randomUUID } from 'node:crypto';\n@@ -173,6 +172,10 @@ export class RetryOrchestrator implements IProvider {\n     };\n   }\n \n+  private shouldBypassRetry(options: GenerateChatOptions): boolean {\n+    return options.metadata?.loadBalancerDelegate === true;\n+  }\n+\n   // Delegate all IProvider methods to wrapped provider\n \n   async getModels(): Promise<IModel[]> {\n@@ -304,7 +307,7 @@ export class RetryOrchestrator implements IProvider {\n   private async *generateChatCompletionWithRetry(\n     options: GenerateChatOptions,\n   ): AsyncIterableIterator<IContent> {\n-    if (options.metadata?.loadBalancerDelegate === true) {\n+    if (this.shouldBypassRetry(options)) {\n       yield* this.wrappedProvider.generateChatCompletion(options);\n       return;\n     }\n@@ -743,10 +746,7 @@ export class RetryOrchestrator implements IProvider {\n \n   /**\n    * Invoke the auth error handler on the first consecutive auth failure (if\n-   * retries remain), returning whether a refresh attempt was made. Only grant\n-   * the retry when a recovery mechanism that can change the outcome is\n-   * configured (an onAuthError or bucket-failover handler) — otherwise it only\n-   * burns an attempt + backoff on a terminal 403 (issue #2917).\n+   * retries remain), returning whether a refresh attempt was made.\n    */\n   private async maybeRefreshAuth(\n     isAuthError: boolean,\n@@ -760,7 +760,6 @@ export class RetryOrchestrator implements IProvider {\n   ): Promise<boolean> {\n     if (!(isAuthError && consecutiveAuthErrors === 1 && attempt < maxAttempts))\n       return false;\n-    if (!hasAuthRecoveryHandler(options)) return false;\n     await this.invokeAuthErrorHandler(error, options, errorStatus, signal);\n     return true;\n   }\ndiff --git a/packages/providers/src/retryConfigHandlers.ts b/packages/providers/src/retryConfigHandlers.ts\nindex e23c50b..63052d3 100644\n--- a/packages/providers/src/retryConfigHandlers.ts\n+++ b/packages/providers/src/retryConfigHandlers.ts\n@@ -60,16 +60,3 @@ export function getOnAuthErrorHandlerFromOptions(\n     resolveOnAuthErrorHandlerFromConfig(options.config)\n   );\n }\n-\n-/**\n- * Whether any auth-recovery mechanism that can change a retry's outcome is\n- * resolvable from the options: an onAuthError handler OR a bucket-failover\n- * handler. Used to avoid granting a refresh retry when no recovery can occur\n- * (issue #2917).\n- */\n-export function hasAuthRecoveryHandler(options: GenerateChatOptions): boolean {\n-  return (\n-    getOnAuthErrorHandlerFromOptions(options) !== undefined ||\n-    getBucketFailoverHandlerFromOptions(options) !== undefined\n-  );\n-}\ndiff --git a/packages/providers/src/retryDelayPolicy.ts b/packages/providers/src/retryDelayPolicy.ts\nindex e36c18e..892d305 100644\n--- a/packages/providers/src/retryDelayPolicy.ts\n+++ b/packages/providers/src/retryDelayPolicy.ts\n@@ -38,8 +38,7 @@ export function shouldRetryError(error: unknown): boolean {\n   if (isNetworkTransientError(error)) {\n     return true;\n   }\n-  // 403 means the request is forbidden, not throttled; retrying only delays the error (issue #2917).\n-  if (status === 401) {\n+  if (status === 401 || status === 403) {\n     return true;\n   }\n   return isStreamTimeoutError(error);\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/vybestack/llxprt-code.git",
+      "base_sha": "c6055c15bcfb60ca4c703d9bff58b8cb5e03e604",
+      "head_sha": "f7ce92a6aa1fc7780ed3c9e440f06d5112be734b",
+      "checkout_sha": "f7ce92a6aa1fc7780ed3c9e440f06d5112be734b",
+      "diff_base_sha": "f7ce92a6aa1fc7780ed3c9e440f06d5112be734b",
+      "apply_fixture_diff": true
+    }
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "packages/core/src/utils/retry.ts",
+        "path": "packages/core/src/utils/retry.ts",
+        "line": 21,
+        "end_line": 21,
+        "category": "reliability",
+        "description": "HTTP 403 is again treated as blindly retryable in both the outer core backoff loop and the provider retry policy, while RetryOrchestrator grants an auth refresh attempt even when no recovery handler exists. On the composed streaming path, an exhausted inner 403 preserves its status and is reclassified by the outer loop, multiplying attempts and long delays instead of surfacing a terminal forbidden/configuration error; explicit authentication recovery and bucket failover must remain the only 403 retry paths.",
+        "root_cause_id": "forbidden-status-blind-retry",
+        "repair_unit": "remove blind status-based 403 retries while preserving explicit authentication recovery",
+        "mechanism_pattern": "403 is classified as retryable by status across nested retry engines without requiring a recovery handler",
+        "invariant_pattern": "a forbidden response may retry only through an explicit authentication recovery or bucket failover path",
+        "affected_paths": [
+          "packages/core/src/utils/retry.ts",
+          "packages/providers/src/retryDelayPolicy.ts",
+          "packages/providers/src/RetryOrchestrator.ts"
+        ]
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 1,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "golden",
+      "github",
+      "review",
+      "positive-sample",
+      "should-detect",
+      "multi-hop",
+      "graph-sensitive",
+      "same-root-multi-symptom",
+      "llxprt-code"
+    ],
+    "difficulty": "hard",
+    "annotated_by": "agent_draft",
+    "reviewed": false,
+    "created_at": "2026-08-04T00:00:00+08:00"
+  }
+}

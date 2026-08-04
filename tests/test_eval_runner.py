@@ -1716,11 +1716,16 @@ def test_golden_fixture_distribution_has_required_buckets() -> None:
     assert len(source_keys) == len(real)
     assert synth == []
     fixture_by_path = {
-        entry["path"]: Fixture.model_validate_json(Path(entry["path"]).read_text())
+        entry["path"]: Fixture.model_validate_json(
+            Path(entry["path"]).read_text(encoding="utf-8")
+        )
         for entry in manifest["entries"]
     }
     assert {entry["fixture_id"] for entry in manifest["entries"]} == {
-        fixture.id for fixture in real
+        fixture.id
+        for fixture in load_fixtures(
+            Path("eval") / "fixtures", suite="golden", reviewed_only=False
+        )
     }
     for entry in manifest["entries"]:
         assert entry["reviewed"] == fixture_by_path[entry["path"]].metadata.reviewed

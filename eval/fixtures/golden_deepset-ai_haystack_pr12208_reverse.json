@@ -1,0 +1,65 @@
+{
+  "id": "golden_deepset-ai_haystack_pr12208_reverse",
+  "type": "review",
+  "source": {
+    "repo_full_name": "deepset-ai/haystack",
+    "pr_number": 12208,
+    "url": "https://github.com/deepset-ai/haystack/pull/12208",
+    "merge_commit_sha": "14535047214b8d0e1345bdcd800c9522ae445501",
+    "title": "Reverse fixture: JSONConverter masks source errors with file_path KeyError"
+  },
+  "input": {
+    "diff_text": "diff --git a/haystack/components/converters/json.py b/haystack/components/converters/json.py\nindex 102137d..9dd79bd 100644\n--- a/haystack/components/converters/json.py\n+++ b/haystack/components/converters/json.py\n@@ -191,7 +191,7 @@ class JSONConverter:\n         except UnicodeError as exc:\n             logger.warning(\n                 \"Failed to extract text from {source}. Skipping it. Error: {error}\",\n-                source=source.meta.get(\"file_path\", \"unknown\"),\n+                source=source.meta[\"file_path\"],\n                 error=exc,\n             )\n             return []\n@@ -204,7 +204,7 @@ class JSONConverter:\n             except Exception as exc:\n                 logger.warning(\n                     \"Failed to extract text from {source}. Skipping it. Error: {error}\",\n-                    source=source.meta.get(\"file_path\", \"unknown\"),\n+                    source=source.meta[\"file_path\"],\n                     error=exc,\n                 )\n                 return []\n@@ -216,7 +216,7 @@ class JSONConverter:\n             except json.JSONDecodeError as exc:\n                 logger.warning(\n                     \"Failed to extract text from {source}. Skipping it. Error: {error}\",\n-                    source=source.meta.get(\"file_path\", \"unknown\"),\n+                    source=source.meta[\"file_path\"],\n                     error=exc,\n                 )\n                 return []\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/deepset-ai/haystack.git",
+      "base_sha": "5add74ecda75c78271b26feeef7d897bfb4e7796",
+      "head_sha": "4d9082be92d11d11e82c14030073ee70c64fdb53",
+      "checkout_sha": "4d9082be92d11d11e82c14030073ee70c64fdb53",
+      "diff_base_sha": "4d9082be92d11d11e82c14030073ee70c64fdb53",
+      "apply_fixture_diff": true
+    }
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "haystack/components/converters/json.py",
+        "path": "haystack/components/converters/json.py",
+        "line": 194,
+        "end_line": 219,
+        "category": "error-handling",
+        "description": "All three JSONConverter exception handlers index source.meta['file_path'] while handling decoding, jq filtering, or JSON parsing failures. Bare ByteStream inputs legitimately have no file_path metadata, so the handlers raise KeyError and mask the original error instead of warning and skipping the bad source as intended.",
+        "root_cause_id": "unsafe-file-path-meta-access",
+        "repair_unit": "use safe metadata access consistently across JSONConverter error handlers",
+        "mechanism_pattern": "exception handlers unconditionally index optional file_path metadata",
+        "invariant_pattern": "error handling must preserve the original failure and tolerate ByteStream inputs without file_path metadata",
+        "affected_paths": [
+          "haystack/components/converters/json.py"
+        ]
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 1,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "golden",
+      "github",
+      "review",
+      "positive-sample",
+      "should-detect",
+      "local-control",
+      "same-root-multi-symptom",
+      "haystack"
+    ],
+    "difficulty": "medium",
+    "annotated_by": "agent_draft",
+    "reviewed": false,
+    "created_at": "2026-08-04T00:00:00+08:00"
+  }
+}
