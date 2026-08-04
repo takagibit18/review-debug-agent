@@ -10,13 +10,14 @@ import pytest
 
 from eval.graph_ab_pilot import (
     VARIANT_IDS,
+    _fixture_snapshot,
     _load_fixture,
     clear_index,
     inspect_index,
     validate_variant_contract,
     variant_order,
 )
-from eval.schemas import EvalResult, EvalVariant, ReviewProcessMetrics
+from eval.schemas import EvalResult, EvalVariant, Fixture, ReviewProcessMetrics
 
 
 def _event_log(tmp_path: Path, *event_types: str) -> str:
@@ -269,6 +270,52 @@ def test_pairing_order_is_seeded_balanced_and_complete() -> None:
     assert first == second
     assert all(set(order) == set(VARIANT_IDS) for order in first)
     assert len({tuple(order) for order in first}) == 3
+
+
+def _workspace_fixture(*, diff_text: str, apply_fixture_diff: bool) -> Fixture:
+    return Fixture.model_validate(
+        {
+            "id": "overlay-fixture",
+            "type": "review",
+            "source": {"repo_full_name": "owner/repo", "pr_number": 1},
+            "input": {
+                "diff_text": diff_text,
+                "workspace": {
+                    "repo_url": "https://example.test/owner/repo.git",
+                    "checkout_sha": "a" * 40,
+                    "apply_fixture_diff": apply_fixture_diff,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+
+
+def test_fixture_snapshot_includes_stable_applied_diff_hash() -> None:
+    fixture = _workspace_fixture(diff_text="patch-one\n", apply_fixture_diff=True)
+
+    first = _fixture_snapshot(fixture)
+    second = _fixture_snapshot(fixture)
+
+    assert first == second
+    assert first.startswith(f"{'a' * 40}+")
+    assert first.endswith(
+        "74e3da89959450f958d0aecc508a5c37218d6978b173045880dcead560b72791"
+    )
+
+
+def test_fixture_snapshot_changes_for_different_overlay_on_same_checkout() -> None:
+    first = _workspace_fixture(diff_text="patch-one\n", apply_fixture_diff=True)
+    second = _workspace_fixture(diff_text="patch-two\n", apply_fixture_diff=True)
+
+    assert _fixture_snapshot(first) != _fixture_snapshot(second)
+
+
+def test_fixture_snapshot_ignores_diff_when_overlay_is_disabled() -> None:
+    first = _workspace_fixture(diff_text="patch-one\n", apply_fixture_diff=False)
+    second = _workspace_fixture(diff_text="patch-two\n", apply_fixture_diff=False)
+
+    assert _fixture_snapshot(first) == _fixture_snapshot(second)
 
 
 def test_held_out_fixture_is_rejected(tmp_path: Path) -> None:

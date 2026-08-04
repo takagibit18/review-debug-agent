@@ -97,6 +97,10 @@ class FixtureWorkspace(BaseModel):
     head_sha: str = Field(default="")
     checkout_sha: str = Field(..., min_length=1)
     diff_base_sha: str = Field(default="")
+    apply_fixture_diff: bool = Field(
+        default=False,
+        description="Apply input.diff_text after restoring checkout_sha.",
+    )
 
 
 class FixtureInput(BaseModel):

@@ -99,6 +99,11 @@ CI uses a soft eval gate to prevent obvious MergeWarden regression. It is not a 
 
 Workspace-backed fixtures are validated before model execution: every added line in `diff_text` must match the restored `checkout_sha` repository snapshot. A mismatch is treated as fixture validation failure, not as a model miss or false positive.
 
+Fixtures that intentionally pin a pre-change snapshot may set
+`input.workspace.apply_fixture_diff=true`. The runner then checks out the exact
+`checkout_sha`, applies `input.diff_text` without moving HEAD, and runs the same
+workspace validation against the patched files.
+
 The CI gate uses the stable MVP+ numeric target:
 
 ```bash

@@ -117,14 +117,54 @@ def _prepare_fixture_workspace(
         _write_fixture_files(target_root, fixture.input.files)
         return target_root
     if workspace.kind == "git":
-        return _checkout_git_workspace(
+        repo_root = _checkout_git_workspace(
             workspace,
             target_root,
             pr_number=fixture.source.pr_number,
             workspace_cache_dir=workspace_cache_dir,
             offline=get_settings().eval_offline_workspace_cache,
         )
+        if workspace.apply_fixture_diff:
+            _apply_fixture_diff(fixture, repo_root)
+        return repo_root
     raise ValueError(f"Unsupported fixture workspace kind: {workspace.kind}")
+
+
+def _apply_fixture_diff(fixture: Fixture, repo_root: Path) -> None:
+    """Apply a fixture patch without moving the restored workspace HEAD."""
+    diff_text = fixture.input.diff_text
+    if fixture.type != "review" or not diff_text.strip():
+        raise ValueError(
+            f"Fixture {fixture.id} requires a non-empty review diff to apply"
+        )
+    patch_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            suffix=".diff",
+            delete=False,
+        ) as handle:
+            handle.write(diff_text)
+            if not diff_text.endswith("\n"):
+                handle.write("\n")
+            patch_path = Path(handle.name)
+        _run_git(
+            ["apply", "--check", "--whitespace=nowarn", "--", str(patch_path)],
+            cwd=repo_root,
+        )
+        _run_git(
+            ["apply", "--whitespace=nowarn", "--", str(patch_path)],
+            cwd=repo_root,
+        )
+    except (RuntimeError, TimeoutError) as exc:
+        raise RuntimeError(
+            f"Failed to apply fixture diff for {fixture.id}: {exc}"
+        ) from exc
+    finally:
+        if patch_path is not None:
+            patch_path.unlink(missing_ok=True)
 
 
 def _checkout_git_workspace(

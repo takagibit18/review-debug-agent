@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import eval.runner as runner_module
+from eval.graph_ab_pilot import run_single_lifecycle
 from eval.runner import (
     _aggregate_sampled_result,
     _checkout_git_workspace,
@@ -34,6 +35,7 @@ from eval.schemas import (
     EvalResult,
     Fixture,
     FixtureWorkspace,
+    EvalVariant,
     MetricSummary,
     SampledFixtureResult,
 )
@@ -662,6 +664,149 @@ def test_prepare_fixture_workspace_restores_git_snapshot(tmp_path: Path) -> None
         encoding="utf-8"
     )
     assert (workspace / "pkg" / "helper.py").exists()
+
+
+def test_prepare_fixture_workspace_applies_diff_to_fixed_snapshot(
+    tmp_path: Path,
+) -> None:
+    source, base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-with-patch",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": diff_text,
+                "files": {},
+                "workspace": {
+                    "kind": "git",
+                    "repo_url": str(source),
+                    "base_sha": base_sha,
+                    "head_sha": head_sha,
+                    "checkout_sha": base_sha,
+                    "diff_base_sha": base_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+
+    workspace = _prepare_fixture_workspace(fixture, tmp_path / "workspace-patched")
+
+    assert _git(workspace, "rev-parse", "HEAD") == base_sha
+    assert "return normalize(value)" in (workspace / "pkg" / "module.py").read_text(
+        encoding="utf-8"
+    )
+    assert _git(workspace, "diff", "--name-only") == "pkg/module.py"
+    assert _validate_diff_added_lines_against_workspace(fixture, workspace) == []
+
+
+def test_prepare_fixture_workspace_rejects_unapplicable_fixture_diff(
+    tmp_path: Path,
+) -> None:
+    source, _base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-bad-patch",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": diff_text,
+                "files": {},
+                "workspace": {
+                    "kind": "git",
+                    "repo_url": str(source),
+                    "checkout_sha": head_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to apply fixture diff"):
+        _prepare_fixture_workspace(fixture, tmp_path / "workspace-bad-patch")
+
+
+def test_paired_lifecycle_applies_fixture_diff_before_graph_creation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source, base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-before-graph",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": diff_text,
+                "workspace": {
+                    "repo_url": str(source),
+                    "base_sha": base_sha,
+                    "head_sha": head_sha,
+                    "checkout_sha": base_sha,
+                    "diff_base_sha": base_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+    graph_created = False
+    prepared: dict[str, Path] = {}
+    original_prepare = runner_module._prepare_fixture_workspace
+
+    def tracked_prepare(*args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs["workspace_cache_dir"] = None
+        repo_root = original_prepare(*args, **kwargs)
+        prepared["repo_root"] = repo_root
+        return repo_root
+
+    class FakeOrchestrator:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal graph_created
+            assert kwargs["context_mode"] == "graph_hybrid"
+            assert "return normalize(value)" in (
+                prepared["repo_root"] / "pkg/module.py"
+            ).read_text(encoding="utf-8")
+            graph_created = True
+
+        async def run_review(self, request):  # type: ignore[no-untyped-def]
+            assert "return normalize(value)" in (
+                Path(request.repo_path) / "pkg/module.py"
+            ).read_text(encoding="utf-8")
+            return ReviewResponse(
+                run_id="patched-before-graph",
+                report=ReviewReport(summary="No issues found."),
+                context=ContextState(goal="review"),
+            )
+
+    monkeypatch.setattr(
+        "eval.graph_ab_pilot.base_runner._prepare_fixture_workspace",
+        tracked_prepare,
+    )
+    monkeypatch.setattr("eval.graph_ab_pilot.AgentOrchestrator", FakeOrchestrator)
+    variant = EvalVariant(
+        id="B1-graph-hybrid-cold",
+        context_mode="graph_hybrid",
+        graph_cache_mode="cold",
+    )
+    graph_index = tmp_path / "graph-index" / "index.sqlite3"
+
+    result, _ = asyncio.run(
+        run_single_lifecycle(
+            fixture,
+            variant=variant,
+            relation_graph_index_path=graph_index,
+            prime_graph_index=False,
+            temperature=0.0,
+            review_max_iterations=1,
+        )
+    )
+
+    assert graph_created is True, result.error
+    assert result.schema_valid is True
 
 
 def test_prepare_fixture_workspace_fetches_pr_ref_when_checkout_is_not_cloned(

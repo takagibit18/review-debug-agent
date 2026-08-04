@@ -109,7 +109,9 @@ def _sha256(path: Path) -> str:
 def _fixture_snapshot(fixture: Fixture) -> str:
     workspace = fixture.input.workspace
     if workspace is not None:
-        return workspace.checkout_sha
+        overlay = fixture.input.diff_text if workspace.apply_fixture_diff else ""
+        overlay_sha256 = hashlib.sha256(overlay.encode("utf-8")).hexdigest()
+        return f"{workspace.checkout_sha}+{overlay_sha256}"
     digest = hashlib.sha256()
     for path, content in sorted(fixture.input.files.items()):
         digest.update(path.encode("utf-8"))
