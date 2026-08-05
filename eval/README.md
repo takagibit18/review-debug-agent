@@ -125,6 +125,21 @@ Omit `--fixtures` to read the fixture manifest. The JSON result records each
 checkout SHA, overlay-aware repository snapshot, cache size, and offline
 checkout status. Held-out fixtures are rejected before cache access.
 
+Graph A/B structural metrics use optional expected-issue annotations:
+`structural_scope` (`local`, `direct_cross_file`, or `multi_hop`) and
+`graph_observable`. Null remains unclassified and is excluded from the relevant
+group denominator while still contributing to overall recall. Compact summaries
+and terminal reports expose group recall plus structural and graph-observability
+annotation coverage.
+
+For the formal-readiness candidates, `pydantic#12117` is local and graph
+unobservable because its compatibility mechanism is contained in
+`pydantic/main.py`; the llxprt reverse fixture is graph-observable multi-hop
+across retry classification, orchestration, and delay-policy files; the Haystack
+reverse fixture is local and graph unobservable because all unsafe accesses are
+inside `json.py`. The requests and pydantic documentation candidates contain no
+expected issues, so no structural label is invented for them.
+
 The CI gate uses the stable MVP+ numeric target:
 
 ```bash

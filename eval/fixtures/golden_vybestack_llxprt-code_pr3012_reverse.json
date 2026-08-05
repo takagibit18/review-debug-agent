@@ -40,7 +40,9 @@
           "packages/core/src/utils/retry.ts",
           "packages/providers/src/retryDelayPolicy.ts",
           "packages/providers/src/RetryOrchestrator.ts"
-        ]
+        ],
+        "structural_scope": "multi_hop",
+        "graph_observable": true
       }
     ],
     "min_issues": 1,

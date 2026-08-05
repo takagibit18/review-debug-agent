@@ -38,7 +38,9 @@
         "invariant_pattern": "error handling must preserve the original failure and tolerate ByteStream inputs without file_path metadata",
         "affected_paths": [
           "haystack/components/converters/json.py"
-        ]
+        ],
+        "structural_scope": "local",
+        "graph_observable": false
       }
     ],
     "min_issues": 1,

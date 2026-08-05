@@ -30,7 +30,9 @@
         "line": 411,
         "end_line": 416,
         "category": "api-compatibility",
-        "description": "Private-attribute keys are now intercepted for every extra mode instead of only preserving the existing extra handling. That changes model_copy(update=...) semantics for users who relied on private-looking names being carried as extra data, which maintainers called out as a compatibility concern."
+        "description": "Private-attribute keys are now intercepted for every extra mode instead of only preserving the existing extra handling. That changes model_copy(update=...) semantics for users who relied on private-looking names being carried as extra data, which maintainers called out as a compatibility concern.",
+        "structural_scope": "local",
+        "graph_observable": false
       }
     ],
     "min_issues": 1,

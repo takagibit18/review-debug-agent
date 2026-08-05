@@ -27,7 +27,13 @@ from pydantic import BaseModel, Field
 
 import eval.runner as base_runner
 from eval.run_summary import extract_review_process_metrics
-from eval.schemas import EvalResult, EvalVariant, Fixture
+from eval.schemas import (
+    EvalResult,
+    EvalVariant,
+    Fixture,
+    MetricSummary,
+    StructuralIssueMetrics,
+)
 from src.analyzer.context_strategy import GraphHybridContextStrategy
 from src.analyzer.persistent_index import INDEX_SCHEMA_VERSION
 from src.analyzer.schemas import (
@@ -471,6 +477,7 @@ async def run_single_lifecycle(
             matches, matched_count, false_positive_count = base_runner._match_issues(
                 fixture, parsed_response
             )
+            structural_metrics = base_runner._structural_issue_metrics(fixture, matches)
             root_quality = (
                 base_runner._root_cause_quality(fixture, parsed_response, matches)
                 if isinstance(parsed_response, ReviewResponse)
@@ -521,6 +528,7 @@ async def run_single_lifecycle(
                     )
                 ),
                 issue_matches=matches,
+                structural_metrics=structural_metrics,
                 raw_output=parsed_response.model_dump(mode="json"),
                 placeholder_summary=placeholder,
                 submit_review_seen_any=log_stats["submit_review_seen_any"],
@@ -798,6 +806,34 @@ def _stats(values: list[float | int | None]) -> dict[str, float | int | None]:
     }
 
 
+def _structural_metrics_payload(
+    metrics: StructuralIssueMetrics,
+) -> dict[str, int | float | None]:
+    return metrics.model_dump(mode="json") | {
+        "overall_recall": metrics.overall_recall,
+        "local_recall": metrics.local_recall,
+        "direct_cross_file_recall": metrics.direct_cross_file_recall,
+        "multi_hop_recall": metrics.multi_hop_recall,
+        "graph_observable_recall": metrics.graph_observable_recall,
+        "graph_unobservable_recall": metrics.graph_unobservable_recall,
+        "structural_annotation_coverage": metrics.structural_annotation_coverage,
+        "graph_observability_annotation_coverage": (
+            metrics.graph_observability_annotation_coverage
+        ),
+    }
+
+
+def _aggregate_run_structural_metrics(
+    results: list[EvalResult],
+) -> StructuralIssueMetrics:
+    return StructuralIssueMetrics.model_validate(
+        {
+            field: sum(getattr(result.structural_metrics, field) for result in results)
+            for field in StructuralIssueMetrics.model_fields
+        }
+    )
+
+
 def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
     records = [PilotRunRecord.model_validate(item) for item in payload["records"]]
     variants: dict[str, Any] = {}
@@ -846,6 +882,9 @@ def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
                         result.repair_unit_expected_count,
                     ),
                     "final_root_cause_count": metrics.final_root_cause_count,
+                    "structural_metrics": _structural_metrics_payload(
+                        result.structural_metrics
+                    ),
                 }
             )
             cost_rows.append(
@@ -887,10 +926,22 @@ def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
                     "stop_condition_efficiency": None,
                 }
             )
+        aggregate = MetricSummary.from_results([item.result for item in valid])
         variants[variant_id] = {
             "valid_runs": len(valid),
             "invalid_runs": len(all_runs) - len(valid),
             "valid_run_rate": _ratio(len(valid), len(all_runs)),
+            "aggregate_quality": {
+                "overall_recall": aggregate.overall_recall,
+                "precision": aggregate.precision,
+                "root_cause_recall": aggregate.root_cause_recall,
+                "over_merge_count": aggregate.over_merge_count,
+                "under_merge_count": aggregate.under_merge_count,
+                "repair_unit_accuracy": aggregate.repair_unit_accuracy,
+            },
+            "structural_metrics": _structural_metrics_payload(
+                _aggregate_run_structural_metrics([item.result for item in valid])
+            ),
             "quality": quality_rows,
             "cost": cost_rows,
             "stability": {

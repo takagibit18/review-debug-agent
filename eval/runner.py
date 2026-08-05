@@ -26,6 +26,7 @@ from eval.schemas import (
     FixtureManifest,
     FixtureWorkspace,
     SampledFixtureResult,
+    StructuralIssueMetrics,
 )
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import (
@@ -724,6 +725,7 @@ async def run_single(
             matches, matched_count, false_positive_count = _match_issues(
                 fixture, parsed_response
             )
+            structural_metrics = _structural_issue_metrics(fixture, matches)
             root_cause_quality = (
                 _root_cause_quality(fixture, parsed_response, matches)
                 if isinstance(parsed_response, ReviewResponse)
@@ -759,6 +761,7 @@ async def run_single(
                     )
                 ),
                 issue_matches=matches,
+                structural_metrics=structural_metrics,
                 raw_output=raw_output,
                 placeholder_summary=placeholder,
                 submit_review_seen_any=log_stats["submit_review_seen_any"],
@@ -1285,6 +1288,47 @@ def _match_issues(
         )
     false_positive_count = max(0, len(actual_issues) - matched_count)
     return matches, matched_count, false_positive_count
+
+
+def _structural_issue_metrics(
+    fixture: Fixture,
+    matches: list[EvalIssueMatch],
+) -> StructuralIssueMetrics:
+    """Count matches by expected-issue annotation without fixture-level proxies."""
+    matched_indices = {match.expected_index for match in matches if match.matched}
+    counts: dict[str, int] = {
+        "expected_count": len(fixture.expected.issues),
+        "matched_count": len(matched_indices),
+    }
+    for index, issue in enumerate(fixture.expected.issues):
+        matched = index in matched_indices
+        if issue.structural_scope is not None:
+            counts["structural_annotated_count"] = (
+                counts.get("structural_annotated_count", 0) + 1
+            )
+            prefix = issue.structural_scope
+            counts[f"{prefix}_expected_count"] = (
+                counts.get(f"{prefix}_expected_count", 0) + 1
+            )
+            if matched:
+                counts[f"{prefix}_matched_count"] = (
+                    counts.get(f"{prefix}_matched_count", 0) + 1
+                )
+        if issue.graph_observable is not None:
+            counts["graph_observability_annotated_count"] = (
+                counts.get("graph_observability_annotated_count", 0) + 1
+            )
+            prefix = (
+                "graph_observable" if issue.graph_observable else "graph_unobservable"
+            )
+            counts[f"{prefix}_expected_count"] = (
+                counts.get(f"{prefix}_expected_count", 0) + 1
+            )
+            if matched:
+                counts[f"{prefix}_matched_count"] = (
+                    counts.get(f"{prefix}_matched_count", 0) + 1
+                )
+    return StructuralIssueMetrics.model_validate(counts)
 
 
 def _effective_review_issues(fixture: Fixture, response: ReviewResponse) -> list[Any]:
