@@ -140,6 +140,25 @@ reverse fixture is local and graph unobservable because all unsafe accesses are
 inside `json.py`. The requests and pydantic documentation candidates contain no
 expected issues, so no structural label is invented for them.
 
+Paired Graph A/B runs support durable JSONL checkpoint/resume. The stable key
+includes the experiment, fixture, sample, variant, overlay-aware repository
+snapshot, and a hash of the frozen shared/variant contract. Every completed
+attempt is appended with flush and fsync as `measured`, `invalid`, or
+`workspace_failure`; warm priming is recorded separately and never completes a
+measured key. Valid measured records resume without rerunning, while invalid
+records are retained and retried by default.
+
+```bash
+python -m eval.graph_ab_pilot \
+  --resume eval/outputs/graph-ab-formal-readiness/checkpoint.jsonl
+
+# Preserve prior failures but do not retry them:
+python -m eval.graph_ab_pilot --no-retry-invalid
+```
+
+Use `--no-resume` to atomically start a fresh journal. Checkpoint records omit
+raw model output, prompt/API-key fields, event-log paths, and index paths.
+
 The CI gate uses the stable MVP+ numeric target:
 
 ```bash

@@ -26,6 +26,11 @@ import yaml
 from pydantic import BaseModel, Field
 
 import eval.runner as base_runner
+from eval.graph_ab_checkpoint import (
+    CheckpointJournal,
+    CheckpointStatus,
+    StableRunKey,
+)
 from eval.run_summary import extract_review_process_metrics
 from eval.schemas import (
     EvalResult,
@@ -49,6 +54,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "eval" / "variants" / "graph-ab-phase2-pilot.yaml"
 DEFAULT_OUTPUT = ROOT / "eval" / "outputs" / "graph-ab-phase2-pilot.json"
 DEFAULT_SUMMARY = ROOT / "eval" / "experiments" / "graph-ab-phase2-pilot-summary.json"
+DEFAULT_CHECKPOINT = (
+    ROOT / "eval" / "outputs" / "graph-ab-formal-readiness" / "checkpoint.jsonl"
+)
 VARIANT_IDS = (
     "A-agent-search",
     "B1-graph-hybrid-cold",
@@ -59,6 +67,10 @@ FORBIDDEN_AGENT_EVENTS = {
     "index_lifecycle",
     "context_manifest_created",
 }
+
+
+class ControlledPilotInterruption(RuntimeError):
+    """Test/CLI hook proving durable resume after completed measured attempts."""
 
 
 class VariantContractResult(BaseModel):
@@ -667,14 +679,115 @@ def _fixture_entries(
     return output
 
 
+def _experiment_contract_hash(
+    config: dict[str, Any],
+    frozen_contract: dict[str, Any],
+    *,
+    seed: int,
+) -> str:
+    payload = {
+        "experiment_id": config["experiment_id"],
+        "seed": seed,
+        "shared_contract": frozen_contract,
+        "variants": config.get("variants", []),
+        "formal_graph_ab": config.get("formal_graph_ab"),
+        "held_out_executed": config.get("held_out_executed"),
+    }
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _stable_run_key(
+    *,
+    experiment_id: str,
+    fixture_id: str,
+    sample_index: int,
+    variant_id: str,
+    repository_snapshot: str,
+    experiment_contract_hash: str,
+) -> StableRunKey:
+    return StableRunKey(
+        experiment_id=experiment_id,
+        fixture_id=fixture_id,
+        sample_index=sample_index,
+        variant_id=variant_id,
+        repository_snapshot=repository_snapshot,
+        experiment_contract_hash=experiment_contract_hash,
+    )
+
+
+_CHECKPOINT_SENSITIVE_PARTS = (
+    "api_key",
+    "prompt",
+    "raw_output",
+    "event_log_path",
+    "relation_graph_index_path",
+)
+
+
+def _sanitize_checkpoint_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if any(part in normalized for part in _CHECKPOINT_SENSITIVE_PARTS):
+                sanitized[key] = {} if normalized == "raw_output" else None
+            elif normalized == "path":
+                sanitized[key] = ""
+            else:
+                sanitized[key] = _sanitize_checkpoint_value(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_checkpoint_value(item) for item in value]
+    return value
+
+
+def _checkpoint_run_record(record: PilotRunRecord) -> dict[str, Any]:
+    """Keep aggregation state while removing prompts, code output, and local paths."""
+    return _sanitize_checkpoint_value(record.model_dump(mode="json"))
+
+
+def _checkpoint_status(record: PilotRunRecord) -> CheckpointStatus:
+    if record.valid:
+        return "measured"
+    if (
+        not record.result.run_id
+        and "prepare_workspace_seconds" not in record.result.stage_timings
+    ):
+        return "workspace_failure"
+    return "invalid"
+
+
+def _record_from_checkpoint(record: dict[str, Any] | None) -> PilotRunRecord:
+    if record is None:
+        raise RuntimeError("Checkpoint run record is missing")
+    return PilotRunRecord.model_validate(record)
+
+
 async def run_pilot(
-    *, config_path: Path, suite: str, samples: int, seed: int
+    *,
+    config_path: Path,
+    suite: str,
+    samples: int,
+    seed: int,
+    checkpoint_path: Path | None = None,
+    resume: bool = True,
+    retry_invalid: bool = True,
+    stop_after_measured: int | None = None,
 ) -> dict[str, Any]:
     config = _load_config(config_path)
     frozen = _frozen_contract(config)
     variants = _variants(config)
     entries = _fixture_entries(config, suite)
+    experiment_contract_hash = _experiment_contract_hash(config, frozen, seed=seed)
+    journal = CheckpointJournal(checkpoint_path) if checkpoint_path else None
+    if journal is not None and not resume:
+        journal.reset()
     records: list[PilotRunRecord] = []
+    reused_run_count = 0
+    attempted_run_count = 0
     smoke_valid = True
     for fixture_index, (fixture, fixture_types, phase) in enumerate(entries):
         if phase != "smoke" and not smoke_valid:
@@ -695,6 +808,30 @@ async def run_pilot(
             order = variant_order(seed, fixture_index, sample)
             for order_index, variant_id in enumerate(order):
                 variant = variants[variant_id]
+                stable_key = _stable_run_key(
+                    experiment_id=str(config["experiment_id"]),
+                    fixture_id=fixture.id,
+                    sample_index=sample + 1,
+                    variant_id=variant_id,
+                    repository_snapshot=snapshot,
+                    experiment_contract_hash=experiment_contract_hash,
+                )
+                if journal is not None and resume:
+                    completed = journal.completed(stable_key)
+                    if completed is not None:
+                        reused = _record_from_checkpoint(completed.run_record)
+                        records.append(reused)
+                        fixture_records.append(reused)
+                        reused_run_count += 1
+                        continue
+                    if not retry_invalid:
+                        failed = journal.latest_failure(stable_key)
+                        if failed is not None:
+                            reused = _record_from_checkpoint(failed.run_record)
+                            records.append(reused)
+                            fixture_records.append(reused)
+                            reused_run_count += 1
+                            continue
                 index_before: IndexArtifact | None = None
                 if variant.context_mode == "graph_hybrid":
                     clear_index(index_path)
@@ -744,8 +881,32 @@ async def run_pilot(
                     lifecycle=lifecycle,
                     result=result,
                 )
+                if journal is not None:
+                    if lifecycle.get("priming") is not None:
+                        journal.append(
+                            key=stable_key,
+                            status="priming",
+                            valid=False,
+                            run_record=None,
+                        )
+                    status = _checkpoint_status(record)
+                    journal.append(
+                        key=stable_key,
+                        status=status,
+                        valid=status == "measured",
+                        run_record=_checkpoint_run_record(record),
+                    )
                 records.append(record)
                 fixture_records.append(record)
+                attempted_run_count += 1
+                if (
+                    stop_after_measured is not None
+                    and attempted_run_count >= stop_after_measured
+                ):
+                    raise ControlledPilotInterruption(
+                        "Controlled interruption after "
+                        f"{attempted_run_count} measured attempts"
+                    )
         if phase == "smoke":
             smoke_valid = all(item.valid for item in fixture_records) and {
                 item.variant_id for item in fixture_records
@@ -777,6 +938,14 @@ async def run_pilot(
         "samples": samples,
         "suite": suite,
         "shared_contract": frozen,
+        "experiment_contract_hash": experiment_contract_hash,
+        "checkpoint": {
+            "path": str(checkpoint_path.resolve()) if checkpoint_path else None,
+            "resume_enabled": resume,
+            "retry_invalid": retry_invalid,
+            "reused_run_count": reused_run_count,
+            "attempted_run_count": attempted_run_count,
+        },
         "pairing_errors": pairing_errors,
         "records": [item.model_dump(mode="json") for item in records],
     }
@@ -972,60 +1141,67 @@ def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
         and all(item.valid for item in smoke)
         and all(variants[item]["valid_runs"] > 0 for item in VARIANT_IDS)
     )
-    return {
-        key: payload[key]
-        for key in (
-            "experiment_id",
-            "generated_at",
-            "branch",
-            "start_commit",
-            "implementation_commit",
-            "frozen_baseline_tag",
-            "frozen_baseline_target",
-            "formal_graph_ab",
-            "held_out_executed",
-            "seed",
-            "samples",
-            "suite",
-            "shared_contract",
-            "pairing_errors",
-        )
-    } | {
-        "fixtures": [
-            {
-                "id": fixture_id,
-                "types": next(
-                    item.fixture_types
-                    for item in records
-                    if item.fixture_id == fixture_id
-                ),
-                "snapshot": next(
-                    item.repository_snapshot
-                    for item in records
-                    if item.fixture_id == fixture_id
-                ),
-                "run_order": [
-                    item.variant_id
-                    for item in records
-                    if item.fixture_id == fixture_id and item.sample == 1
-                ],
-            }
-            for fixture_id in dict.fromkeys(item.fixture_id for item in records)
-        ],
-        "variants": variants,
-        "invalid_runs": [
-            {
-                "run_id": item.run_id,
-                "variant_id": item.variant_id,
-                "reasons": item.invalid_reasons,
-            }
-            for item in records
-            if not item.valid
-        ],
-        "runner_readiness": runner_ready,
-        "ready_for_formal_paired_ab": False,
-        "readiness_note": "Runner evidence only; final readiness additionally requires automated test results and frozen-file audit.",
-    }
+    return (
+        {
+            key: payload[key]
+            for key in (
+                "experiment_id",
+                "generated_at",
+                "branch",
+                "start_commit",
+                "implementation_commit",
+                "frozen_baseline_tag",
+                "frozen_baseline_target",
+                "formal_graph_ab",
+                "held_out_executed",
+                "seed",
+                "samples",
+                "suite",
+                "shared_contract",
+                "pairing_errors",
+            )
+        }
+        | {
+            "experiment_contract_hash": payload.get("experiment_contract_hash"),
+            "checkpoint": payload.get("checkpoint"),
+        }
+        | {
+            "fixtures": [
+                {
+                    "id": fixture_id,
+                    "types": next(
+                        item.fixture_types
+                        for item in records
+                        if item.fixture_id == fixture_id
+                    ),
+                    "snapshot": next(
+                        item.repository_snapshot
+                        for item in records
+                        if item.fixture_id == fixture_id
+                    ),
+                    "run_order": [
+                        item.variant_id
+                        for item in records
+                        if item.fixture_id == fixture_id and item.sample == 1
+                    ],
+                }
+                for fixture_id in dict.fromkeys(item.fixture_id for item in records)
+            ],
+            "variants": variants,
+            "invalid_runs": [
+                {
+                    "run_id": item.run_id,
+                    "variant_id": item.variant_id,
+                    "reasons": item.invalid_reasons,
+                }
+                for item in records
+                if not item.valid
+            ],
+            "runner_readiness": runner_ready,
+            "ready_for_formal_paired_ab": False,
+            "readiness_note": "Runner evidence only; final readiness additionally requires automated test results and frozen-file audit.",
+        }
+    )
 
 
 def main() -> None:
@@ -1038,6 +1214,29 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20260804)
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--summary-json", type=Path, default=DEFAULT_SUMMARY)
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=DEFAULT_CHECKPOINT,
+        help="Durable checkpoint JSONL to resume and append.",
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Atomically start a fresh checkpoint instead of reusing records.",
+    )
+    parser.add_argument(
+        "--retry-invalid",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Retry invalid/workspace-failure attempts (default: true).",
+    )
+    parser.add_argument(
+        "--stop-after-measured",
+        type=int,
+        default=None,
+        help="Controlled interruption hook after N durable measured attempts.",
+    )
     parser.add_argument(
         "--summarize-only",
         type=Path,
@@ -1054,6 +1253,10 @@ def main() -> None:
                 suite=args.suite,
                 samples=max(1, args.samples),
                 seed=args.seed,
+                checkpoint_path=args.resume.resolve(),
+                resume=not args.no_resume,
+                retry_invalid=args.retry_invalid,
+                stop_after_measured=args.stop_after_measured,
             )
         )
     summary = compact_summary(payload)
