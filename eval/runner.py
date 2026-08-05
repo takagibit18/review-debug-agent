@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -71,7 +72,13 @@ def load_fixtures(
     return fixtures
 
 
-def _run_git(args: list[str], *, cwd: Path | None = None) -> str:
+def _run_git(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    allow_lazy_fetch: bool = True,
+) -> str:
     timeout = get_settings().eval_git_timeout_seconds
     settings = get_settings()
     command = ["git"]
@@ -80,15 +87,22 @@ def _run_git(args: list[str], *, cwd: Path | None = None) -> str:
     if cwd is not None:
         command.extend(["-c", f"safe.directory={cwd.resolve()}"])
     command.extend(args)
+    environment = None
+    if not allow_lazy_fetch:
+        environment = os.environ.copy()
+        environment["GIT_NO_LAZY_FETCH"] = "1"
+        environment["GIT_TERMINAL_PROMPT"] = "0"
     try:
         completed = subprocess.run(
             command,
             cwd=cwd,
             check=True,
             capture_output=True,
+            input=input_text,
             text=True,
             encoding="utf-8",
             timeout=timeout,
+            env=environment,
         )
     except subprocess.TimeoutExpired as exc:
         command = "git " + " ".join(args)
@@ -179,32 +193,35 @@ def _checkout_git_workspace(
     if target_root.exists():
         shutil.rmtree(target_root)
     cache_root = (
-        _ensure_git_workspace_cache(workspace, workspace_cache_dir, offline=offline)
+        _ensure_git_workspace_cache(
+            workspace,
+            workspace_cache_dir,
+            pr_number=pr_number,
+            offline=offline,
+        )
         if workspace_cache_dir is not None
         else None
     )
     if cache_root is not None:
         try:
             _run_git(
-                ["clone", "--quiet", "--shared", str(cache_root), str(target_root)]
+                [
+                    "clone",
+                    "--quiet",
+                    "--no-checkout",
+                    "--shared",
+                    "--branch",
+                    _cache_snapshot_branch(workspace.checkout_sha),
+                    str(cache_root),
+                    str(target_root),
+                ],
+                allow_lazy_fetch=False,
             )
-            # A shared clone only inherits object alternates.  It does not inherit
-            # the cache's promisor-remote configuration, so filtered cache entries
-            # cannot lazily retrieve their trees/blobs during checkout.
-            _run_git(
-                ["remote", "set-url", "origin", workspace.repo_url], cwd=target_root
-            )
-            _run_git(["config", "remote.origin.promisor", "true"], cwd=target_root)
-            _run_git(
-                ["config", "remote.origin.partialclonefilter", "blob:none"],
-                cwd=target_root,
-            )
-            _run_git(["config", "extensions.partialClone", "origin"], cwd=target_root)
-        except subprocess.CalledProcessError:
-            shutil.rmtree(target_root) if target_root.exists() else None
-            if offline:
-                raise RuntimeError("offline cache clone failed")
-            cache_root = None
+        except (RuntimeError, TimeoutError) as exc:
+            if target_root.exists():
+                _remove_path_with_retries(target_root)
+            mode = "offline " if offline else ""
+            raise RuntimeError(f"{mode}cache clone failed: {exc}") from exc
     if cache_root is None:
         if offline:
             raise RuntimeError(f"offline cache miss: {workspace.repo_url}")
@@ -219,12 +236,17 @@ def _checkout_git_workspace(
             ]
         )
     try:
-        _run_git(["checkout", "--quiet", workspace.checkout_sha], cwd=target_root)
-    except (subprocess.CalledProcessError, RuntimeError):
-        if offline:
+        _run_git(
+            ["checkout", "--quiet", workspace.checkout_sha],
+            cwd=target_root,
+            allow_lazy_fetch=cache_root is None,
+        )
+    except (RuntimeError, TimeoutError) as exc:
+        if cache_root is not None or offline:
             raise RuntimeError(
-                f"offline cache miss: {workspace.repo_url} lacks {workspace.checkout_sha}"
-            )
+                "offline cache is incomplete: "
+                f"{workspace.repo_url} lacks materialized {workspace.checkout_sha}"
+            ) from exc
         if pr_number is None:
             raise
         _run_git(
@@ -252,6 +274,7 @@ def _ensure_git_workspace_cache(
     workspace: FixtureWorkspace,
     workspace_cache_dir: Path,
     *,
+    pr_number: int | None = None,
     offline: bool = False,
 ) -> Path:
     workspace_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -259,78 +282,219 @@ def _ensure_git_workspace_cache(
     lock = _workspace_cache_lock(str(cache_root))
     with lock:
         if offline:
-            if not (cache_root / "objects").is_dir():
+            if not _is_valid_bare_cache(cache_root):
                 raise RuntimeError(f"offline cache miss: {workspace.repo_url}")
             try:
-                _run_git(
-                    ["cat-file", "-e", f"{workspace.checkout_sha}^{{commit}}"],
-                    cwd=cache_root,
-                )
-            except RuntimeError as exc:
+                _verify_cache_snapshot_materialized(cache_root, workspace.checkout_sha)
+            except (RuntimeError, TimeoutError) as exc:
                 raise RuntimeError(
-                    f"offline cache miss: {workspace.repo_url} lacks {workspace.checkout_sha}"
+                    "offline cache miss: "
+                    f"{workspace.repo_url} lacks materialized {workspace.checkout_sha}"
                 ) from exc
             return cache_root
-        if not (cache_root / "objects").is_dir():
-            # Reuse a legacy interrupted staging mirror when it is valid;
-            # otherwise clone into a unique parent directory.  The parent is
-            # unique so concurrent Windows workers never share pack/index
-            # handles, while the final publish remains an atomic rename.
-            legacy_tmp = cache_root.with_name(f"{cache_root.name}.tmp")
-            stage_parent: Path | None = None
-            if (legacy_tmp / "objects").is_dir() and (legacy_tmp / "config").is_file():
-                tmp_root = legacy_tmp
-            else:
-                stage_parent = Path(
-                    tempfile.mkdtemp(
-                        prefix="workspace-cache-",
-                        suffix=".tmp",
-                        dir=workspace_cache_dir,
-                    )
+        if _is_valid_bare_cache(cache_root):
+            try:
+                _verify_cache_snapshot_materialized(cache_root, workspace.checkout_sha)
+                return cache_root
+            except (RuntimeError, TimeoutError):
+                _fetch_cache_ref(
+                    cache_root,
+                    workspace.checkout_sha,
+                    pr_number=pr_number,
                 )
-                tmp_root = stage_parent / cache_root.name
-            if (tmp_root / "objects").is_dir() and (tmp_root / "config").is_file():
-                if workspace.checkout_sha:
-                    _fetch_cache_ref(tmp_root, workspace.checkout_sha)
-                _publish_cache_with_retry(tmp_root, cache_root)
-            if not (cache_root / "objects").is_dir():
+                _materialize_cache_snapshot(cache_root, workspace.checkout_sha)
+                _verify_cache_snapshot_materialized(cache_root, workspace.checkout_sha)
+                return cache_root
+        if cache_root.exists():
+            raise RuntimeError(f"Invalid workspace cache: {cache_root}")
+
+        tmp_root = Path(
+            tempfile.mkdtemp(
+                prefix="wc-",
+                suffix=".tmp",
+                dir=workspace_cache_dir,
+            )
+        )
+        try:
+            _init_targeted_cache(tmp_root, workspace.repo_url)
+            _fetch_cache_ref(
+                tmp_root,
+                workspace.checkout_sha,
+                pr_number=pr_number,
+            )
+            _materialize_cache_snapshot(tmp_root, workspace.checkout_sha)
+            _verify_cache_snapshot_materialized(tmp_root, workspace.checkout_sha)
+            _publish_cache_with_retry(tmp_root, cache_root)
+        except Exception:
+            _cleanup_pack_temps(tmp_root)
+            if tmp_root.exists():
                 try:
-                    _run_git(
-                        [
-                            "clone",
-                            "--mirror",
-                            "--quiet",
-                            workspace.repo_url,
-                            str(tmp_root),
-                        ]
-                    )
-                    _publish_cache_with_retry(tmp_root, cache_root)
-                except Exception:
-                    if stage_parent is not None and stage_parent.exists():
-                        _remove_path_with_retries(stage_parent)
-                    elif tmp_root.exists():
-                        _remove_path_with_retries(tmp_root)
-                    raise
-            if stage_parent is not None and stage_parent.exists():
-                _remove_path_with_retries(stage_parent)
-        if workspace.checkout_sha:
-            _fetch_cache_ref(cache_root, workspace.checkout_sha)
+                    _remove_path_with_retries(tmp_root, attempts=8)
+                except OSError:
+                    # A transport error is more actionable than a secondary
+                    # best-effort cleanup failure caused by a transient pack lock.
+                    pass
+            raise
         return cache_root
 
 
-def _fetch_cache_ref(cache_root: Path, ref: str) -> None:
+def _is_valid_bare_cache(cache_root: Path) -> bool:
+    if not (cache_root / "objects").is_dir() or not (cache_root / "config").is_file():
+        return False
     try:
-        _run_git(["cat-file", "-e", f"{ref}^{{commit}}"], cwd=cache_root)
+        return (
+            _run_git(
+                ["rev-parse", "--is-bare-repository"],
+                cwd=cache_root,
+                allow_lazy_fetch=False,
+            )
+            == "true"
+        )
+    except (RuntimeError, TimeoutError):
+        return False
+
+
+def _init_targeted_cache(cache_root: Path, repo_url: str) -> None:
+    _run_git(["init", "--bare", "--quiet", str(cache_root)])
+    _run_git(["remote", "add", "origin", repo_url], cwd=cache_root)
+    _run_git(["config", "remote.origin.promisor", "true"], cwd=cache_root)
+    _run_git(
+        ["config", "remote.origin.partialclonefilter", "blob:none"], cwd=cache_root
+    )
+    _run_git(["config", "extensions.partialClone", "origin"], cwd=cache_root)
+
+
+def _fetch_cache_ref(
+    cache_root: Path,
+    ref: str,
+    *,
+    pr_number: int | None = None,
+) -> None:
+    try:
+        _run_git(
+            ["cat-file", "-e", f"{ref}^{{commit}}"],
+            cwd=cache_root,
+            allow_lazy_fetch=False,
+        )
+        _record_cache_snapshot_ref(cache_root, ref)
         return
-    except (subprocess.CalledProcessError, RuntimeError):
+    except (RuntimeError, TimeoutError):
         pass
-    try:
-        _run_git(["fetch", "--quiet", "--depth=1", "origin", ref], cwd=cache_root)
-    except Exception:
-        # A failed fetch may leave .tmp_pack/.tmp_idx files behind on Windows;
-        # clean those best-effort while preserving the original fetch error.
-        _cleanup_pack_temps(cache_root)
-        raise
+    candidates = [ref]
+    if pr_number is not None:
+        candidates.append(f"refs/pull/{pr_number}/head")
+    if not _is_github_remote(_cache_remote_url(cache_root)):
+        # Local/file remotes commonly reject raw object-id wants and do not
+        # expose GitHub PR refs. HEAD still fetches one targeted ref, and the
+        # object-id check below prevents accepting the wrong snapshot.
+        candidates.append("HEAD")
+
+    errors: list[str] = []
+    fetched_candidate: str | None = None
+    for candidate in dict.fromkeys(candidates):
+        try:
+            _run_git(
+                [
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--filter=blob:none",
+                    "--depth=1",
+                    "origin",
+                    candidate,
+                ],
+                cwd=cache_root,
+            )
+            _run_git(
+                ["cat-file", "-e", f"{ref}^{{commit}}"],
+                cwd=cache_root,
+                allow_lazy_fetch=False,
+            )
+            fetched_candidate = candidate
+            break
+        except (RuntimeError, TimeoutError) as exc:
+            errors.append(f"{candidate}: {exc}")
+            _cleanup_pack_temps(cache_root)
+    else:
+        raise RuntimeError(
+            f"Unable to fetch targeted commit {ref}: " + " | ".join(errors)
+        )
+    assert fetched_candidate is not None
+    # Re-fetch only the selected target without a filter. This materializes its
+    # tree and blobs while retaining the partial-clone cache configuration for
+    # later target commits; no unrelated refs are requested.
+    _run_git(
+        [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--refetch",
+            "--no-filter",
+            "--depth=1",
+            "origin",
+            fetched_candidate,
+        ],
+        cwd=cache_root,
+    )
+    _record_cache_snapshot_ref(cache_root, ref)
+
+
+def _cache_snapshot_branch(checkout_sha: str) -> str:
+    return f"eval-snapshot-{checkout_sha}"
+
+
+def _record_cache_snapshot_ref(cache_root: Path, checkout_sha: str) -> None:
+    _run_git(
+        [
+            "update-ref",
+            f"refs/heads/{_cache_snapshot_branch(checkout_sha)}",
+            checkout_sha,
+        ],
+        cwd=cache_root,
+    )
+
+
+def _cache_remote_url(cache_root: Path) -> str:
+    return _run_git(["remote", "get-url", "origin"], cwd=cache_root)
+
+
+def _is_github_remote(repo_url: str) -> bool:
+    normalized = repo_url.replace("\\", "/").lower()
+    return "github.com/" in normalized or normalized.startswith("git@github.com:")
+
+
+def _materialize_cache_snapshot(cache_root: Path, checkout_sha: str) -> None:
+    """Read every target-tree blob so the partial cache becomes offline-safe."""
+    _run_git(
+        [
+            "archive",
+            "--format=tar",
+            f"--output={os.devnull}",
+            checkout_sha,
+        ],
+        cwd=cache_root,
+    )
+
+
+def _verify_cache_snapshot_materialized(
+    cache_root: Path,
+    checkout_sha: str,
+) -> None:
+    _run_git(
+        ["cat-file", "-e", f"{checkout_sha}^{{commit}}"],
+        cwd=cache_root,
+        allow_lazy_fetch=False,
+    )
+    _run_git(
+        [
+            "archive",
+            "--format=tar",
+            f"--output={os.devnull}",
+            checkout_sha,
+        ],
+        cwd=cache_root,
+        allow_lazy_fetch=False,
+    )
 
 
 def _is_windows_permission_error(exc: BaseException) -> bool:

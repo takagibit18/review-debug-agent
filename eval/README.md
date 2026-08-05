@@ -104,6 +104,27 @@ Fixtures that intentionally pin a pre-change snapshot may set
 `checkout_sha`, applies `input.diff_text` without moving HEAD, and runs the same
 workspace validation against the patched files.
 
+Workspace caches are targeted bare partial-clone caches, not full repository
+mirrors. On a miss the runner initializes a bare cache, requests only the
+fixture checkout SHA (falling back to the fixture PR head), materializes that
+snapshot's tree and blobs, verifies it with lazy fetching disabled, and then
+atomically publishes the cache. Later commits from the same repository are
+added incrementally. Offline restores never fetch and fail explicitly when a
+snapshot is absent or incomplete.
+
+Selected fixtures can be prefetched and offline-verified before a measured run:
+
+```bash
+python -m eval.workspace_prefetch \
+  --fixtures eval/fixtures/golden_real_requests_netrc_pr7205.json \
+  --cache-dir eval/outputs/workspace_cache \
+  --output eval/outputs/workspace_prefetch.json
+```
+
+Omit `--fixtures` to read the fixture manifest. The JSON result records each
+checkout SHA, overlay-aware repository snapshot, cache size, and offline
+checkout status. Held-out fixtures are rejected before cache access.
+
 The CI gate uses the stable MVP+ numeric target:
 
 ```bash
