@@ -63,6 +63,7 @@ def test_run_git_uses_configured_timeout(monkeypatch, tmp_path: Path) -> None:
     def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
         captured["args"] = args
         captured["timeout"] = kwargs.get("timeout")
+        captured["errors"] = kwargs.get("errors")
         return subprocess.CompletedProcess(
             args=args, returncode=0, stdout="ok\n", stderr=""
         )
@@ -73,10 +74,13 @@ def test_run_git_uses_configured_timeout(monkeypatch, tmp_path: Path) -> None:
     assert captured["args"] == [
         "git",
         "-c",
+        "core.longpaths=true",
+        "-c",
         f"safe.directory={tmp_path.resolve()}",
         "status",
     ]
     assert captured["timeout"] == 7.0
+    assert captured["errors"] == "replace"
 
 
 def test_run_git_uses_configured_ssl_backend(monkeypatch, tmp_path: Path) -> None:
@@ -94,6 +98,8 @@ def test_run_git_uses_configured_ssl_backend(monkeypatch, tmp_path: Path) -> Non
     assert _run_git(["status"], cwd=tmp_path) == "ok"
     assert captured["args"] == [
         "git",
+        "-c",
+        "core.longpaths=true",
         "-c",
         "http.sslBackend=openssl",
         "-c",
@@ -982,7 +988,7 @@ def test_checkout_git_workspace_uses_shallow_partial_clone_without_cache(
     ]
 
 
-def test_checkout_git_workspace_uses_offline_snapshot_branch_from_cache(
+def test_checkout_git_workspace_uses_network_free_object_alternates_from_cache(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1003,8 +1009,8 @@ def test_checkout_git_workspace_uses_offline_snapshot_branch_from_cache(
         args: list[str], *, cwd: Path | None = None, **_kwargs: object
     ) -> str:
         calls.append(args)
-        if args[0] == "clone":
-            Path(args[-1]).mkdir(parents=True)
+        if args[0] == "init":
+            (Path(args[-1]) / ".git" / "objects" / "info").mkdir(parents=True)
             return ""
         if args[:2] == ["checkout", "--quiet"]:
             return ""
@@ -1021,15 +1027,15 @@ def test_checkout_git_workspace_uses_offline_snapshot_branch_from_cache(
     )
 
     assert calls[0] == [
-        "clone",
+        "init",
         "--quiet",
-        "--no-checkout",
-        "--shared",
-        "--branch",
-        "eval-snapshot-head",
-        str(cache_root),
         str(tmp_path / "workspace"),
     ]
+    assert (
+        tmp_path / "workspace" / ".git" / "objects" / "info" / "alternates"
+    ).read_text(encoding="utf-8").strip() == (
+        cache_root / "objects"
+    ).resolve().as_posix()
     assert not any(call[0] in {"fetch", "remote", "config"} for call in calls)
 
 

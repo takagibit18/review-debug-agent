@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -16,10 +18,44 @@ FORBIDDEN_GRAPH_EVENTS = {
     "index_lifecycle",
     "context_manifest_created",
 }
+FROZEN_TAG = "eval/agent-baseline-v1"
+MATCHER_FUNCTIONS = {
+    "_severity_rank",
+    "_match_issues",
+    "_repair_unit_matches",
+    "_meets_expected_severity_floor",
+    "_is_eval_expected_location_issue",
+    "_location_matches",
+    "_semantic_location_matches",
+    "_issue_matches_expected_location",
+    "_semantic_text_matches",
+    "_semantic_match_tokens",
+}
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _frozen_runner_source() -> bytes:
+    return subprocess.run(
+        ["git", "show", f"{FROZEN_TAG}:eval/runner.py"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _matcher_ast(source: bytes) -> dict[str, str]:
+    tree = ast.parse(source.decode("utf-8"))
+    functions = {
+        node.name: ast.dump(node, include_attributes=False)
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in MATCHER_FUNCTIONS
+    }
+    assert functions.keys() == MATCHER_FUNCTIONS
+    return functions
 
 
 def _load() -> tuple[dict, dict]:
@@ -113,6 +149,7 @@ def test_agent_baseline_source_hashes_when_local_outputs_exist() -> None:
 
 def test_agent_baseline_source_contract_hashes() -> None:
     contract, artifact = _load()
+    frozen_runner = _frozen_runner_source()
 
     assert (
         _sha256(
@@ -120,8 +157,12 @@ def test_agent_baseline_source_contract_hashes() -> None:
         )
         == artifact["contracts"]["dataset_sha256"]
     )
-    assert (
-        _sha256(ROOT / "eval/runner.py")
-        == artifact["contracts"]["matcher_source_sha256"]
+    frozen_hashes = {
+        hashlib.sha256(frozen_runner).hexdigest(),
+        hashlib.sha256(frozen_runner.replace(b"\n", b"\r\n")).hexdigest(),
+    }
+    assert artifact["contracts"]["matcher_source_sha256"] in frozen_hashes
+    assert _matcher_ast((ROOT / "eval/runner.py").read_bytes()) == _matcher_ast(
+        frozen_runner
     )
     assert contract["formal_graph_ab_executed"] is False

@@ -588,14 +588,14 @@ def variant_order(seed: int, fixture_index: int, sample: int = 0) -> list[str]:
     return latin[(offset + fixture_index + sample) % len(latin)]
 
 
-def _load_fixture(path: Path) -> Fixture:
+def _load_fixture(path: Path, *, allow_unreviewed: bool = False) -> Fixture:
     fixture = Fixture.model_validate_json(path.read_text(encoding="utf-8"))
     tags = {tag.lower().replace("_", "-") for tag in fixture.metadata.tags}
     if fixture.metadata.suite.lower().replace("_", "-") == "held-out" or any(
         tag in {"held-out", "holdout"} for tag in tags
     ):
         raise ValueError(f"Held-out fixture is forbidden: {fixture.id}")
-    if not fixture.metadata.reviewed:
+    if not fixture.metadata.reviewed and not allow_unreviewed:
         raise ValueError(f"Pilot fixture is not reviewed: {fixture.id}")
     return fixture
 
@@ -670,10 +670,24 @@ def _fixture_entries(
     output: list[tuple[Fixture, list[str], str]] = []
     for item in config.get("fixtures", []):
         phase = str(item.get("phase", "validation"))
-        if suite != "all" and phase != suite:
+        selected = (
+            suite == "all"
+            or phase == suite
+            or (suite == "preview" and phase == "preflight")
+        )
+        if not selected:
             continue
         path = (ROOT / str(item["path"])).resolve()
-        output.append((_load_fixture(path), list(item.get("types", [])), phase))
+        allow_unreviewed = phase == "preview" and bool(
+            config.get("engineering_preview")
+        )
+        output.append(
+            (
+                _load_fixture(path, allow_unreviewed=allow_unreviewed),
+                list(item.get("types", [])),
+                phase,
+            )
+        )
     if not output:
         raise ValueError(f"No pilot fixtures selected for suite={suite}")
     return output
@@ -1208,7 +1222,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument(
-        "--suite", choices=("smoke", "validation", "all"), default="all"
+        "--suite",
+        choices=("smoke", "validation", "preflight", "preview", "all"),
+        default="all",
     )
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260804)

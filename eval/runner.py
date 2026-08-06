@@ -83,6 +83,7 @@ def _run_git(
     timeout = get_settings().eval_git_timeout_seconds
     settings = get_settings()
     command = ["git"]
+    command.extend(["-c", "core.longpaths=true"])
     if settings.eval_git_ssl_backend != "system":
         command.extend(["-c", f"http.sslBackend={settings.eval_git_ssl_backend}"])
     if cwd is not None:
@@ -102,6 +103,7 @@ def _run_git(
             input=input_text,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=environment,
         )
@@ -205,24 +207,14 @@ def _checkout_git_workspace(
     )
     if cache_root is not None:
         try:
-            _run_git(
-                [
-                    "clone",
-                    "--quiet",
-                    "--no-checkout",
-                    "--shared",
-                    "--branch",
-                    _cache_snapshot_branch(workspace.checkout_sha),
-                    str(cache_root),
-                    str(target_root),
-                ],
-                allow_lazy_fetch=False,
-            )
+            _init_workspace_from_cache(cache_root, target_root)
         except (RuntimeError, TimeoutError) as exc:
             if target_root.exists():
                 _remove_path_with_retries(target_root)
             mode = "offline " if offline else ""
-            raise RuntimeError(f"{mode}cache clone failed: {exc}") from exc
+            raise RuntimeError(
+                f"{mode}cache restore initialization failed: {exc}"
+            ) from exc
     if cache_root is None:
         if offline:
             raise RuntimeError(f"offline cache miss: {workspace.repo_url}")
@@ -269,6 +261,18 @@ def _checkout_git_workspace(
             f"expected {workspace.checkout_sha}, got {checked_out}"
         )
     return target_root
+
+
+def _init_workspace_from_cache(cache_root: Path, target_root: Path) -> None:
+    """Create a network-free worktree backed only by the materialized cache."""
+    _run_git(
+        ["init", "--quiet", str(target_root)],
+        allow_lazy_fetch=False,
+    )
+    alternates = target_root / ".git" / "objects" / "info" / "alternates"
+    alternates.parent.mkdir(parents=True, exist_ok=True)
+    object_root = (cache_root / "objects").resolve().as_posix()
+    alternates.write_text(object_root + "\n", encoding="utf-8", newline="\n")
 
 
 def _ensure_git_workspace_cache(
@@ -465,16 +469,8 @@ def _is_github_remote(repo_url: str) -> bool:
 
 
 def _materialize_cache_snapshot(cache_root: Path, checkout_sha: str) -> None:
-    """Read every target-tree blob so the partial cache becomes offline-safe."""
-    _run_git(
-        [
-            "archive",
-            "--format=tar",
-            f"--output={os.devnull}",
-            checkout_sha,
-        ],
-        cwd=cache_root,
-    )
+    """Resolve every target-tree blob so the partial cache becomes offline-safe."""
+    _check_snapshot_blobs(cache_root, checkout_sha, allow_lazy_fetch=True)
 
 
 def _verify_cache_snapshot_materialized(
@@ -486,6 +482,7 @@ def _verify_cache_snapshot_materialized(
         cwd=cache_root,
         allow_lazy_fetch=False,
     )
+    _check_snapshot_blobs(cache_root, checkout_sha, allow_lazy_fetch=False)
     _run_git(
         [
             "archive",
@@ -496,6 +493,45 @@ def _verify_cache_snapshot_materialized(
         cwd=cache_root,
         allow_lazy_fetch=False,
     )
+
+
+def _check_snapshot_blobs(
+    cache_root: Path,
+    checkout_sha: str,
+    *,
+    allow_lazy_fetch: bool,
+) -> None:
+    listing = _run_git(
+        [
+            "ls-tree",
+            "-r",
+            "--full-tree",
+            "--format=%(objecttype) %(objectname)",
+            checkout_sha,
+        ],
+        cwd=cache_root,
+        allow_lazy_fetch=allow_lazy_fetch,
+    )
+    blob_ids = [
+        line.split(" ", 1)[1]
+        for line in listing.splitlines()
+        if line.startswith("blob ")
+    ]
+    if not blob_ids:
+        return
+    checked = _run_git(
+        ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+        cwd=cache_root,
+        input_text="\n".join(blob_ids) + "\n",
+        allow_lazy_fetch=allow_lazy_fetch,
+    )
+    rows = checked.splitlines()
+    if len(rows) != len(blob_ids) or any(
+        len(row.split()) != 3 or row.split()[1] != "blob" for row in rows
+    ):
+        raise RuntimeError(
+            f"Snapshot {checkout_sha} contains missing or unreadable blobs"
+        )
 
 
 def _is_windows_permission_error(exc: BaseException) -> bool:
