@@ -1,9 +1,9 @@
 {
   "experiment_id": "graph-ab-formal-readiness",
-  "generated_at": "2026-08-06T02:17:31.814451+00:00",
+  "generated_at": "2026-08-06T03:08:40.766913+00:00",
   "branch": "experiment/graph-ab-formal-readiness",
   "start_commit": "dc9ff2a91c2f95b5b1edb5b22a33150f026fe9ae",
-  "implementation_commit_before_readiness_commit": "41295fdea87728531faf530eb8a6d433b243b7d1",
+  "implementation_commit_before_readiness_commit": "87005ffb036e97f11e7580610cbfa74232f0850a",
   "commits": [
     {
       "commit": "012a9c4994842fc9882998e5b5ea1cfc309548b7",
@@ -26,6 +26,10 @@
       "subject": "feat(eval): add checkpoint resume for paired ab runs"
     },
     {
+      "commit": "87005ffb036e97f11e7580610cbfa74232f0850a",
+      "subject": "test(eval): add formal ab preflight readiness gate"
+    },
+    {
       "commit": "SELF",
       "subject": "test(eval): add formal ab preflight readiness gate"
     }
@@ -37,10 +41,7 @@
   "frozen_baseline_target": "b5dc82bbffb38f1ba05587efa5dfcda08eb10b78",
   "frozen_baseline_modified": false,
   "reviewed_preflight_fixture_count": 3,
-  "manual_review_pending": [
-    "golden_vybestack_llxprt-code_pr3012_reverse",
-    "golden_deepset-ai_haystack_pr12208_reverse"
-  ],
+  "manual_review_pending": [],
   "fixture_audit": [
     {
       "fixture_id": "development_agent_search_cross_file",
@@ -69,13 +70,13 @@
     {
       "fixture_id": "golden_vybestack_llxprt-code_pr3012_reverse",
       "phase": "preview",
-      "reviewed": false,
+      "reviewed": true,
       "expected_issue_count": 1
     },
     {
       "fixture_id": "golden_deepset-ai_haystack_pr12208_reverse",
       "phase": "preview",
-      "reviewed": false,
+      "reviewed": true,
       "expected_issue_count": 1
     }
   ],
@@ -2062,9 +2063,7 @@
     "ready_for_formal_paired_ab": false,
     "blocking_issues": [
       "preflight_variants_incomplete_or_invalid",
-      "preflight_schema_invalid",
-      "manual_review_pending: golden_vybestack_llxprt-code_pr3012_reverse",
-      "manual_review_pending: golden_deepset-ai_haystack_pr12208_reverse"
+      "preflight_schema_invalid"
     ],
     "warnings": [
       "preview_invalid_runs: 9",

@@ -15,7 +15,8 @@ This is engineering-readiness and preview evidence only. It is not a formal stat
 3. `5b938b358939a1c4ed833ef8ad74d4589dd8ba32` perf(eval): add targeted workspace cache and offline restore
 4. `6368a1164818131260599fb3be452ccdc046a508` feat(eval): add structural scope metrics for graph ab
 5. `41295fdea87728531faf530eb8a6d433b243b7d1` feat(eval): add checkpoint resume for paired ab runs
-6. `SELF` test(eval): add formal ab preflight readiness gate
+6. `87005ffb036e97f11e7580610cbfa74232f0850a` test(eval): add formal ab preflight readiness gate
+7. `SELF` test(eval): add formal ab preflight readiness gate
 
 ## Workspace cache and restore
 
@@ -96,11 +97,9 @@ Reviewed preflight fixtures: `3`.
 | golden_real_requests_netrc_pr7205 | preflight | True | 0 |
 | golden_pydantic_pydantic_pr12117 | preflight | True | 1 |
 | golden_pydantic_pydantic_pr12590 | preflight | True | 0 |
-| golden_vybestack_llxprt-code_pr3012_reverse | preview | False | 1 |
-| golden_deepset-ai_haystack_pr12208_reverse | preview | False | 1 |
+| golden_vybestack_llxprt-code_pr3012_reverse | preview | True | 1 |
+| golden_deepset-ai_haystack_pr12208_reverse | preview | True | 1 |
 
-- Manual review pending: `golden_vybestack_llxprt-code_pr3012_reverse`
-- Manual review pending: `golden_deepset-ai_haystack_pr12208_reverse`
 
 ## Go / No-Go
 
@@ -110,8 +109,6 @@ Blocking issues:
 
 - preflight_variants_incomplete_or_invalid
 - preflight_schema_invalid
-- manual_review_pending: golden_vybestack_llxprt-code_pr3012_reverse
-- manual_review_pending: golden_deepset-ai_haystack_pr12208_reverse
 
 Warnings:
 

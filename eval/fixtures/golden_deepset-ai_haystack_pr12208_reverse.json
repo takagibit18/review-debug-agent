@@ -60,8 +60,8 @@
       "haystack"
     ],
     "difficulty": "medium",
-    "annotated_by": "agent_draft",
-    "reviewed": false,
+    "annotated_by": "manual",
+    "reviewed": true,
     "created_at": "2026-08-04T00:00:00+08:00"
   }
 }
