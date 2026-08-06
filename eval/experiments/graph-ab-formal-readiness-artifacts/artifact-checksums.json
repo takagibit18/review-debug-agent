@@ -1,0 +1,107 @@
+[
+  {
+    "relative_path_or_logical_name": "graph-ab-formal-readiness/checkpoint.jsonl",
+    "size_bytes": 153847,
+    "sha256": "af0ebea4682b75bf9014c1079f9a0a0c4ac56832e6a0bef1a9de3557353b0542",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "graph-ab-formal-readiness/preflight.json",
+    "size_bytes": 864483,
+    "sha256": "5e8a8f06845e70285f295dfe4e961c99e9f8622c9564dc4721e9c5a40863ab69",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "graph-ab-formal-readiness/preflight-summary.json",
+    "size_bytes": 24613,
+    "sha256": "b370626ea0e011f3b9911fd7f0ba136bf7ad2989fbe2200c957a45b7ffdcc16e",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "graph-ab-formal-readiness/preview.json",
+    "size_bytes": 1183233,
+    "sha256": "6635a759a80af3569ef2fd91420c5c03012d40571771e6f1e8439fdea4f8c458",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "graph-ab-formal-readiness/preview-summary.json",
+    "size_bytes": 33172,
+    "sha256": "2eff04f3455b7a808fa5aa78e9fd21ab25259231dc771a8bf30f633b5927a4cb",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_real_requests_netrc_pr7205_75c18380-eef2-4198-858a-5c2cae1b3bc8.jsonl",
+    "size_bytes": 9974,
+    "sha256": "f91c78f90115fa292cf10afe8bc89bd21068997a98d10ceab1535a48204a15e3",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_real_requests_netrc_pr7205_22cd995f-345e-4b22-9ca7-0acdf302c015.jsonl",
+    "size_bytes": 13976,
+    "sha256": "f60d17a0dc88ed786d606100adb6ebc594f516ed2ee1153722dd07460b27988a",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_real_requests_netrc_pr7205_60ea7241-622d-4b55-bfda-d9ecefee7cfb.jsonl",
+    "size_bytes": 13955,
+    "sha256": "9bf0eeed3e214c92919d805c5c15129cfe77dd340701553b3a94c226a387ec6e",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_pydantic_pydantic_pr12117_cb919991-2af2-4356-a3c2-ab8a41f781b5.jsonl",
+    "size_bytes": 12628,
+    "sha256": "f84d23172b001dadbb424ef340b4856364447da8832365abf1c1bd8bcb43cd97",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_pydantic_pydantic_pr12117_d9b6a0a0-089d-4c61-b99b-b58b774f1410.jsonl",
+    "size_bytes": 13339,
+    "sha256": "35629fcae2c58fe0ab6c93206fc401154fa0af7ee40147e47e00244504504a84",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_vybestack_llxprt-code_pr3012_reverse_0df26e42-c90d-40fd-a840-e2bd5397b6e9.jsonl",
+    "size_bytes": 21050,
+    "sha256": "dec2e060c5fa01d0403e2662f75657576316617d7400856bde4ac47b25d0a4b4",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_vybestack_llxprt-code_pr3012_reverse_0dea5725-039d-4b27-aefe-48ad7b0d4d15.jsonl",
+    "size_bytes": 21026,
+    "sha256": "9e1166ef8fc38ea7d27ac838c86d10c4f6a5de46379f336d5ce62e9a47c7e2e5",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_deepset-ai_haystack_pr12208_reverse_707b0bc6-ef43-4b35-8db8-aecdca7dafb4.jsonl",
+    "size_bytes": 13912,
+    "sha256": "00ae567dc4154c9b9af0de20e3651d826e2f5c2a29381e2c19d0744807275f78",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "event_logs/golden_deepset-ai_haystack_pr12208_reverse_59270858-b7b1-4cc2-bba7-cc5fa103f874.jsonl",
+    "size_bytes": 13930,
+    "sha256": "e2a5b674b6ec063e898cc5c3965c276b2e988c01503003cb225b780dfa3027b4",
+    "classification": "external_raw_backup",
+    "included_in_external_archive": true
+  },
+  {
+    "relative_path_or_logical_name": "compact-summary/graph-ab-formal-readiness-summary.json",
+    "size_bytes": 82761,
+    "sha256": "3645eae53848be2a13effc2f579329c984e266e64f8b64c7c07e92564cb6515a",
+    "classification": "tracked_or_should_commit",
+    "included_in_external_archive": true
+  }
+]
