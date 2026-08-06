@@ -80,13 +80,14 @@ def test_formal_config_selects_exact_smoke_preflight_and_preview_sets() -> None:
     }
 
 
-def test_unreviewed_fixture_requires_explicit_engineering_preview() -> None:
+def test_reviewed_fixture_loads_without_engineering_preview_override() -> None:
     path = Path("eval/fixtures/golden_vybestack_llxprt-code_pr3012_reverse.json")
 
-    with pytest.raises(ValueError, match="not reviewed"):
-        _load_fixture(path)
+    fixture = _load_fixture(path)
 
-    assert _load_fixture(path, allow_unreviewed=True).metadata.reviewed is False
+    assert fixture.id == "golden_vybestack_llxprt-code_pr3012_reverse"
+    assert fixture.metadata.annotated_by == "manual"
+    assert fixture.metadata.reviewed is True
 
 
 def test_formal_config_contains_no_held_out_fixture() -> None:

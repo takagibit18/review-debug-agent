@@ -1736,7 +1736,7 @@ def test_golden_fixture_distribution_has_required_buckets() -> None:
     )
     manifest = json.loads((Path("eval") / "fixtures" / "manifest.json").read_text())
 
-    assert 14 <= len(real) <= 16
+    assert len(real) == 17
     assert sum(1 for fixture in real if fixture.expected.issues) >= 9
     assert sum(1 for fixture in real if not fixture.expected.issues) >= 4
 
@@ -1774,7 +1774,7 @@ def test_golden_fixture_distribution_has_required_buckets() -> None:
         )
     }
     for entry in manifest["entries"]:
-        assert entry["reviewed"] == fixture_by_path[entry["path"]].metadata.reviewed
+        assert entry["fixture_id"] == fixture_by_path[entry["path"]].id
 
 
 def test_reviewed_golden_fixtures_use_git_workspaces_without_sparse_files(
