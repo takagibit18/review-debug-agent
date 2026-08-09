@@ -168,11 +168,24 @@ def _apply_fixture_diff(fixture: Fixture, repo_root: Path) -> None:
                 handle.write("\n")
             patch_path = Path(handle.name)
         _run_git(
-            ["apply", "--check", "--whitespace=nowarn", "--", str(patch_path)],
+            [
+                "apply",
+                "--recount",
+                "--check",
+                "--whitespace=nowarn",
+                "--",
+                str(patch_path),
+            ],
             cwd=repo_root,
         )
         _run_git(
-            ["apply", "--whitespace=nowarn", "--", str(patch_path)],
+            [
+                "apply",
+                "--recount",
+                "--whitespace=nowarn",
+                "--",
+                str(patch_path),
+            ],
             cwd=repo_root,
         )
     except (RuntimeError, TimeoutError) as exc:

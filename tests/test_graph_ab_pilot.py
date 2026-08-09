@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ from eval.graph_ab_pilot import (
     VARIANT_IDS,
     _fixture_snapshot,
     _load_fixture,
+    _runner_ready_for_suite,
     clear_index,
     inspect_index,
     validate_variant_contract,
@@ -270,6 +272,24 @@ def test_pairing_order_is_seeded_balanced_and_complete() -> None:
     assert first == second
     assert all(set(order) == set(VARIANT_IDS) for order in first)
     assert len({tuple(order) for order in first}) == 3
+
+
+def test_scoped_preflight_readiness_does_not_require_absent_smoke_records() -> None:
+    records = [SimpleNamespace(fixture_id="golden-stable", valid=True)]
+    variants = {variant: {"valid_runs": 1} for variant in VARIANT_IDS}
+
+    assert _runner_ready_for_suite(
+        suite="preflight",
+        pairing_errors=[],
+        records=records,
+        variants=variants,
+    )
+    assert not _runner_ready_for_suite(
+        suite="smoke",
+        pairing_errors=[],
+        records=records,
+        variants=variants,
+    )
 
 
 def _workspace_fixture(*, diff_text: str, apply_fixture_diff: bool) -> Fixture:

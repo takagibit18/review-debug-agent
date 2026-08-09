@@ -1144,16 +1144,11 @@ def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
                 "finding_fingerprint_distribution": "not_available",
             },
         }
-    smoke = [
-        item
-        for item in records
-        if item.fixture_id == "development_agent_search_cross_file"
-    ]
-    runner_ready = (
-        not payload["pairing_errors"]
-        and len(smoke) == 3
-        and all(item.valid for item in smoke)
-        and all(variants[item]["valid_runs"] > 0 for item in VARIANT_IDS)
+    runner_ready = _runner_ready_for_suite(
+        suite=str(payload["suite"]),
+        pairing_errors=list(payload["pairing_errors"]),
+        records=records,
+        variants=variants,
     )
     return (
         {
@@ -1215,6 +1210,30 @@ def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
             "ready_for_formal_paired_ab": False,
             "readiness_note": "Runner evidence only; final readiness additionally requires automated test results and frozen-file audit.",
         }
+    )
+
+
+def _runner_ready_for_suite(
+    *,
+    suite: str,
+    pairing_errors: list[object],
+    records: list[PilotRunRecord],
+    variants: dict[str, Any],
+) -> bool:
+    """Apply the smoke sentinel only to runs that actually select it."""
+    smoke = [
+        item
+        for item in records
+        if item.fixture_id == "development_agent_search_cross_file"
+    ]
+    smoke_required = suite in {"smoke", "all"}
+    smoke_ready = not smoke_required or (
+        len(smoke) == len(VARIANT_IDS) and all(item.valid for item in smoke)
+    )
+    return (
+        not pairing_errors
+        and smoke_ready
+        and all(variants[item]["valid_runs"] > 0 for item in VARIANT_IDS)
     )
 
 

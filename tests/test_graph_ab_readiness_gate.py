@@ -46,13 +46,13 @@ def _good_summary() -> dict[str, Any]:
         "held_out_executed": False,
         "frozen_baseline_target": FROZEN_BASELINE_TARGET,
         "frozen_baseline_modified": False,
-        "reviewed_preflight_fixture_count": 3,
+        "reviewed_preflight_fixture_count": 5,
         "manual_review_pending": [],
         "checkpoint_resume_verified": True,
         "structural_metrics_generated": True,
         "runs": {
             "smoke": _run(fixtures=1, measured=3, per_variant=1),
-            "preflight": _run(fixtures=3, measured=9, per_variant=3),
+            "preflight": _run(fixtures=5, measured=45, per_variant=15),
             "preview": _run(fixtures=5, measured=15, per_variant=5),
         },
     }
@@ -64,20 +64,25 @@ def test_formal_config_selects_exact_smoke_preflight_and_preview_sets() -> None:
     smoke = _fixture_entries(config, "smoke")
     preflight = _fixture_entries(config, "preflight")
     preview = _fixture_entries(config, "preview")
+    validation = _fixture_entries(config, "validation")
 
     assert [fixture.id for fixture, _types, _phase in smoke] == [
         "development_agent_search_cross_file"
     ]
     assert [fixture.id for fixture, _types, _phase in preflight] == [
-        "golden_real_requests_netrc_pr7205",
-        "golden_pydantic_pydantic_pr12117",
+        "golden_pydantic_pydantic_pr12568",
         "golden_pydantic_pydantic_pr12590",
+        "golden_pytest-dev_pytest_pr13969",
     ]
     assert len(preview) == 5
     assert {fixture.id for fixture, _types, _phase in preview} >= {
         "golden_vybestack_llxprt-code_pr3012_reverse",
         "golden_deepset-ai_haystack_pr12208_reverse",
     }
+    assert [fixture.id for fixture, _types, _phase in validation] == [
+        "golden_real_requests_netrc_pr7205",
+        "golden_pydantic_pydantic_pr12117",
+    ]
 
 
 def test_reviewed_fixture_loads_without_engineering_preview_override() -> None:
@@ -135,6 +140,7 @@ def test_pending_reverse_goldens_force_honest_no_go() -> None:
         ),
         (("runs", "preflight", "timeouts"), 1, "preflight_timeouts"),
         (("runs", "preflight", "schema_invalid"), 1, "preflight_schema_invalid"),
+        (("runs", "preflight", "invalid_runs"), 1, "preflight_invalid_runs"),
         (("runs", "preflight", "b1_all_cold"), False, "preflight_b1_not_all_cold"),
         (("runs", "preflight", "b2_all_warm"), False, "preflight_b2_not_all_warm"),
         (("checkpoint_resume_verified",), False, "checkpoint_resume_not_verified"),
@@ -155,6 +161,16 @@ def test_gate_blocks_each_required_engineering_failure(
 
     assert result["ready_for_formal_paired_ab"] is False
     assert blocker in result["blocking_issues"]
+
+
+def test_gate_requires_a_95_percent_preflight_valid_rate() -> None:
+    summary = _good_summary()
+    summary["runs"]["preflight"]["valid_runs"] = 42
+
+    result = evaluate_gate(summary)
+
+    assert result["ready_for_formal_paired_ab"] is False
+    assert "preflight_valid_run_rate_below_95_percent" in result["blocking_issues"]
 
 
 def test_report_language_is_engineering_only_and_lists_blockers() -> None:

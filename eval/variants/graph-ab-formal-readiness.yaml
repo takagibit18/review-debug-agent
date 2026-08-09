@@ -35,21 +35,24 @@ fixtures:
       - smoke-sentinel
 
   - phase: preflight
-    path: eval/fixtures/golden_real_requests_netrc_pr7205.json
+    path: eval/fixtures/golden_pydantic_pydantic_pr12568.json
     types:
       - local
       - negative-sample
-  - phase: preflight
-    path: eval/fixtures/golden_pydantic_pydantic_pr12117.json
-    types:
-      - local
-      - positive-sample
   - phase: preflight
     path: eval/fixtures/golden_pydantic_pydantic_pr12590.json
     types:
       - local
       - negative-sample
+  - phase: preflight
+    path: eval/fixtures/golden_pytest-dev_pytest_pr13969.json
+    types:
+      - local
+      - negative-sample
 
+  # Retain the graph-sensitive reverse cases as preview diagnostics. Their
+  # historical B variants exhausted the frozen budget, so they are not used to
+  # manufacture formal preflight validity.
   - phase: preview
     path: eval/fixtures/golden_vybestack_llxprt-code_pr3012_reverse.json
     types:
@@ -58,6 +61,20 @@ fixtures:
       - positive-sample
   - phase: preview
     path: eval/fixtures/golden_deepset-ai_haystack_pr12208_reverse.json
+    types:
+      - local
+      - positive-sample
+
+  # Preserve existing invalid full-workspace cases as explicit validation
+  # diagnostics rather than removing them from the repository or weakening
+  # the output contract.
+  - phase: validation
+    path: eval/fixtures/golden_real_requests_netrc_pr7205.json
+    types:
+      - local
+      - negative-sample
+  - phase: validation
+    path: eval/fixtures/golden_pydantic_pydantic_pr12117.json
     types:
       - local
       - positive-sample

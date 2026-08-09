@@ -737,6 +737,47 @@ def test_prepare_fixture_workspace_applies_diff_to_fixed_snapshot(
     assert _validate_diff_added_lines_against_workspace(fixture, workspace) == []
 
 
+def test_prepare_fixture_workspace_recounts_legacy_hunk_header(
+    tmp_path: Path,
+) -> None:
+    source, base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    malformed_diff = diff_text.replace(
+        "@@ -1,4 +1,4 @@", "@@ -1,5 +1,5 @@", 1
+    )
+    assert malformed_diff != diff_text
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-with-legacy-hunk-count",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": malformed_diff,
+                "files": {},
+                "workspace": {
+                    "kind": "git",
+                    "repo_url": str(source),
+                    "base_sha": base_sha,
+                    "head_sha": head_sha,
+                    "checkout_sha": base_sha,
+                    "diff_base_sha": base_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+
+    workspace = _prepare_fixture_workspace(
+        fixture, tmp_path / "workspace-recounted"
+    )
+
+    assert _git(workspace, "rev-parse", "HEAD") == base_sha
+    assert "return normalize(value)" in (workspace / "pkg" / "module.py").read_text(
+        encoding="utf-8"
+    )
+    assert _validate_diff_added_lines_against_workspace(fixture, workspace) == []
+
+
 def test_prepare_fixture_workspace_rejects_unapplicable_fixture_diff(
     tmp_path: Path,
 ) -> None:

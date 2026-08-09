@@ -16,6 +16,15 @@ FIXTURE_PATHS = (
     ROOT / "eval/fixtures/golden_vybestack_llxprt-code_pr3012_reverse.json",
     ROOT / "eval/fixtures/golden_deepset-ai_haystack_pr12208_reverse.json",
 )
+PREFLIGHT_FIXTURE_PATHS = (
+    ROOT / "eval/fixtures/golden_pydantic_pydantic_pr12568.json",
+    ROOT / "eval/fixtures/golden_pydantic_pydantic_pr12590.json",
+    ROOT / "eval/fixtures/golden_pytest-dev_pytest_pr13969.json",
+)
+ANNOTATED_FIXTURE_PATHS = (
+    ROOT / "eval/fixtures/golden_pydantic_pydantic_pr12117.json",
+    *FIXTURE_PATHS,
+)
 EXPECTED_MERGE_COMMIT_SHAS = {
     "golden_vybestack_llxprt-code_pr3012_reverse": "",
     "golden_deepset-ai_haystack_pr12208_reverse": (
@@ -71,6 +80,39 @@ def test_reverse_fixture_has_one_root_cause_on_changed_line(
     assert issue.invariant_pattern
     assert issue.affected_paths
     assert set(issue.affected_paths) <= set(changed_lines)
+
+
+@pytest.mark.parametrize("path", PREFLIGHT_FIXTURE_PATHS + ANNOTATED_FIXTURE_PATHS)
+def test_formal_fixture_has_complete_expected_annotations(
+    path: Path,
+) -> None:
+    fixture = Fixture.model_validate_json(path.read_text(encoding="utf-8"))
+    workspace = fixture.input.workspace
+
+    assert fixture.metadata.suite == "golden"
+    assert fixture.metadata.reviewed is True
+    assert workspace is not None
+    assert workspace.apply_fixture_diff is True
+    assert fixture.input.diff_text.strip()
+    if not fixture.expected.issues:
+        assert fixture.expected.is_empty_annotation is True
+        assert fixture.expected.min_issues == 0
+        assert fixture.expected.max_issues == 0
+        return
+
+    for issue in fixture.expected.issues:
+        assert issue.severity is not None
+        assert issue.path
+        assert issue.line is not None
+        assert issue.category
+        assert issue.description
+        assert issue.root_cause_id
+        assert issue.repair_unit
+        assert issue.mechanism_pattern
+        assert issue.invariant_pattern
+        assert issue.affected_paths
+        assert issue.structural_scope is not None
+        assert issue.graph_observable is not None
 
 
 def test_reverse_fixture_regression_tests_are_not_reversed() -> None:

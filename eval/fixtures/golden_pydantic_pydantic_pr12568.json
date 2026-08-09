@@ -17,8 +17,9 @@
       "repo_url": "https://github.com/pydantic/pydantic.git",
       "base_sha": "4890db68aa1ec41855f07d18027844972e40e10c",
       "head_sha": "deeed22cca419e277e87bfdfb0a824a8b67eca59",
-      "checkout_sha": "1261335fda981927f84b626bdf3d6307edc4dc99",
-      "diff_base_sha": "4890db68aa1ec41855f07d18027844972e40e10c"
+      "checkout_sha": "4890db68aa1ec41855f07d18027844972e40e10c",
+      "diff_base_sha": "4890db68aa1ec41855f07d18027844972e40e10c",
+      "apply_fixture_diff": true
     }
   },
   "expected": {

@@ -17,8 +17,9 @@
       "repo_url": "https://github.com/pytest-dev/pytest.git",
       "base_sha": "bbb0c0778a0fce3afb456fa8850994a63320a996",
       "head_sha": "377ebcb9d88aa8319800e0c0672a8bc284a53770",
-      "checkout_sha": "fd47511afeb024d2fbad9257d1b44310672c6a0f",
-      "diff_base_sha": "bbb0c0778a0fce3afb456fa8850994a63320a996"
+      "checkout_sha": "bbb0c0778a0fce3afb456fa8850994a63320a996",
+      "diff_base_sha": "bbb0c0778a0fce3afb456fa8850994a63320a996",
+      "apply_fixture_diff": true
     }
   },
   "expected": {

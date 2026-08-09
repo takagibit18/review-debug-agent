@@ -17,8 +17,9 @@
       "repo_url": "https://github.com/psf/requests.git",
       "base_sha": "1b40fdd004bfc8ba5301bcf8a6908264e9b6b877",
       "head_sha": "77f1e8c7a9296eac1aaef7fec53dd088a4e0f65b",
-      "checkout_sha": "47914226c2968802f2cdee3f6f0f6e06e4472f64",
-      "diff_base_sha": "1b40fdd004bfc8ba5301bcf8a6908264e9b6b877"
+      "checkout_sha": "1b40fdd004bfc8ba5301bcf8a6908264e9b6b877",
+      "diff_base_sha": "1b40fdd004bfc8ba5301bcf8a6908264e9b6b877",
+      "apply_fixture_diff": true
     }
   },
   "expected": {

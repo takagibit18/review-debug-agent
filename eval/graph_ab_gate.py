@@ -13,6 +13,10 @@ VARIANTS = (
     "B2-graph-hybrid-warm",
 )
 FROZEN_BASELINE_TARGET = "b5dc82bbffb38f1ba05587efa5dfcda08eb10b78"
+PREFLIGHT_MIN_FIXTURES = 5
+PREFLIGHT_REPEATS = 3
+PREFLIGHT_MIN_RUNS_PER_VARIANT = PREFLIGHT_MIN_FIXTURES * PREFLIGHT_REPEATS
+PREFLIGHT_MIN_MEASURED_RUNS = PREFLIGHT_MIN_RUNS_PER_VARIANT * len(VARIANTS)
 
 
 def evaluate_gate(summary: dict[str, Any]) -> dict[str, Any]:
@@ -35,20 +39,29 @@ def evaluate_gate(summary: dict[str, Any]) -> dict[str, Any]:
         "smoke_variants_incomplete_or_invalid",
     )
     require(
-        summary.get("reviewed_preflight_fixture_count", 0) >= 3,
-        "reviewed_preflight_fixture_count_below_3",
+        summary.get("reviewed_preflight_fixture_count", 0) >= PREFLIGHT_MIN_FIXTURES,
+        "reviewed_preflight_fixture_count_below_5",
     )
-    require(preflight.get("measured_runs") == 9, "preflight_measured_runs_not_9")
+    require(
+        preflight.get("fixture_count", 0) >= PREFLIGHT_MIN_FIXTURES,
+        "preflight_fixture_count_below_5",
+    )
+    require(
+        preflight.get("measured_runs", 0) >= PREFLIGHT_MIN_MEASURED_RUNS,
+        "preflight_measured_runs_below_45",
+    )
     require(
         all(
-            preflight_variants.get(variant, {}).get("measured") == 3
+            preflight_variants.get(variant, {}).get("measured", 0)
+            >= PREFLIGHT_MIN_RUNS_PER_VARIANT
             for variant in VARIANTS
         ),
         "preflight_variant_counts_incomplete",
     )
     require(
         all(
-            preflight_variants.get(variant, {}).get("valid") == 3
+            preflight_variants.get(variant, {}).get("valid", 0)
+            >= PREFLIGHT_MIN_RUNS_PER_VARIANT
             for variant in VARIANTS
         ),
         "preflight_variants_incomplete_or_invalid",
@@ -63,6 +76,16 @@ def evaluate_gate(summary: dict[str, Any]) -> dict[str, Any]:
         == 1,
         "preflight_variant_counts_unequal",
     )
+    preflight_measured = preflight.get("measured_runs", 0)
+    preflight_valid = preflight.get("valid_runs", 0)
+    preflight_valid_rate = (
+        preflight_valid / preflight_measured if preflight_measured else 0.0
+    )
+    require(
+        preflight_valid_rate >= 0.95,
+        "preflight_valid_run_rate_below_95_percent",
+    )
+    require(preflight.get("invalid_runs") == 0, "preflight_invalid_runs")
 
     for run_name, run in (("smoke", smoke), ("preflight", preflight)):
         for field in (
