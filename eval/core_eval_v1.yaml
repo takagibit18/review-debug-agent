@@ -1,0 +1,89 @@
+experiment_id: core-eval-v1
+description: Small curated evaluation set for the current MergeWarden portfolio stage.
+
+runtime:
+  temperature: 0.0
+  # Both A and B use the same bounded context and cumulative token budget.
+  # The graph variant otherwise exceeds the application's interactive budget
+  # before it gets a chance to submit its review.
+  model_max_tokens: 4096
+  prompt_input_token_budget: 12000
+  token_budget: 60000
+  token_hard_budget: 80000
+  review_max_iterations: 3
+  fixture_concurrency: 1
+  repeat_on_instability: true
+  max_attempts: 3
+
+# A keeps the frozen simple agent-search shape. B is the current MergeWarden
+# graph-assisted path with a cold per-run index, which avoids hidden cache state.
+variants:
+  - label: baseline
+    id: A-agent-search
+    context_mode: agent_search
+    graph_cache_mode: disabled
+  - label: mergewarden
+    id: B-mergewarden
+    context_mode: graph_hybrid
+    graph_cache_mode: cold
+
+# The three zero-issue fixtures are the already-stable full-workspace controls.
+# The two candidates are reviewed, full-workspace real PRs with one clear gold
+# finding each. This is intentionally a small curated set, not a statistically
+# representative benchmark.
+fixtures:
+  - fixture_id: golden_pydantic_pydantic_pr12117
+    path: eval/fixtures/golden_pydantic_pydantic_pr12117.json
+    role: candidate
+    gold_findings:
+      - id: model-copy-private-attribute-reclassification
+        category: api-compatibility
+        severity: warning
+        file: pydantic/main.py
+        location:
+          start_line: 411
+          end_line: 416
+          tolerance_lines: 5
+        description: >-
+          model_copy(update=...) intercepts private-attribute keys for every
+          extra mode, reclassifying keys that previously followed the existing
+          extra-data behavior and changing compatibility semantics.
+        root_cause: >-
+          Private-attribute routing is applied before preserving the prior
+          extra-mode update contract.
+
+  - fixture_id: golden_pytest-dev_pytest_pr9350
+    path: eval/fixtures/golden_pytest-dev_pytest_pr9350.json
+    role: candidate
+    gold_findings:
+      - id: safe-hash-wrapper-compares-wrapper
+        category: logic
+        severity: warning
+        file: src/_pytest/fixtures.py
+        location:
+          start_line: 244
+          end_line: 250
+          tolerance_lines: 5
+        description: >-
+          SafeHashWrapper.__eq__ compares self.obj with the other wrapper
+          object instead of other.obj, so equal wrapped parameter values can
+          compare unequal even when their hashes match and fixture grouping can
+          break.
+        root_cause: >-
+          Equality fails to unwrap the peer SafeHashWrapper before comparing
+          the wrapped parameter values.
+
+  - fixture_id: golden_pydantic_pydantic_pr12568
+    path: eval/fixtures/golden_pydantic_pydantic_pr12568.json
+    role: clean_control
+    gold_findings: []
+
+  - fixture_id: golden_pydantic_pydantic_pr12590
+    path: eval/fixtures/golden_pydantic_pydantic_pr12590.json
+    role: clean_control
+    gold_findings: []
+
+  - fixture_id: golden_pytest-dev_pytest_pr13969
+    path: eval/fixtures/golden_pytest-dev_pytest_pr13969.json
+    role: clean_control
+    gold_findings: []

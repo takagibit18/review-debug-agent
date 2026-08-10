@@ -1,5 +1,42 @@
 # 评测方案
 
+## 当前主路径：Core Eval v1
+
+当前阶段使用一个 **small curated evaluation set** 回答两个问题：
+
+1. MergeWarden 是否比冻结配置的简单 `agent_search` baseline 更能发现真实 PR 问题；
+2. 两个 variant 是否能可靠完成审查。
+
+Core Eval v1 固定为 5 个 real-world full-workspace fixtures：
+
+- Candidate：`pydantic#12117`、`pytest#9350`，各有一个人工复核、结构化的 `gold_findings`。
+- Clean controls：`pydantic#12568`、`pydantic#12590`、`pytest#13969`，沿用已完成 full-workspace replay 的零问题样本。
+
+配置位于 [`core_eval_v1.yaml`](core_eval_v1.yaml)。A/B 只比较：
+
+- A：`A-agent-search`，graph disabled；
+- B：`B-mergewarden`，当前 `graph_hybrid` 路径，每次使用 cold index，避免隐藏 cache 状态。
+
+两边使用相同 model、temperature、4096 output-token cap、12k prompt-context budget、60k/80k soft/hard cumulative token budget、iteration/tool budget、fixture 与 judge。这组边界允许 graph-hybrid 完成一次上下文探索和一次结构化提交，同时避免无限扩张上下文；应用的日常交互默认值不受影响。默认每个 fixture × variant 只跑 1 次；只有 placeholder、incomplete、validator failure 或 runtime error 才重试，最多 3 次。
+
+```bash
+# 只检查 5 个 fixture 的 reviewed/full-workspace/gold 契约，不调用模型
+python -m eval.core_eval audit
+
+# 运行 5 × 2 的主 A/B；仅不稳定 case 会额外重试
+python -m eval.core_eval run
+
+# 从已有机器报告重新渲染
+python -m eval.core_eval report --input eval/outputs/core-eval-v1.json
+```
+
+Core report 将两个维度分开：
+
+- Review Quality（只统计 valid completions）：Precision、Recall、F1、High-severity Recall（有数据时）与 False findings / PR。
+- Runtime Reliability（统计全部 attempts）：valid completion rate、placeholder/incomplete、workspace failure、fixture validation failure 与 output validator failure。
+
+`core-semantic-v1` judge 以“是否为同一 underlying issue”为准，结合文件、允许容差的位置范围和 root-cause 文本做确定性语义匹配；它先去除明显重复 finding，再做全局一对一分配。因此一条 generated finding 不能重复命中多个 gold findings。旧 formal-readiness pipeline、历史 artifacts 和冻结 baseline 均保留，但不再是 Core Eval v1 的前置 gate。
+
 ## 概述
 
 本目录包含两类能力：

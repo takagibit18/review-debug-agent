@@ -12,9 +12,6 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.analyzer import finding_verifier
-from src.analyzer.prompts import review_system_prompt
-
 RAW_REPORT = ROOT / "eval/outputs/agent-baseline-v1.json"
 OUTPUT = ROOT / "eval/baselines/agent-baseline-v1.json"
 FIXTURE = ROOT / "eval/development_fixtures/development_agent_search_cross_file.json"
@@ -108,6 +105,9 @@ def _load_run() -> tuple[dict[str, Any], dict[str, Any], Path]:
 
 
 def main() -> None:
+    from src.analyzer import finding_verifier
+    from src.analyzer.prompts import review_system_prompt
+
     raw, result, event_log = _load_run()
     metrics = result["process_metrics"]
     implementation_commit = subprocess.check_output(

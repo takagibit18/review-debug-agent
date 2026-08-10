@@ -37,6 +37,12 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _normalized_text_sha256(path: Path) -> str:
+    """Hash tracked text independently of Git's checkout line endings."""
+    normalized = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
+
+
 def _frozen_runner_source() -> bytes:
     return subprocess.run(
         ["git", "show", f"{FROZEN_TAG}:eval/runner.py"],
@@ -152,7 +158,7 @@ def test_agent_baseline_source_contract_hashes() -> None:
     frozen_runner = _frozen_runner_source()
 
     assert (
-        _sha256(
+        _normalized_text_sha256(
             ROOT / "eval/development_fixtures/development_agent_search_cross_file.json"
         )
         == artifact["contracts"]["dataset_sha256"]

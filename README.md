@@ -188,15 +188,25 @@ python cli.py review . --diff --output-json review_response.json --summary-json 
 python scripts/github_changed_lines.py --diff-file pr.diff --output changed_lines.json
 python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
 python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
+python -m eval.core_eval audit
+python -m eval.core_eval run
 python -m eval.run diagnose --input eval/outputs/20260518_151719_report.json
 python -m eval.run trend --inputs "eval/outputs/*_report.json"
 ```
 
-## MVP+ 状态
+## Core Eval v1
+
+当前主评测是一个 5 个 real-world full-workspace PR 组成的 **small curated evaluation set**：2 个带人工复核 gold finding 的 candidate，加 3 个已稳定的零问题 controls。A/B 在相同模型、预算、fixture 和 deterministic one-to-one judge 下各跑一次；仅 runtime instability 才重试。
+
+本轮 `deepseek-v4-pro` 实测中，10/10 A/B cases 均合法完成，workspace、placeholder 和 validator failure 都为 0；但 simple baseline 与当前 MergeWarden 对 2 个 gold issues 的 Recall/F1 都是 `0.0%`，controls 上均为 `0` false findings。因此当前证据不支持“MergeWarden 比简单 baseline 更有效”。4 个 candidate runs 实际都提出了 raw finding，但 1 条被语义 verifier 拒绝、3 条被 deterministic evidence gate 拒绝，当前主要改进方向是降低 verifier/evidence 链的 recall loss。
+
+该结果只说明这 5 个精选案例上的当前表现，不代表更大 PR 分布的统计结论。完整表格、per-fixture 对比和延后项见 [eval/reports/core-eval-v1.md](eval/reports/core-eval-v1.md)。
+
+## MVP+ 历史状态
 
 当前版本的 MVP+ 工程范围已闭环：CLI、FastAPI、Docker CLI demo、event logs、workspace-backed golden fixtures、GitHub Actions advisory 模板和稳定 eval gate 都已落地。
 
-当前记录的 golden baseline 是 `eval/outputs/20260518_151719_report.json`：
+历史 MVP+ golden baseline 是 `eval/outputs/20260518_151719_report.json`：
 
 - schema validity：`1.0`
 - hit rate：`0.75`
