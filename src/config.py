@@ -199,6 +199,16 @@ class Settings(BaseModel):
         ge=1,
         description="Max truncatable context tokens in a finalize-only model request.",
     )
+    final_submit_feedback_token_budget: int = Field(
+        default_factory=lambda: int(
+            os.getenv("FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET", "1200")
+        ),
+        ge=0,
+        description=(
+            "Portion of the finalize prompt budget reserved for accumulated tool "
+            "evidence and prior-analysis concerns."
+        ),
+    )
     feedback_window_iterations: int = Field(
         default_factory=lambda: int(os.getenv("FEEDBACK_WINDOW_ITERATIONS", "3")),
         ge=1,
@@ -677,6 +687,10 @@ class Settings(BaseModel):
         self.final_submit_prompt_token_budget = min(
             self.final_submit_prompt_token_budget,
             self.prompt_input_token_budget,
+        )
+        self.final_submit_feedback_token_budget = min(
+            self.final_submit_feedback_token_budget,
+            max(0, self.final_submit_prompt_token_budget - 1),
         )
         if (
             "review_context_mode" not in self.model_fields_set

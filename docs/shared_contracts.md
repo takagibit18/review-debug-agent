@@ -167,6 +167,7 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | `PROMPT_INPUT_TOKEN_BUDGET` | 每次模型请求中 **可截断上下文块**（meta、diff hunk、graph manifest、文件、结构等）的估算 token 上限 | 默认 `32000`，对应 `Settings.prompt_input_token_budget`；graph manifest 不得绕过该预算追加到 payload |
 | `FINAL_SUBMIT_RESERVE_TOKENS` | 从 hard budget 中保护的最终结构化提交预留 | 默认 `12000`；普通分析的有效上限为 `min(TOKEN_BUDGET, TOKEN_HARD_BUDGET - reserve)` |
 | `FINAL_SUBMIT_PROMPT_TOKEN_BUDGET` | finalize-only 请求可使用的可截断上下文预算 | 默认 `4000`；两种 context mode 以及 Review/Debug 共用该上限 |
+| `FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET` | finalize-only 请求中为去重后的工具证据与 prior-analysis concern 摘要保留的预算 | 默认 `1200`，包含在 `FINAL_SUBMIT_PROMPT_TOKEN_BUDGET` 内；默认剩余 `2800` 给基础上下文 |
 | `MODEL_MAX_TOKENS` | 非 finalize 模型调用的最大输出 token | 默认 `2048`，对应 `Settings.model_max_tokens` |
 
 GitHub advisory workflows should set `MODEL_MAX_TOKENS` explicitly, with

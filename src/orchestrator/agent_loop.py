@@ -112,6 +112,10 @@ class AgentOrchestrator:
         self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
+        self._model_length_finish_seen = False
+        self._final_submit_evidence_included_count = 0
+        self._final_submit_evidence_token_count = 0
+        self._final_submit_evidence_truncated_count = 0
         self._pre_budget_submit_attempted = False
         self._temperature = temperature
         self._review_max_iterations_override = review_max_iterations
@@ -1078,6 +1082,16 @@ class AgentOrchestrator:
                 "finalize_attempt": True,
                 "finalize_submit_seen": finalize_plan.draft_review is not None,
                 "budget_state": self._budget_state,
+                "prior_length_finish_seen": self._model_length_finish_seen,
+                "final_submit_evidence_included_count": (
+                    finalize_plan.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    finalize_plan.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    finalize_plan.final_submit_evidence_truncated_count
+                ),
             },
         )
         return response
@@ -1114,6 +1128,16 @@ class AgentOrchestrator:
                 "finalize_attempt": True,
                 "finalize_submit_seen": finalize_plan.draft_debug is not None,
                 "budget_state": self._budget_state,
+                "prior_length_finish_seen": self._model_length_finish_seen,
+                "final_submit_evidence_included_count": (
+                    finalize_plan.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    finalize_plan.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    finalize_plan.final_submit_evidence_truncated_count
+                ),
             },
         )
         return response
@@ -1262,6 +1286,20 @@ class AgentOrchestrator:
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
                 "model_max_retries": self._settings.model_max_retries,
                 "force_submit": force_submit,
+                "model_finish_reason": result.model_finish_reason,
+                "model_length_finish_seen": (
+                    self._model_length_finish_seen
+                    or result.model_finish_reason == "length"
+                ),
+                "final_submit_evidence_included_count": (
+                    result.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    result.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    result.final_submit_evidence_truncated_count
+                ),
                 "budget_state": self._budget_state,
             },
         )
@@ -1723,6 +1761,10 @@ class AgentOrchestrator:
         self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
+        self._model_length_finish_seen = False
+        self._final_submit_evidence_included_count = 0
+        self._final_submit_evidence_token_count = 0
+        self._final_submit_evidence_truncated_count = 0
         self._pre_budget_submit_attempted = False
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
@@ -1762,6 +1804,9 @@ class AgentOrchestrator:
                 "final_submit_reserve_tokens": self._settings.final_submit_reserve_tokens,
                 "final_submit_prompt_token_budget": (
                     self._settings.final_submit_prompt_token_budget
+                ),
+                "final_submit_feedback_token_budget": (
+                    self._settings.final_submit_feedback_token_budget
                 ),
                 "prompt_input_token_budget": self._settings.prompt_input_token_budget,
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
@@ -1858,8 +1903,12 @@ class AgentOrchestrator:
             "final_submit_prompt_token_budget": (
                 self._settings.final_submit_prompt_token_budget
             ),
+            "final_submit_feedback_token_budget": (
+                self._settings.final_submit_feedback_token_budget
+            ),
             "budget_state": self._budget_state,
             "has_tool_feedback": bool(self._tool_feedback),
+            "prior_length_finish_seen": self._model_length_finish_seen,
             "pre_budget_submit_ratio": self._settings.pre_budget_submit_token_ratio,
             "pre_budget_submit_threshold": min(
                 int(
@@ -1872,6 +1921,16 @@ class AgentOrchestrator:
         if plan is not None:
             payload["draft_present"] = (
                 plan.draft_review is not None or plan.draft_debug is not None
+            )
+            payload["model_finish_reason"] = plan.model_finish_reason
+            payload["final_submit_evidence_included_count"] = (
+                plan.final_submit_evidence_included_count
+            )
+            payload["final_submit_evidence_token_count"] = (
+                plan.final_submit_evidence_token_count
+            )
+            payload["final_submit_evidence_truncated_count"] = (
+                plan.final_submit_evidence_truncated_count
             )
         self._record_event(EventType.DECISION, "pre_budget_submit", payload)
 
@@ -1913,6 +1972,20 @@ class AgentOrchestrator:
         plan: AnalysisPlan,
         state: ContextState,
     ) -> None:
+        if plan.model_finish_reason == "length":
+            self._model_length_finish_seen = True
+        self._final_submit_evidence_included_count = max(
+            self._final_submit_evidence_included_count,
+            plan.final_submit_evidence_included_count,
+        )
+        self._final_submit_evidence_token_count = max(
+            self._final_submit_evidence_token_count,
+            plan.final_submit_evidence_token_count,
+        )
+        self._final_submit_evidence_truncated_count = max(
+            self._final_submit_evidence_truncated_count,
+            plan.final_submit_evidence_truncated_count,
+        )
         reason = str(getattr(plan, "incomplete_reason", "") or "").strip()
         if not reason or self._model_incomplete_seen:
             return

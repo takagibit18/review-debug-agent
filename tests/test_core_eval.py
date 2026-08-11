@@ -106,6 +106,7 @@ def test_core_config_is_small_full_workspace_set_with_structured_gold() -> None:
     assert config.runtime.token_hard_budget == 80000
     assert config.runtime.final_submit_reserve_tokens == 12000
     assert config.runtime.final_submit_prompt_token_budget == 4000
+    assert config.runtime.final_submit_feedback_token_budget == 1200
     assert sum(spec.role == "candidate" for spec, _ in loaded) == 2
     assert {
         "golden_pydantic_pydantic_pr12568",

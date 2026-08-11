@@ -185,6 +185,25 @@ class AnalysisPlan(BaseModel):
         default="",
         description="Reason the model response was unusable for a trusted final result.",
     )
+    model_finish_reason: str = Field(
+        default="",
+        description="Provider finish reason retained for runtime and funnel telemetry.",
+    )
+    final_submit_evidence_included_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of deduplicated evidence entries retained for final submit.",
+    )
+    final_submit_evidence_token_count: int = Field(
+        default=0,
+        ge=0,
+        description="Estimated tokens used by the bounded final-submit evidence digest.",
+    )
+    final_submit_evidence_truncated_count: int = Field(
+        default=0,
+        ge=0,
+        description="Evidence entries omitted or shortened to respect the digest budget.",
+    )
 
 
 FindingVerificationStatus = Literal[

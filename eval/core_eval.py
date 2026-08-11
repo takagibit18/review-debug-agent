@@ -168,6 +168,7 @@ class CoreRuntimeConfig(BaseModel):
     token_hard_budget: int = Field(default=80000, ge=10000, le=140000)
     final_submit_reserve_tokens: int = Field(default=12000, ge=4000, le=40000)
     final_submit_prompt_token_budget: int = Field(default=4000, ge=1000, le=12000)
+    final_submit_feedback_token_budget: int = Field(default=1200, ge=0, le=12000)
     review_max_iterations: int = Field(default=3, ge=2)
     fixture_concurrency: int = Field(default=1, ge=1, le=8)
     repeat_on_instability: bool = True
@@ -184,6 +185,10 @@ class CoreRuntimeConfig(BaseModel):
         if self.final_submit_prompt_token_budget > self.final_submit_reserve_tokens:
             raise ValueError(
                 "final_submit_prompt_token_budget must not exceed final_submit_reserve_tokens"
+            )
+        if self.final_submit_feedback_token_budget >= self.final_submit_prompt_token_budget:
+            raise ValueError(
+                "final_submit_feedback_token_budget must leave room for base context"
             )
         return self
 
@@ -329,6 +334,7 @@ class CoreRuntimeContract(BaseModel):
     token_hard_budget: int = Field(ge=1)
     final_submit_reserve_tokens: int = Field(default=12000, ge=1)
     final_submit_prompt_token_budget: int = Field(default=4000, ge=1)
+    final_submit_feedback_token_budget: int = Field(default=1200, ge=0)
     model_request_timeout_seconds: float = Field(gt=0.0)
     agent_tool_timeout_seconds: float = Field(gt=0.0)
     agent_run_timeout_seconds: float = Field(gt=0.0)
@@ -787,6 +793,9 @@ async def run_core_eval(
         "FINAL_SUBMIT_PROMPT_TOKEN_BUDGET": str(
             config.runtime.final_submit_prompt_token_budget
         ),
+        "FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET": str(
+            config.runtime.final_submit_feedback_token_budget
+        ),
         "EVAL_REVIEW_MAX_ITERATIONS_CAP": str(config.runtime.review_max_iterations),
     }
     original_env = {key: os.environ.get(key) for key in env_overrides}
@@ -833,6 +842,9 @@ async def run_core_eval(
             final_submit_prompt_token_budget=(
                 settings.final_submit_prompt_token_budget
             ),
+            final_submit_feedback_token_budget=(
+                settings.final_submit_feedback_token_budget
+            ),
             model_request_timeout_seconds=settings.model_request_timeout_seconds,
             agent_tool_timeout_seconds=settings.agent_tool_timeout_seconds,
             agent_run_timeout_seconds=settings.agent_run_timeout_seconds,
@@ -876,6 +888,9 @@ def build_core_report_from_runs(
             final_submit_reserve_tokens=config.runtime.final_submit_reserve_tokens,
             final_submit_prompt_token_budget=(
                 config.runtime.final_submit_prompt_token_budget
+            ),
+            final_submit_feedback_token_budget=(
+                config.runtime.final_submit_feedback_token_budget
             ),
             model_request_timeout_seconds=settings.model_request_timeout_seconds,
             agent_tool_timeout_seconds=settings.agent_tool_timeout_seconds,
@@ -1003,7 +1018,8 @@ def render_core_report(report: CoreEvalReport) -> str:
             f"{report.runtime_contract.agent_max_tool_calls} tool calls，"
             f"{report.runtime_contract.token_budget}/{report.runtime_contract.token_hard_budget} token budget，"
             f"{report.runtime_contract.final_submit_reserve_tokens} final-submit reserve，"
-            f"{report.runtime_contract.final_submit_prompt_token_budget} finalize prompt-context tokens"
+            f"{report.runtime_contract.final_submit_prompt_token_budget} finalize prompt-context tokens锛?"
+            f"{report.runtime_contract.final_submit_feedback_token_budget} retained-evidence tokens"
         ),
         "",
         "## Review Quality",
