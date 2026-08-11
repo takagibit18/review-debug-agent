@@ -43,6 +43,15 @@ def _normalized_text_sha256(path: Path) -> str:
     return hashlib.sha256(normalized).hexdigest()
 
 
+def _line_ending_sha256_variants(content: bytes) -> set[str]:
+    """Return canonical LF and CRLF hashes for tracked text content."""
+    normalized = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return {
+        hashlib.sha256(normalized).hexdigest(),
+        hashlib.sha256(normalized.replace(b"\n", b"\r\n")).hexdigest(),
+    }
+
+
 def _frozen_runner_source() -> bytes:
     return subprocess.run(
         ["git", "show", f"{FROZEN_TAG}:eval/runner.py"],
@@ -90,7 +99,9 @@ def test_agent_baseline_contract_matches_compact_artifact() -> None:
         contract["baseline_run"]["compact_artifact"]
         == ARTIFACT_PATH.relative_to(ROOT).as_posix()
     )
-    assert contract["baseline_run"]["compact_artifact_sha256"] == _sha256(ARTIFACT_PATH)
+    assert contract["baseline_run"][
+        "compact_artifact_sha256"
+    ] in _line_ending_sha256_variants(ARTIFACT_PATH.read_bytes())
     for key in (
         "reviewer_prompt_sha256",
         "verifier_prompt_sha256",
@@ -172,3 +183,9 @@ def test_agent_baseline_source_contract_hashes() -> None:
         frozen_runner
     )
     assert contract["formal_graph_ab_executed"] is False
+
+
+def test_line_ending_sha256_variants_are_checkout_independent() -> None:
+    assert _line_ending_sha256_variants(b"first\nsecond\n") == (
+        _line_ending_sha256_variants(b"first\r\nsecond\r\n")
+    )

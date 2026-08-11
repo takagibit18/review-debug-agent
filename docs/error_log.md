@@ -4,6 +4,7 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-08-11 | GitHub Actions / baseline seal | PR #73 CI 在 lint/mypy 通过后出现 2 个 baseline seal 测试失败：compact artifact 哈希不一致，且 `git show eval/agent-baseline-v1:eval/runner.py` 返回 128 | Windows CRLF 与 Linux LF checkout 使同一文本产物产生不同原始字节哈希；`actions/checkout` 默认浅克隆未包含测试依赖的历史冻结 tag | Seal test 仅对文本换行接受等价的 LF/CRLF 规范哈希，不放宽内容校验；CI checkout 设为 `fetch-depth: 0` 以保留冻结 tag 校验 |
 | 2026-08-11 | GitHub Actions / Ruff lint | PR #73 CI 使用 `ruff check .` 报 141 条全仓错误，而本地 Ruff 0.15.10 通过 | `requirements-dev.txt` 的 `ruff>=0.4` 在 CI 解析为 Ruff 0.16.2；0.16 将默认规则从 59 条扩大到 413 条，本项目未显式声明 lint 规则契约 | 新增 `ruff.toml`，仅显式固定项目既有 `E4`/`E7`/`E9`/`F` lint 规则；不改变 formatter 契约，不对 141 处存量代码做过拟合式改写 |
 | 2026-08-11 | Ruff cross-version verification | 隔离安装 Ruff 0.16.2 的普通与提权尝试分别在 180/300 秒后超时；首轮还确认全仓 `ruff format --check .` 存在历史格式差异 | 临时 pip 获取持续阻塞；首版 `ruff.toml` 还携带了会影响 formatter 的顶层选项 | 终止并清理仅属于临时安装的遗留进程，将配置缩小为 lint-only；本地 Ruff 0.15.10、显式规则解析、mypy 与全量 pytest 通过，0.16.2 由下次 CI 实跑验证 |
 | 2026-08-11 | New-baseline consistency assertion | 最后一致性检查误读取不存在的 `summary` 顶层字段，报 `KeyError` | Core Eval JSON 将指标按 variant 存在 `variants[].quality/reliability`，而不是单独的 `summary` 对象 | 先列出实际 schema，再按 `variants` 中的 label 核对 attempts、completion rate 和质量指标 |
