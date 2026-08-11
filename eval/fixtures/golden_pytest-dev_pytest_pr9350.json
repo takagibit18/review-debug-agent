@@ -18,7 +18,8 @@
       "base_sha": "47df71d23ff13bd083b21ffcf839bd11169b42fc",
       "head_sha": "4a314bf3680bb76c9bf7c079e7be1823b88b28d3",
       "checkout_sha": "4a314bf3680bb76c9bf7c079e7be1823b88b28d3",
-      "diff_base_sha": "47df71d23ff13bd083b21ffcf839bd11169b42fc"
+      "diff_base_sha": "47df71d23ff13bd083b21ffcf839bd11169b42fc",
+      "review_scope": "full_pr"
     }
   },
   "expected": {

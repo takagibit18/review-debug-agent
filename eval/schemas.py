@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from statistics import mean, pstdev
 from typing import Any, Literal
 
@@ -14,6 +15,7 @@ from src.analyzer.output_formatter import Severity
 FixtureType = Literal["review", "debug"]
 EvalGraphCacheMode = Literal["disabled", "cold", "warm"]
 StructuralScope = Literal["local", "direct_cross_file", "multi_hop"]
+ReviewPatchScope = Literal["legacy", "full_pr", "partial_pr"]
 EVAL_MATCHER_VERSION = "semantic-v2"
 
 
@@ -110,6 +112,75 @@ class FixtureWorkspace(BaseModel):
         default=False,
         description="Apply input.diff_text after restoring checkout_sha.",
     )
+    review_scope: ReviewPatchScope = Field(
+        default="legacy",
+        description=(
+            "Authoritative Git range used for review input. Non-legacy scopes "
+            "derive diff_text from Git instead of trusting the stored snapshot."
+        ),
+    )
+    review_paths: list[str] = Field(
+        default_factory=list,
+        description="Explicit repository-relative paths for a partial PR review.",
+    )
+    scope_reason: str = Field(
+        default="",
+        description="Human-auditable reason for intentionally reviewing a partial PR.",
+    )
+
+    @model_validator(mode="after")
+    def _review_scope_contract(self) -> FixtureWorkspace:
+        if self.review_scope == "legacy":
+            if self.review_paths or self.scope_reason.strip():
+                raise ValueError(
+                    "legacy workspaces cannot declare review_paths or scope_reason"
+                )
+            return self
+
+        required = {
+            "base_sha": self.base_sha,
+            "head_sha": self.head_sha,
+            "diff_base_sha": self.diff_base_sha,
+        }
+        missing = [name for name, value in required.items() if not value.strip()]
+        if missing:
+            raise ValueError(
+                "non-legacy review scopes require " + ", ".join(sorted(missing))
+            )
+        if self.diff_base_sha != self.base_sha:
+            raise ValueError("diff_base_sha must equal base_sha for PR review scopes")
+        if self.checkout_sha != self.head_sha:
+            raise ValueError("PR review scopes must restore checkout_sha=head_sha")
+        if self.apply_fixture_diff:
+            raise ValueError("PR review scopes cannot apply a fixture overlay")
+
+        normalized_paths: list[str] = []
+        for raw_path in self.review_paths:
+            normalized = raw_path.strip().replace("\\", "/")
+            parsed = PurePosixPath(normalized)
+            if (
+                not normalized
+                or parsed.is_absolute()
+                or ".." in parsed.parts
+                or (parsed.parts and ":" in parsed.parts[0])
+            ):
+                raise ValueError(f"review path must be repository-relative: {raw_path}")
+            normalized_paths.append(parsed.as_posix())
+        self.review_paths = sorted(set(normalized_paths))
+
+        if self.review_scope == "full_pr":
+            if self.review_paths:
+                raise ValueError("full_pr review scope cannot restrict review_paths")
+            if self.scope_reason.strip():
+                raise ValueError("full_pr review scope does not accept scope_reason")
+            return self
+
+        if not self.review_paths:
+            raise ValueError("partial_pr review scope requires explicit review_paths")
+        if not self.scope_reason.strip():
+            raise ValueError("partial_pr review scope requires scope_reason")
+        self.scope_reason = self.scope_reason.strip()
+        return self
 
 
 class FixtureInput(BaseModel):

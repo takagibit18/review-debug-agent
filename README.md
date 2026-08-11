@@ -198,9 +198,9 @@ python -m eval.run trend --inputs "eval/outputs/*_report.json"
 
 当前主评测是一个 5 个 real-world full-workspace PR 组成的 **small curated evaluation set**：2 个带人工复核 gold finding 的 candidate，加 3 个已稳定的零问题 controls。A/B 在相同模型、预算、fixture 和 deterministic one-to-one judge 下各跑一次；仅 runtime instability 才重试。
 
-本轮 `deepseek-v4-pro` 实测中，10/10 A/B cases 均合法完成，workspace、placeholder 和 validator failure 都为 0；但 simple baseline 与当前 MergeWarden 对 2 个 gold issues 的 Recall/F1 都是 `0.0%`，controls 上均为 `0` false findings。因此当前证据不支持“MergeWarden 比简单 baseline 更有效”。4 个 candidate runs 实际都提出了 raw finding，但 1 条被语义 verifier 拒绝、3 条被 deterministic evidence gate 拒绝，当前主要改进方向是降低 verifier/evidence 链的 recall loss。
+契约修复后的 `deepseek-v4-pro` 新基线共运行 15 个 attempts：simple baseline valid completion rate 为 `83.3%`，MergeWarden 为 `33.3%`。MergeWarden 在两个 positive fixtures 上连续 6 次都在 hard token cap 后、`submit_review` 前结束，因此没有可用于 Review Quality 的 valid candidate completion，A/B Precision/Recall/F1 暂不可比较。Baseline 的两个 candidate runs 均 valid，但未命中 gold；3 个 controls 上两侧均没有 warning/critical false finding。Workspace 与 validator failure 均为 0。
 
-该结果只说明这 5 个精选案例上的当前表现，不代表更大 PR 分布的统计结论。完整表格、per-fixture 对比和延后项见 [eval/reports/core-eval-v1.md](eval/reports/core-eval-v1.md)。
+新基线表格、per-fixture 对比和契约修复前的逐条审计见 [eval/reports/core-eval-v1.md](eval/reports/core-eval-v1.md) 与 [eval/reports/core-eval-v1-finding-audit.md](eval/reports/core-eval-v1-finding-audit.md)。
 
 ## MVP+ 历史状态
 

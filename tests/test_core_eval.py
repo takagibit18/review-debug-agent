@@ -112,6 +112,9 @@ def test_core_config_is_small_full_workspace_set_with_structured_gold() -> None:
     }.issubset({spec.fixture_id for spec, _ in loaded})
     for spec, fixture in loaded:
         assert fixture.input.workspace is not None
+        assert fixture.input.workspace.review_scope == "full_pr"
+        assert fixture.input.workspace.checkout_sha == fixture.input.workspace.head_sha
+        assert fixture.input.workspace.apply_fixture_diff is False
         assert fixture.input.files == {}
         for gold in spec.gold_findings:
             assert gold.category
@@ -308,3 +311,47 @@ def test_precision_is_zero_when_positive_gold_has_no_generated_findings() -> Non
     assert {item.quality.precision for item in report.variants} == {0.0}
     assert {item.quality.recall for item in report.variants} == {0.0}
     assert {item.quality.f1 for item in report.variants} == {0.0}
+
+
+def test_report_prioritizes_missing_candidate_completions_over_quality_filters() -> (
+    None
+):
+    config = load_core_config(CONFIG_PATH)
+    candidate_spec = config.fixtures[0]
+    baseline = next(item for item in config.variants if item.label == "baseline")
+    mergewarden = next(item for item in config.variants if item.label == "mergewarden")
+    valid_baseline = assess_run(
+        candidate_spec,
+        baseline,
+        _result(raw_output=_raw()),
+        attempt=1,
+    )
+    incomplete_result = _result(
+        run_id="",
+        submitted=False,
+        placeholder=True,
+    ).model_copy(
+        update={
+            "finish_reasons": ["budget_hard_capped"],
+            "budget_exhausted": True,
+            "budget_state": "hard_capped",
+        }
+    )
+    incomplete_mergewarden = assess_run(
+        candidate_spec,
+        mergewarden,
+        incomplete_result,
+        attempt=1,
+    )
+
+    markdown = render_core_report(
+        build_core_report_from_runs(
+            config,
+            [valid_baseline, incomplete_mergewarden],
+        )
+    )
+
+    assert "1/2 个 candidate attempts 未合法完成" in markdown
+    assert "mergewarden 1 个 candidate fixtures 缺少 valid completion" in markdown
+    assert "runtime reliability 与完整 PR 上下文的预算伸缩" in markdown
+    assert "review quality A/B 暂不可比较" in markdown

@@ -2,12 +2,14 @@
 
 > small curated evaluation set: 5 个 full-workspace PR fixtures （2 个 candidate，3 个 clean control）。
 > 该结果用于项目能力验证，不主张统计代表性或显著性。
+> Generated at：`2026-08-11T03:08:19.861569+00:00`。
+> Review input：按 fixture 声明的 `full_pr` / `partial_pr` scope 从 Git range 派生。本轮 5/5 fixtures 均为 `full_pr`。
 
 ## Infrastructure
 
 - Core fixtures：5
-- Successful workspace setups：10/10 attempts
-- Completion failures：0
+- Successful workspace setups：15/15 attempts
+- Completion failures：7
 - Matcher：`core-semantic-v1`（deterministic, one-to-one, duplicate-aware）
 - Shared runtime：`deepseek-v4-pro`，temperature 0，4096 output tokens，12000 prompt-context tokens，3 iterations，64 tool calls，60000/80000 token budget
 
@@ -17,9 +19,9 @@ Quality 仅统计 valid completions。
 
 | Metric | Baseline | MergeWarden |
 |---|---:|---:|
-| Precision | 0.0% | 0.0% |
-| Recall | 0.0% | 0.0% |
-| F1 | 0.0% | 0.0% |
+| Precision | 0.0% | — |
+| Recall | 0.0% | — |
+| F1 | 0.0% | — |
 | High-severity Recall | — | — |
 | False findings / PR | 0.00 | 0.00 |
 
@@ -27,8 +29,8 @@ Quality 仅统计 valid completions。
 
 | Metric | Baseline | MergeWarden |
 |---|---:|---:|
-| Valid completion rate | 100.0% | 100.0% |
-| Placeholder/incomplete runs | 0 | 0 |
+| Valid completion rate | 83.3% | 33.3% |
+| Placeholder/incomplete runs | 1 | 6 |
 | Workspace failures | 0 | 0 |
 | Validator failures | 0 | 0 |
 
@@ -36,15 +38,15 @@ Quality 仅统计 valid completions。
 
 | Fixture | Gold | Baseline hit | MergeWarden hit | Baseline FP | MergeWarden FP | Valid A/B |
 |---|---:|---:|---:|---:|---:|:---:|
-| `golden_pydantic_pydantic_pr12117` | 1 | 0/1 | 0/1 | 0 | 0 | yes |
-| `golden_pytest-dev_pytest_pr9350` | 1 | 0/1 | 0/1 | 0 | 0 | yes |
+| `golden_pydantic_pydantic_pr12117` | 1 | 0/1 | invalid | 0 | — | no |
+| `golden_pytest-dev_pytest_pr9350` | 1 | 0/1 | invalid | 0 | — | no |
 | `golden_pydantic_pydantic_pr12568` | 0 | 0/0 | 0/0 | 0 | 0 | yes |
 | `golden_pydantic_pydantic_pr12590` | 0 | 0/0 | 0/0 | 0 | 0 | yes |
 | `golden_pytest-dev_pytest_pr13969` | 0 | 0/0 | 0/0 | 0 | 0 | yes |
 
 ## Main failure mode
 
-4 个 valid candidate runs 共提出 4 条 raw findings，但其中 4 个 runs 在最终输出前被过滤；语义 verifier 拒绝 1 条，deterministic evidence gate 拒绝 3 条。当前首要问题是 verifier/evidence 链造成的 recall loss，而不是 workspace、completion 或 semantic judge failure。
+6/8 个 candidate attempts 未合法完成，其中 6 个没有 submit_review，6 个在 hard token cap 后结束；mergewarden 2 个 candidate fixtures 缺少 valid completion。当前首要问题是 runtime reliability 与完整 PR 上下文的预算伸缩，而不是 semantic judge；review quality A/B 暂不可比较。
 
 ## Controls and optional oracles
 
@@ -60,4 +62,4 @@ Executable oracles 暂未加入 Core gate，后续只为最适合的 functional 
 
 ## README conclusion
 
-在 5 个 real-world full-workspace PR 组成的小型精选集上，当前 A/B 的 F1 同为 0.0%，尚未显示稳定优势；MergeWarden valid completion rate 为 100.0%。该结果用于说明当前实现的相对表现，不代表对更大 PR 分布的统计结论。
+在 5 个 real-world full-workspace PR 组成的小型精选集上，当前合法完成不足，尚不能比较 A/B review quality；MergeWarden valid completion rate 为 33.3%。该结果用于说明当前实现的相对表现，不代表对更大 PR 分布的统计结论。

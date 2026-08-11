@@ -147,6 +147,33 @@ def _prepare_fixture_workspace(
     raise ValueError(f"Unsupported fixture workspace kind: {workspace.kind}")
 
 
+def _hydrate_git_review_diff(fixture: Fixture, repo_root: Path) -> None:
+    """Derive an authoritative full or explicitly scoped PR diff from Git."""
+    workspace = fixture.input.workspace
+    if (
+        fixture.type != "review"
+        or workspace is None
+        or workspace.review_scope == "legacy"
+    ):
+        return
+    args = [
+        "diff",
+        "--no-ext-diff",
+        "--find-renames=50%",
+        "--binary",
+        workspace.diff_base_sha,
+        workspace.head_sha,
+    ]
+    if workspace.review_scope == "partial_pr":
+        args.extend(["--", *workspace.review_paths])
+    resolved = _run_git(args, cwd=repo_root, allow_lazy_fetch=False)
+    if not resolved.strip():
+        raise ValueError(
+            f"Fixture {fixture.id} resolved an empty {workspace.review_scope} diff"
+        )
+    fixture.input.diff_text = resolved.rstrip("\n") + "\n"
+
+
 def _apply_fixture_diff(fixture: Fixture, repo_root: Path) -> None:
     """Apply a fixture patch without moving the restored workspace HEAD."""
     diff_text = fixture.input.diff_text
@@ -673,6 +700,7 @@ async def run_single(
     variant: EvalVariant | None = None,
 ) -> EvalResult:
     """Run one fixture and return evaluation metadata."""
+    fixture = fixture.model_copy(deep=True)
     expected_count = len(fixture.expected.issues)
     selected_variant = variant or _default_eval_variant()
     stage_timings: dict[str, float] = {}
@@ -686,6 +714,18 @@ async def run_single(
                 workspace_cache_dir=Path(get_settings().eval_workspace_cache_dir),
             )
             stage_timings["prepare_workspace_seconds"] = perf_counter() - stage_started
+            try:
+                await asyncio.to_thread(_hydrate_git_review_diff, fixture, repo_root)
+            except ValueError as exc:
+                return EvalResult(
+                    fixture_id=fixture.id,
+                    fixture_type=fixture.type,
+                    **_variant_result_fields(selected_variant),
+                    schema_valid=False,
+                    expected_count=expected_count,
+                    stage_timings=stage_timings,
+                    error=f"Fixture review scope contract: {exc}",
+                )
             stage_started = perf_counter()
             diff_workspace_errors = await asyncio.to_thread(
                 _validate_diff_added_lines_against_workspace,

@@ -92,7 +92,12 @@ def test_formal_fixture_has_complete_expected_annotations(
     assert fixture.metadata.suite == "golden"
     assert fixture.metadata.reviewed is True
     assert workspace is not None
-    assert workspace.apply_fixture_diff is True
+    if workspace.review_scope == "legacy":
+        assert workspace.apply_fixture_diff is True
+    else:
+        assert workspace.checkout_sha == workspace.head_sha
+        assert workspace.diff_base_sha == workspace.base_sha
+        assert workspace.apply_fixture_diff is False
     assert fixture.input.diff_text.strip()
     if not fixture.expected.issues:
         assert fixture.expected.is_empty_annotation is True

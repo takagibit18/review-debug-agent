@@ -37,6 +37,7 @@ _FIXTURE_VALIDATION_MARKERS = (
     "expected issue",
     "expected location",
     "does not map to a changed line",
+    "fixture review scope contract",
 )
 _STOP_WORDS = {
     "a",
@@ -375,8 +376,22 @@ def load_core_fixtures(
             raise ValueError(
                 f"Core fixture must restore a full git workspace: {fixture.id}"
             )
-        if not fixture.input.diff_text.strip():
-            raise ValueError(f"Core fixture must contain a PR diff: {fixture.id}")
+        workspace = fixture.input.workspace
+        if workspace.review_scope == "legacy":
+            raise ValueError(
+                f"Core fixture must declare full_pr or partial_pr scope: {fixture.id}"
+            )
+        if workspace.review_scope == "partial_pr":
+            for gold in spec.gold_findings:
+                gold_path = gold.file.replace("\\", "/")
+                if not any(
+                    gold_path == path or gold_path.startswith(path.rstrip("/") + "/")
+                    for path in workspace.review_paths
+                ):
+                    raise ValueError(
+                        f"Gold finding {gold.id} is outside partial review scope "
+                        f"for {fixture.id}"
+                    )
         _validate_gold_alignment(spec, fixture)
         loaded.append((spec, fixture))
     return loaded
@@ -947,6 +962,8 @@ def render_core_report(report: CoreEvalReport) -> str:
             f"（{report.candidate_fixture_count} 个 candidate，{report.clean_control_count} 个 clean control）。"
         ),
         "> 该结果用于项目能力验证，不主张统计代表性或显著性。",
+        f"> Generated at：`{report.generated_at}`。",
+        "> Review input：按 fixture 声明的 `full_pr` / `partial_pr` scope 从 Git range 派生。",
         "",
         "## Infrastructure",
         "",
@@ -1098,11 +1115,40 @@ def _percent(value: float | None) -> str:
 
 
 def _main_failure_mode(report: CoreEvalReport) -> str:
-    candidate_runs = [
-        item
-        for item in report.runs
-        if item.role == "candidate" and item.valid_completion
-    ]
+    candidate_attempts = [item for item in report.runs if item.role == "candidate"]
+    candidate_runs = [item for item in candidate_attempts if item.valid_completion]
+    candidate_ids = {item.fixture_id for item in candidate_attempts}
+    missing_by_label: dict[CoreVariantLabel, int] = {
+        "baseline": 0,
+        "mergewarden": 0,
+    }
+    for label in missing_by_label:
+        missing_by_label[label] = sum(
+            not any(
+                item.fixture_id == fixture_id
+                and item.variant_label == label
+                and item.valid_completion
+                for item in candidate_attempts
+            )
+            for fixture_id in candidate_ids
+        )
+    missing_cells = sum(missing_by_label.values())
+    if missing_cells:
+        incomplete = [item for item in candidate_attempts if not item.valid_completion]
+        no_submit = sum(not item.result.submit_review_seen_any for item in incomplete)
+        hard_capped = sum(
+            "budget_hard_capped" in item.result.finish_reasons for item in incomplete
+        )
+        missing_summary = "、".join(
+            f"{label} {count} 个" for label, count in missing_by_label.items() if count
+        )
+        return (
+            f"{len(incomplete)}/{len(candidate_attempts)} 个 candidate attempts 未合法完成，"
+            f"其中 {no_submit} 个没有 submit_review，{hard_capped} 个在 hard token cap 后结束；"
+            f"{missing_summary} candidate fixtures 缺少 valid completion。当前首要问题是 "
+            "runtime reliability 与完整 PR 上下文的预算伸缩，而不是 semantic judge；"
+            "review quality A/B 暂不可比较。"
+        )
     raw_findings = sum(
         item.result.process_metrics.model_raw_issue_count for item in candidate_runs
     )
