@@ -212,6 +212,11 @@ FindingVerificationStatus = Literal[
     "needs_evidence",
     "downgraded",
 ]
+FindingCandidateKind = Literal[
+    "risk",
+    "filter_rescue",
+    "severity_calibration",
+]
 FindingVerificationReason = Literal[
     "evidence_not_found",
     "deterministic_evidence_invalid",
@@ -238,6 +243,8 @@ class FindingCandidate(BaseModel):
     claim: str
     evidence_locations: list[str] = Field(default_factory=list)
     originating_iteration: int = Field(ge=0)
+    candidate_kind: FindingCandidateKind = "risk"
+    source_issue_index: int = Field(default=0, ge=0)
 
 
 class FindingVerification(BaseModel):

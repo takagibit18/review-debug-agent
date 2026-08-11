@@ -146,6 +146,9 @@ class AgentOrchestrator:
         self._policy_rejected_issue_count = 0
         self._non_risk_issue_count = 0
         self._verifier_candidate_count = 0
+        self._risk_candidate_count = 0
+        self._filter_rescue_candidate_count = 0
+        self._severity_calibration_candidate_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0
@@ -297,14 +300,32 @@ class AgentOrchestrator:
             )
 
         severity_review = review_candidate_severities(response.report, request)
-        response.report = severity_review.report
         self._high_confidence_info_issue_count = (
             severity_review.high_confidence_info_count
         )
         self._severity_reviewed_count = severity_review.reviewed_count
-        self._severity_promoted_count = severity_review.promoted_count
-        candidates = build_candidates(response.report, iteration=self._iteration)
+        if self._finding_verifier_mode == "enforce":
+            self._severity_promoted_count = 0
+            candidates = build_candidates(
+                submitted_report,
+                iteration=self._iteration,
+                request=request,
+                include_boundary=True,
+            )
+        else:
+            response.report = severity_review.report
+            self._severity_promoted_count = severity_review.promoted_count
+            candidates = build_candidates(response.report, iteration=self._iteration)
         self._verifier_candidate_count = len(candidates)
+        self._risk_candidate_count = sum(
+            item.candidate_kind == "risk" for item in candidates
+        )
+        self._filter_rescue_candidate_count = sum(
+            item.candidate_kind == "filter_rescue" for item in candidates
+        )
+        self._severity_calibration_candidate_count = sum(
+            item.candidate_kind == "severity_calibration" for item in candidates
+        )
         evidence_bound_count = sum(
             1
             for item in candidates
@@ -331,6 +352,13 @@ class AgentOrchestrator:
                 "policy_rejected_issue_count": self._policy_rejected_issue_count,
                 "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
+                "risk_candidate_count": self._risk_candidate_count,
+                "filter_rescue_candidate_count": (
+                    self._filter_rescue_candidate_count
+                ),
+                "severity_calibration_candidate_count": (
+                    self._severity_calibration_candidate_count
+                ),
                 "evidence_bound_count": evidence_bound_count,
                 "structured_hypothesis_count": structured_hypothesis_count,
                 "evidence_complete_count": evidence_complete_count,
@@ -371,10 +399,15 @@ class AgentOrchestrator:
                 },
             )
             if self._finding_verifier_mode == "enforce":
-                response.report = apply_verifications(
-                    response.report,
-                    FindingVerificationBatch(),
-                    mode="enforce",
+                response.report = self._result_processor.merge_review_reports(
+                    [
+                        apply_verifications(
+                            response.report,
+                            FindingVerificationBatch(),
+                            mode="enforce",
+                            candidates=candidates,
+                        )
+                    ]
                 )
             if self._workflow_enforcement != "off":
                 self._fail_workflow_step(
@@ -524,6 +557,13 @@ class AgentOrchestrator:
                 "policy_rejected_issue_count": self._policy_rejected_issue_count,
                 "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
+                "risk_candidate_count": self._risk_candidate_count,
+                "filter_rescue_candidate_count": (
+                    self._filter_rescue_candidate_count
+                ),
+                "severity_calibration_candidate_count": (
+                    self._severity_calibration_candidate_count
+                ),
                 "accepted_count": accepted,
                 "verifier_accepted_count": accepted,
                 "rejected_count": rejected,
@@ -561,10 +601,15 @@ class AgentOrchestrator:
                 self._fail_workflow_step(
                     "semantic_verify_findings", "missing_verifier_verdict"
                 )
-        response.report = apply_verifications(
-            response.report,
-            batch,
-            mode=self._finding_verifier_mode,
+        response.report = self._result_processor.merge_review_reports(
+            [
+                apply_verifications(
+                    response.report,
+                    batch,
+                    mode=self._finding_verifier_mode,
+                    candidates=candidates,
+                )
+            ]
         )
         response = self._consolidate_verified_findings(
             response,
@@ -1774,6 +1819,9 @@ class AgentOrchestrator:
         self._policy_rejected_issue_count = 0
         self._non_risk_issue_count = 0
         self._verifier_candidate_count = 0
+        self._risk_candidate_count = 0
+        self._filter_rescue_candidate_count = 0
+        self._severity_calibration_candidate_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0

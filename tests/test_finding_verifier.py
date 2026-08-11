@@ -7,6 +7,7 @@ import importlib
 import json
 from pathlib import Path
 
+from src.analyzer.finding_schema import EvidenceProvenance, RepairIntent, SourceAnchor
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.context_state import ContextState
 from src.analyzer.schemas import AnalysisPlan, ReviewRequest
@@ -39,6 +40,138 @@ def test_build_candidates_uses_stable_ids_and_only_risk_findings() -> None:
     assert len(first[0].candidate_id) == 16
     assert first[0].issue.candidate_id == first[0].candidate_id
     assert first[0].originating_iteration == 2
+    assert first[0].candidate_kind == "risk"
+    assert first[0].source_issue_index == 0
+
+
+def test_build_candidates_routes_only_structured_boundary_risks() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    rescue = _structured_boundary_issue(Severity.WARNING, confidence=0.65)
+    calibration = _structured_boundary_issue(Severity.INFO, confidence=0.75)
+    optimization = _structured_boundary_issue(
+        Severity.INFO,
+        confidence=0.90,
+        evidence="`cache[key]` can be stored in a local variable.",
+        suggestion="Optional readability optimization for future maintenance.",
+    )
+    vague_future = _structured_boundary_issue(
+        Severity.WARNING,
+        confidence=0.65,
+        evidence="This might matter if a future caller changes the wrapper.",
+        suggestion="Consider revisiting this in the future.",
+    )
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+
+    candidates = module.build_candidates(
+        ReviewReport(
+            summary="review",
+            issues=[rescue, calibration, optimization, vague_future],
+        ),
+        iteration=3,
+        request=request,
+        include_boundary=True,
+    )
+
+    assert [item.candidate_kind for item in candidates] == [
+        "filter_rescue",
+        "severity_calibration",
+    ]
+    assert [item.source_issue_index for item in candidates] == [0, 1]
+
+
+def test_orchestrator_accepts_revised_boundary_calibration_and_rescue(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    schemas = importlib.import_module("src.analyzer.schemas")
+    monkeypatch.setenv("ROOT_CAUSE_CONSOLIDATION_ENABLED", "false")
+    monkeypatch.chdir(tmp_path)
+
+    class CalibratingVerifier:
+        def __init__(self) -> None:
+            self.kinds: list[str] = []
+
+        async def verify(self, candidates, request, state):  # type: ignore[no-untyped-def]
+            self.kinds = [item.candidate_kind for item in candidates]
+            return schemas.FindingVerificationBatch(
+                results=[
+                    schemas.FindingVerification(
+                        candidate_id=item.candidate_id,
+                        status="accepted",
+                        reason_codes=["verified"],
+                        rationale="The diff confirms the current fallback regression.",
+                        verified_evidence=["pkg/service.py:12"],
+                        revised_issue=item.issue.model_copy(
+                            update={
+                                "severity": Severity.WARNING,
+                                "confidence": 0.90,
+                                "suggestion": (
+                                    "Restore the fallback to prevent this current "
+                                    f"user-visible regression ({item.candidate_kind})."
+                                ),
+                            }
+                        ),
+                    )
+                    for item in candidates
+                ]
+            )
+
+    verifier = CalibratingVerifier()
+    orchestrator = AgentOrchestrator(
+        finding_verifier=verifier,
+        finding_verifier_mode="enforce",
+        review_workflow_enforcement="off",
+        review_diff_first_changed_files=False,
+    )
+    submitted = ReviewReport(
+        summary="review",
+        issues=[
+            _structured_boundary_issue(Severity.WARNING, confidence=0.65),
+            _structured_boundary_issue(Severity.INFO, confidence=0.75).model_copy(
+                update={"finding_id": "F-calibration"}
+            ),
+        ],
+    )
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        return AnalysisPlan(draft_review=submitted)
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+    response = asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(
+                repo_path=str(tmp_path),
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/pkg/service.py b/pkg/service.py\n"
+                    "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+                    "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+                ),
+            )
+        )
+    )
+
+    assert verifier.kinds == ["filter_rescue", "severity_calibration"]
+    assert len(response.report.issues) == 2
+    assert all(item.severity == Severity.WARNING for item in response.report.issues)
+    assert all(item.confidence == 0.90 for item in response.report.issues)
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
+    events = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    funnel = next(
+        event for event in events if event["event_type"] == "finding_candidates_built"
+    )
+    assert funnel["payload"]["filter_rescue_candidate_count"] == 1
+    assert funnel["payload"]["severity_calibration_candidate_count"] == 1
 
 
 def test_apply_verifications_is_fail_closed_in_enforce_mode() -> None:
@@ -137,6 +270,45 @@ def test_orchestrator_enforce_mode_removes_rejected_finding(
     assert any(event["event_type"] == "finding_candidates_built" for event in events)
     assert any(
         event["event_type"] == "finding_verification_completed" for event in events
+    )
+
+
+def _structured_boundary_issue(
+    severity: Severity,
+    *,
+    confidence: float,
+    evidence: str = "`return cache[key]` now bypasses the compatibility fallback.",
+    suggestion: str = "Restore the fallback to prevent a user-visible regression.",
+) -> ReviewIssue:
+    cause = EvidenceProvenance(
+        candidate_id="F-boundary",
+        retrieval_source="git_diff",
+        file="pkg/service.py",
+        line=12,
+        statement="The changed return bypasses the fallback.",
+    )
+    contract = cause.model_copy(
+        update={"statement": "Existing callers rely on the compatibility fallback."}
+    )
+    return ReviewIssue(
+        severity=severity,
+        location="pkg/service.py:12",
+        evidence=evidence,
+        suggestion=suggestion,
+        confidence=confidence,
+        schema_version="2.0",
+        finding_id="F-boundary",
+        primary_anchor=SourceAnchor(file="pkg/service.py", line=12),
+        observed_behavior="Current callers receive the raw cache lookup result.",
+        causal_mechanism="The changed return bypasses the existing fallback branch.",
+        violated_invariant="The compatibility fallback must remain available.",
+        repair_intent=RepairIntent(
+            action="Restore the fallback branch",
+            targets=["service.load"],
+            boundary="cache compatibility contract",
+        ),
+        cause_evidence=[cause],
+        contract_evidence=[contract],
     )
 
 

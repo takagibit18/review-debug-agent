@@ -11,7 +11,13 @@ from typing import Any
 from src.analyzer.context_state import ContextState
 from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.location import normalize_location
-from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
+from src.analyzer.output_formatter import (
+    ReviewIssue,
+    ReviewReport,
+    Severity,
+    has_specific_code_evidence,
+)
+from src.analyzer.review_policy import evaluate_issue_filter
 from src.analyzer.schemas import (
     FindingCandidate,
     FindingVerificationBatch,
@@ -55,6 +61,18 @@ _CONCRETE_RISK_PATTERN = re.compile(
     r"\bsilent(?:ly)?\s+(?:drop|drops|dropped|ignore|ignores|ignored|accept|accepts|accepted|"
     r"succeed|succeeds|succeeded)\b|\b(?:raise|raises|raised)\s+(?:an?\s+)?(?:unexpected\s+)?"
     r"exception\b",
+    re.IGNORECASE,
+)
+_CURRENT_FUNCTIONAL_RISK_PATTERN = re.compile(
+    r"\b(?:bug|regression|breaking|breaks?|compatibility|incorrect|wrong|failure|"
+    r"fails?|exception|crash|data loss|user-visible|behavior(?:al)? change|"
+    r"fallback|silently|drops?|truncat(?:e|es|ed|ion)|returns? .{0,80} instead)\b",
+    re.IGNORECASE,
+)
+_NON_RISK_BOUNDARY_PATTERN = re.compile(
+    r"\b(?:optimization|performance only|readability|maintainability|refactor|"
+    r"cleanup|style|naming|future[- ]only|in the future|if (?:a )?future|"
+    r"if later|could eventually|might eventually|hypothetical)\b",
     re.IGNORECASE,
 )
 
@@ -210,8 +228,24 @@ def validate_verifications_with_stats(
         valid = candidate is not None
         if verdict.status == "accepted":
             checked_count += 1
+            effective_issue = (
+                verdict.revised_issue
+                if verdict.revised_issue is not None
+                else candidate.issue
+                if candidate is not None
+                else None
+            )
+            if effective_issue is not None:
+                effective_issue = effective_issue.model_copy(
+                    update={"candidate_id": verdict.candidate_id}
+                )
+            requires_revision = bool(
+                candidate is not None
+                and candidate.candidate_kind
+                in {"filter_rescue", "severity_calibration"}
+            )
             candidate_location = normalize_location(
-                candidate.issue.location if candidate is not None else ""
+                effective_issue.location if effective_issue is not None else ""
             )
             locations = [
                 normalize_location(value) for value in verdict.verified_evidence
@@ -219,6 +253,10 @@ def validate_verifications_with_stats(
             context = contexts_by_id.get(verdict.candidate_id)
             valid = (
                 valid
+                and effective_issue is not None
+                and effective_issue.severity in RISK_SEVERITIES
+                and evaluate_issue_filter(effective_issue).passed
+                and (not requires_revision or verdict.revised_issue is not None)
                 and _location_intersects_changed_lines(candidate_location, changed)
                 and bool(locations)
                 and all(item.valid and item.line is not None for item in locations)
@@ -231,10 +269,14 @@ def validate_verifications_with_stats(
             if (
                 valid
                 and candidate is not None
-                and candidate.issue.is_structured_hypothesis
+                and effective_issue is not None
+                and effective_issue.is_structured_hypothesis
             ):
+                effective_candidate = candidate.model_copy(
+                    update={"issue": effective_issue}
+                )
                 valid = _structured_candidate_evidence_valid(
-                    candidate,
+                    effective_candidate,
                     context,
                     changed,
                 )
@@ -393,13 +435,39 @@ def build_candidates(
     report: ReviewReport,
     *,
     iteration: int,
+    request: ReviewRequest | None = None,
+    include_boundary: bool = False,
 ) -> list[FindingCandidate]:
-    """Build stable candidates for findings that can produce advisory risk comments."""
+    """Build stable risk and tightly bounded calibration candidates."""
     candidates: list[FindingCandidate] = []
-    for issue in report.issues:
-        if issue.severity not in RISK_SEVERITIES:
+    seen: set[str] = set()
+    changed = changed_new_lines_by_file(request.diff_text or "") if request else {}
+    for source_issue_index, issue in enumerate(report.issues):
+        candidate_kind = ""
+        decision = evaluate_issue_filter(issue)
+        if issue.severity in RISK_SEVERITIES:
+            if not include_boundary or decision.passed:
+                candidate_kind = "risk"
+            elif (
+                request is not None
+                and _boundary_issue_eligible(issue, changed)
+                and _confidence_only_filter_rejection(decision.reason_codes)
+            ):
+                candidate_kind = "filter_rescue"
+        elif (
+            include_boundary
+            and request is not None
+            and issue.severity == Severity.INFO
+            and _boundary_issue_eligible(issue, changed)
+            and _describes_current_functional_risk(issue)
+        ):
+            candidate_kind = "severity_calibration"
+        if not candidate_kind:
             continue
         candidate_id = _candidate_id(issue)
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
         issue.candidate_id = candidate_id
         if not issue.finding_id:
             issue.finding_id = "F-" + candidate_id[:12].upper()
@@ -411,9 +479,78 @@ def build_candidates(
                 claim=issue.suggestion.strip(),
                 evidence_locations=[issue.location] if issue.location.strip() else [],
                 originating_iteration=max(0, iteration),
+                candidate_kind=candidate_kind,
+                source_issue_index=source_issue_index,
             )
         )
     return candidates
+
+
+def _boundary_issue_eligible(
+    issue: ReviewIssue,
+    changed: dict[str, set[int]],
+) -> bool:
+    if not issue.is_structured_hypothesis or not has_specific_code_evidence(
+        issue.evidence
+    ):
+        return False
+    location = normalize_location(issue.location)
+    if not _location_intersects_changed_lines(location, changed):
+        return False
+    anchor = issue.primary_anchor
+    if anchor is None or anchor.line not in changed.get(anchor.file, set()):
+        return False
+    if (
+        not all(
+            value.strip()
+            for value in (
+                issue.observed_behavior,
+                issue.causal_mechanism,
+                issue.violated_invariant,
+                issue.repair_intent.action,
+                issue.repair_intent.boundary,
+            )
+        )
+        or not issue.repair_intent.targets
+        or not issue.cause_evidence
+        or not issue.contract_evidence
+    ):
+        return False
+    return True
+
+
+def _confidence_only_filter_rejection(reason_codes: tuple[str, ...]) -> bool:
+    reasons = set(reason_codes)
+    confidence_reasons = {
+        "critical_confidence_below_threshold",
+        "warning_confidence_below_standard_threshold",
+        "warning_confidence_below_relaxed_threshold",
+    }
+    blocking_non_confidence_reasons = {
+        "critical_evidence_not_specific",
+        "warning_evidence_not_specific",
+        "warning_risk_pattern_missing",
+    }
+    return bool(reasons & confidence_reasons) and not bool(
+        reasons & blocking_non_confidence_reasons
+    )
+
+
+def _describes_current_functional_risk(issue: ReviewIssue) -> bool:
+    claim = "\n".join(
+        (
+            issue.observed_behavior,
+            issue.causal_mechanism,
+            issue.violated_invariant,
+            issue.evidence,
+            issue.suggestion,
+            issue.impact,
+        )
+    )
+    return bool(
+        _CURRENT_FUNCTIONAL_RISK_PATTERN.search(claim)
+        and not _NON_RISK_BOUNDARY_PATTERN.search(claim)
+    )
 
 
 def apply_verifications(
@@ -421,6 +558,7 @@ def apply_verifications(
     batch: FindingVerificationBatch,
     *,
     mode: str,
+    candidates: list[FindingCandidate] | None = None,
 ) -> ReviewReport:
     """Apply verifier verdicts; enforce mode is fail closed for risk findings."""
     if mode != "enforce":
@@ -433,22 +571,72 @@ def apply_verifications(
                 )
         return copied
     verdicts = {item.candidate_id: item for item in batch.results}
+    candidates_by_id = {
+        item.candidate_id: item for item in candidates or []
+    }
     output: list[ReviewIssue] = []
+    seen_candidate_ids: set[str] = set()
     for issue in report.issues:
-        if issue.severity not in RISK_SEVERITIES:
+        candidate_id = issue.candidate_id or _candidate_id(issue)
+        candidate = candidates_by_id.get(candidate_id)
+        if candidate is not None:
+            seen_candidate_ids.add(candidate_id)
+        if (
+            issue.severity not in RISK_SEVERITIES
+            and (
+                candidate is None
+                or candidate.candidate_kind != "severity_calibration"
+            )
+        ):
             output.append(issue)
             continue
-        candidate_id = issue.candidate_id or _candidate_id(issue)
         verdict = verdicts.get(candidate_id)
+        if candidate is not None and candidate.candidate_kind == "severity_calibration":
+            if (
+                verdict is not None
+                and verdict.status == "accepted"
+                and verdict.revised_issue is not None
+                and verdict.revised_issue.severity in RISK_SEVERITIES
+            ):
+                output.append(
+                    _bind_verified_issue(verdict.revised_issue, candidate_id)
+                )
+            else:
+                output.append(issue)
+            continue
         if verdict is None:
             continue
         if verdict.status == "accepted":
-            output.append(issue.model_copy(update={"candidate_id": candidate_id}))
+            accepted_issue = verdict.revised_issue or issue
+            output.append(_bind_verified_issue(accepted_issue, candidate_id))
         elif verdict.status == "downgraded" and verdict.revised_issue is not None:
+            output.append(_bind_verified_issue(verdict.revised_issue, candidate_id))
+    for candidate in candidates or []:
+        if (
+            candidate.candidate_kind != "filter_rescue"
+            or candidate.candidate_id in seen_candidate_ids
+        ):
+            continue
+        verdict = verdicts.get(candidate.candidate_id)
+        if (
+            verdict is not None
+            and verdict.status == "accepted"
+            and verdict.revised_issue is not None
+            and verdict.revised_issue.severity in RISK_SEVERITIES
+        ):
             output.append(
-                verdict.revised_issue.model_copy(update={"candidate_id": candidate_id})
+                _bind_verified_issue(verdict.revised_issue, candidate.candidate_id)
             )
     return ReviewReport(summary=report.summary, issues=output)
+
+
+def _bind_verified_issue(issue: ReviewIssue, candidate_id: str) -> ReviewIssue:
+    return issue.model_copy(
+        update={
+            "candidate_id": candidate_id,
+            "finding_id": issue.finding_id or ("F-" + candidate_id[:12].upper()),
+        }
+    )
 
 
 def _candidate_id(issue: ReviewIssue) -> str:
