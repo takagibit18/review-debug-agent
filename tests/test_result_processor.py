@@ -9,6 +9,49 @@ from src.analyzer.output_formatter import (
     triage_review_report,
 )
 from src.analyzer.result_processor import ResultProcessor
+from src.analyzer.review_policy import evaluate_issue_filter
+
+
+def test_issue_filter_decision_explains_every_warning_rejection_reason() -> None:
+    decision = evaluate_issue_filter(
+        ReviewIssue(
+            severity=Severity.WARNING,
+            location="src/cache.py:8",
+            evidence="Looks suspicious.",
+            suggestion="Investigate this later.",
+            confidence=0.65,
+        )
+    )
+
+    assert decision.passed is False
+    assert decision.reason_codes == (
+        "warning_confidence_below_standard_threshold",
+        "warning_confidence_below_relaxed_threshold",
+        "warning_evidence_not_specific",
+        "warning_risk_pattern_missing",
+    )
+    assert decision.standard_threshold == 0.85
+    assert decision.relaxed_threshold == 0.70
+
+
+def test_issue_filter_decision_explains_relaxed_risk_warning_pass() -> None:
+    decision = evaluate_issue_filter(
+        ReviewIssue(
+            severity=Severity.WARNING,
+            location="src/cache.py:8",
+            evidence="`cache.clear()` now runs before every lookup.",
+            suggestion="This user-visible regression breaks cached reads.",
+            confidence=0.70,
+        )
+    )
+
+    assert decision.passed is True
+    assert decision.evidence_specific is True
+    assert decision.risk_pattern_matched is True
+    assert decision.reason_codes == (
+        "warning_confidence_below_standard_threshold",
+        "warning_relaxed_risk_policy_passed",
+    )
 
 
 def test_merge_review_reports_sorts_by_severity_priority() -> None:

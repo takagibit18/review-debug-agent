@@ -53,8 +53,18 @@ def test_validate_review_draft_uses_current_filter_thresholds(
     )
 
     assert result["issue_results"][0]["passes_current_filter"] is False
-    assert "increase confidence to at least 0.85" in result["issue_results"][0]["repair_hints"]
+    assert any(
+        "do not inflate confidence" in hint
+        for hint in result["issue_results"][0]["repair_hints"]
+    )
     assert result["issue_results"][1]["passes_current_filter"] is True
+    assert result["issue_results"][1]["filter_reason_codes"] == [
+        "warning_confidence_below_standard_threshold",
+        "warning_relaxed_risk_policy_passed",
+    ]
+    assert result["issue_results"][1]["standard_threshold"] == 0.85
+    assert result["issue_results"][1]["relaxed_threshold"] == 0.70
+    assert result["issue_results"][1]["risk_pattern_matched"] is True
     assert result["effective_issue_count"] == 1
 
 

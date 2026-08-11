@@ -13,7 +13,7 @@ from src.analyzer.review_policy import (
     MIN_CRITICAL_CONFIDENCE,
     MIN_RISK_WARNING_CONFIDENCE,
     MIN_WARNING_CONFIDENCE,
-    passes_issue_filter,
+    evaluate_issue_filter,
 )
 from src.tools.base import BaseTool, ToolSafety, ToolSpec
 from src.tools.review_context import ReviewToolContext
@@ -69,8 +69,9 @@ class ValidateReviewDraftTool(BaseTool):
                 "code or diff snippets, and whether the confidence meets the threshold "
                 "for the chosen severity level. Use this BEFORE submit_review — it gives "
                 "you deterministic policy feedback so you can fix location formatting "
-                "errors, raise confidence on borderline issues, and drop issues that would "
-                "not pass the output filter. This tool only validates policy compliance; "
+                "errors, gather missing evidence, recalibrate severity/confidence, and drop "
+                "issues that would not pass the output filter. Never raise confidence merely "
+                "to cross a threshold. This tool only validates policy compliance; "
                 "it does not judge whether your analysis is semantically correct and it "
                 "does not replace submit_review."
             ),
@@ -113,7 +114,8 @@ class ValidateReviewDraftTool(BaseTool):
         )
         location = normalize_location(issue.location)
         evidence_specific = has_specific_code_evidence(issue.evidence)
-        passes_filter = passes_issue_filter(issue)
+        filter_decision = evaluate_issue_filter(issue)
+        passes_filter = filter_decision.passed
         location_on_changed_line = self._location_on_changed_line(
             location.path,
             location.line,
@@ -134,14 +136,20 @@ class ValidateReviewDraftTool(BaseTool):
         if issue.severity == Severity.CRITICAL:
             if issue.confidence < MIN_CRITICAL_CONFIDENCE:
                 fail_reasons.append("confidence_below_critical_threshold")
-                repair_hints.append("increase confidence to at least 0.85")
+                repair_hints.append(
+                    "gather stronger evidence or lower severity; do not inflate confidence "
+                    "to cross 0.85"
+                )
             if not evidence_specific:
                 fail_reasons.append("evidence_not_specific")
                 repair_hints.append("add concrete diff or code evidence")
         elif issue.severity == Severity.WARNING and not passes_filter:
             if issue.confidence < MIN_RISK_WARNING_CONFIDENCE:
                 fail_reasons.append("confidence_below_warning_threshold")
-                repair_hints.append("increase confidence to at least 0.85")
+                repair_hints.append(
+                    "gather stronger evidence or keep the concern non-risk; do not inflate "
+                    "confidence"
+                )
             elif issue.confidence < MIN_WARNING_CONFIDENCE:
                 fail_reasons.append("warning_lacks_specific_risk_evidence")
                 repair_hints.append("add concrete diff evidence and describe the user-visible risk")
@@ -159,6 +167,10 @@ class ValidateReviewDraftTool(BaseTool):
             "location_on_changed_line": location_on_changed_line,
             "evidence_specific": evidence_specific,
             "passes_current_filter": passes_filter,
+            "filter_reason_codes": list(filter_decision.reason_codes),
+            "standard_threshold": filter_decision.standard_threshold,
+            "relaxed_threshold": filter_decision.relaxed_threshold,
+            "risk_pattern_matched": filter_decision.risk_pattern_matched,
             "fail_reasons": list(dict.fromkeys(fail_reasons)),
             "repair_hints": list(dict.fromkeys(repair_hints)),
         }

@@ -140,6 +140,68 @@ def test_orchestrator_enforce_mode_removes_rejected_finding(
     )
 
 
+def test_orchestrator_records_submitted_findings_before_policy_filter(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = AgentOrchestrator(
+        finding_verifier_mode="off",
+        review_workflow_enforcement="off",
+    )
+    submitted_issues = [
+        ReviewIssue(
+            severity=Severity.WARNING,
+            location="pkg/service.py:12",
+            evidence="Looks suspicious.",
+            suggestion="Investigate this later.",
+            confidence=0.65,
+        ),
+        ReviewIssue(
+            severity=Severity.INFO,
+            location="pkg/service.py:13",
+            evidence="`lookup()` could use a local variable.",
+            suggestion="Consider a small readability cleanup.",
+            confidence=0.40,
+        ),
+    ]
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        return AnalysisPlan(
+            draft_review=ReviewReport(summary="review", issues=submitted_issues)
+        )
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+    response = asyncio.run(
+        orchestrator.run_review(ReviewRequest(repo_path=str(tmp_path), diff_mode=True))
+    )
+
+    assert [issue.severity for issue in response.report.issues] == [Severity.INFO]
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
+    events = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    decisions = [
+        event for event in events if event["event_type"] == "finding_filter_decision"
+    ]
+    assert len(decisions) == 2
+    assert decisions[0]["payload"]["passed"] is False
+    assert decisions[0]["payload"]["reason_codes"] == [
+        "warning_confidence_below_standard_threshold",
+        "warning_confidence_below_relaxed_threshold",
+        "warning_evidence_not_specific",
+        "warning_risk_pattern_missing",
+    ]
+    funnel = next(
+        event for event in events if event["event_type"] == "finding_candidates_built"
+    )
+    assert funnel["payload"]["model_raw_issue_count"] == 2
+    assert funnel["payload"]["submitted_issue_count"] == 2
+    assert funnel["payload"]["policy_passed_issue_count"] == 1
+    assert funnel["payload"]["policy_rejected_issue_count"] == 1
+    assert funnel["payload"]["non_risk_issue_count"] == 1
+
+
 def test_orchestrator_does_not_revalidate_builtin_verifier_without_context(
     tmp_path: Path,
     monkeypatch,

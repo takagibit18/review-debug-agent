@@ -26,6 +26,7 @@ class EventType(str, Enum):
     PLAN_PARSED = "plan_parsed"
     TOOL_IO = "tool_io"
     FORMAT_RESULT = "format_result"
+    FINDING_FILTER_DECISION = "finding_filter_decision"
     FINDING_CANDIDATES_BUILT = "finding_candidates_built"
     FINDING_VERIFICATION_COMPLETED = "finding_verification_completed"
     FINDING_VERIFICATION_FAILED = "finding_verification_failed"

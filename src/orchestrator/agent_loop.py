@@ -28,6 +28,7 @@ from src.analyzer.finding_verifier import (
 )
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.review_policy import evaluate_issue_filter
 from src.analyzer.result_processor import ResultProcessor
 from src.analyzer.root_cause import RootCauseConsolidator
 from src.analyzer.schemas import (
@@ -136,6 +137,10 @@ class AgentOrchestrator:
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
+        self._submitted_issue_count = 0
+        self._policy_passed_issue_count = 0
+        self._policy_rejected_issue_count = 0
+        self._non_risk_issue_count = 0
         self._verifier_candidate_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
@@ -260,6 +265,33 @@ class AgentOrchestrator:
         request: ReviewRequest,
         state: ContextState,
     ) -> ReviewResponse:
+        submitted_report = (
+            self._last_plan.draft_review
+            if self._last_plan is not None and self._last_plan.draft_review is not None
+            else response.report
+        )
+        filter_decisions = [
+            evaluate_issue_filter(issue) for issue in submitted_report.issues
+        ]
+        self._model_raw_issue_count = len(submitted_report.issues)
+        self._submitted_issue_count = self._model_raw_issue_count
+        self._policy_passed_issue_count = sum(
+            decision.passed for decision in filter_decisions
+        )
+        self._policy_rejected_issue_count = (
+            self._submitted_issue_count - self._policy_passed_issue_count
+        )
+        self._non_risk_issue_count = sum(
+            decision.severity.value not in {"critical", "warning"}
+            for decision in filter_decisions
+        )
+        for original_index, decision in enumerate(filter_decisions):
+            self._record_event(
+                EventType.FINDING_FILTER_DECISION,
+                "filter_findings",
+                decision.event_payload(original_index=original_index),
+            )
+
         severity_review = review_candidate_severities(response.report, request)
         response.report = severity_review.report
         self._high_confidence_info_issue_count = (
@@ -268,7 +300,6 @@ class AgentOrchestrator:
         self._severity_reviewed_count = severity_review.reviewed_count
         self._severity_promoted_count = severity_review.promoted_count
         candidates = build_candidates(response.report, iteration=self._iteration)
-        self._model_raw_issue_count = len(response.report.issues)
         self._verifier_candidate_count = len(candidates)
         evidence_bound_count = sum(
             1
@@ -291,6 +322,10 @@ class AgentOrchestrator:
             {
                 "candidate_count": len(candidates),
                 "model_raw_issue_count": self._model_raw_issue_count,
+                "submitted_issue_count": self._submitted_issue_count,
+                "policy_passed_issue_count": self._policy_passed_issue_count,
+                "policy_rejected_issue_count": self._policy_rejected_issue_count,
+                "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "evidence_bound_count": evidence_bound_count,
                 "structured_hypothesis_count": structured_hypothesis_count,
@@ -480,6 +515,10 @@ class AgentOrchestrator:
             {
                 "candidate_count": len(candidates),
                 "model_raw_issue_count": self._model_raw_issue_count,
+                "submitted_issue_count": self._submitted_issue_count,
+                "policy_passed_issue_count": self._policy_passed_issue_count,
+                "policy_rejected_issue_count": self._policy_rejected_issue_count,
+                "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "accepted_count": accepted,
                 "verifier_accepted_count": accepted,
@@ -873,6 +912,10 @@ class AgentOrchestrator:
         summary.update(
             {
                 "model_raw_issue_count": self._model_raw_issue_count,
+                "submitted_issue_count": self._submitted_issue_count,
+                "policy_passed_issue_count": self._policy_passed_issue_count,
+                "policy_rejected_issue_count": self._policy_rejected_issue_count,
+                "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "verifier_accepted_count": self._verifier_accepted_count,
                 "verifier_rejected_count": self._verifier_rejected_count,
@@ -1684,6 +1727,10 @@ class AgentOrchestrator:
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
+        self._submitted_issue_count = 0
+        self._policy_passed_issue_count = 0
+        self._policy_rejected_issue_count = 0
+        self._non_risk_issue_count = 0
         self._verifier_candidate_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
