@@ -203,6 +203,15 @@ def test_orchestrator_accepts_revised_boundary_calibration_and_rescue(
     )
     assert funnel["payload"]["filter_rescue_candidate_count"] == 1
     assert funnel["payload"]["severity_calibration_candidate_count"] == 1
+    completed_funnel = next(
+        event for event in events if event["event_type"] == "finding_funnel_completed"
+    )
+    assert completed_funnel["payload"]["submitted_finding_count"] == 2
+    assert completed_funnel["payload"]["calibration_rescue_candidate_count"] == 2
+    assert completed_funnel["payload"]["pre_verifier_rejected_count"] == 0
+    assert completed_funnel["payload"]["semantic_rejected_count"] == 0
+    assert completed_funnel["payload"]["deterministic_rejected_count"] == 0
+    assert completed_funnel["payload"]["final_risk_finding_count"] == 2
 
 
 def test_apply_verifications_is_fail_closed_in_enforce_mode() -> None:

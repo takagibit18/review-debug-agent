@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from eval.runner import run_single
 from eval.schemas import EvalResult, EvalVariant, Fixture
+from src.analyzer.finding_funnel import FindingFunnel
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import ReviewIssue, Severity
 from src.config import get_settings
@@ -319,6 +320,7 @@ class CoreVariantMetrics(BaseModel):
     variant_id: str
     quality: CoreQualityMetrics
     reliability: CoreReliabilityMetrics
+    candidate_funnel: FindingFunnel = Field(default_factory=FindingFunnel)
 
 
 class CoreRuntimeContract(BaseModel):
@@ -965,6 +967,13 @@ def _aggregate_variant_metrics(
             item.runtime_status == "runtime_error" for item in selected
         ),
     )
+    candidate_funnel = FindingFunnel.sum(
+        [
+            item.result.process_metrics.finding_funnel
+            for item in selected
+            if item.valid_completion and item.role == "candidate"
+        ]
+    )
     return CoreVariantMetrics(
         label=variant.label,
         variant_id=variant.id,
@@ -983,6 +992,7 @@ def _aggregate_variant_metrics(
             false_findings_per_pr=false_total / len(valid) if valid else 0.0,
         ),
         reliability=reliability,
+        candidate_funnel=candidate_funnel,
     )
 
 
@@ -1018,7 +1028,7 @@ def render_core_report(report: CoreEvalReport) -> str:
             f"{report.runtime_contract.agent_max_tool_calls} tool calls，"
             f"{report.runtime_contract.token_budget}/{report.runtime_contract.token_hard_budget} token budget，"
             f"{report.runtime_contract.final_submit_reserve_tokens} final-submit reserve，"
-            f"{report.runtime_contract.final_submit_prompt_token_budget} finalize prompt-context tokens锛?"
+            f"{report.runtime_contract.final_submit_prompt_token_budget} finalize prompt-context tokens，"
             f"{report.runtime_contract.final_submit_feedback_token_budget} retained-evidence tokens"
         ),
         "",
@@ -1065,6 +1075,48 @@ def render_core_report(report: CoreEvalReport) -> str:
             "| Validator failures | "
             f"{baseline.reliability.validator_failures} | "
             f"{mergewarden.reliability.validator_failures} |"
+        ),
+        "",
+        "## Candidate Finding Funnel",
+        "",
+        "Counts cover valid candidate runs only; missing legacy fields deserialize as zero.",
+        "",
+        "| Stage | Baseline | MergeWarden |",
+        "|---|---:|---:|",
+        (
+            "| No finding submitted | "
+            f"{baseline.candidate_funnel.no_finding_run_count} | "
+            f"{mergewarden.candidate_funnel.no_finding_run_count} |"
+        ),
+        (
+            "| Non-risk not routed | "
+            f"{baseline.candidate_funnel.non_risk_not_routed_count} | "
+            f"{mergewarden.candidate_funnel.non_risk_not_routed_count} |"
+        ),
+        (
+            "| Pre-verifier rejected | "
+            f"{baseline.candidate_funnel.pre_verifier_rejected_count} | "
+            f"{mergewarden.candidate_funnel.pre_verifier_rejected_count} |"
+        ),
+        (
+            "| Calibration / rescue routed | "
+            f"{baseline.candidate_funnel.calibration_rescue_candidate_count} | "
+            f"{mergewarden.candidate_funnel.calibration_rescue_candidate_count} |"
+        ),
+        (
+            "| Semantic rejected | "
+            f"{baseline.candidate_funnel.semantic_rejected_count} | "
+            f"{mergewarden.candidate_funnel.semantic_rejected_count} |"
+        ),
+        (
+            "| Deterministic rejected | "
+            f"{baseline.candidate_funnel.deterministic_rejected_count} | "
+            f"{mergewarden.candidate_funnel.deterministic_rejected_count} |"
+        ),
+        (
+            "| Final risk findings | "
+            f"{baseline.candidate_funnel.final_risk_finding_count} | "
+            f"{mergewarden.candidate_funnel.final_risk_finding_count} |"
         ),
         "",
         "## Per-fixture comparison",
@@ -1191,33 +1243,39 @@ def _main_failure_mode(report: CoreEvalReport) -> str:
             "runtime reliability 与完整 PR 上下文的预算伸缩，而不是 semantic judge；"
             "review quality A/B 暂不可比较。"
         )
-    raw_findings = sum(
-        item.result.process_metrics.model_raw_issue_count for item in candidate_runs
-    )
-    filtered_runs = sum(
-        item.result.process_metrics.model_raw_issue_count > 0
-        and item.result.process_metrics.final_effective_issue_count == 0
-        for item in candidate_runs
-    )
-    semantic_rejections = sum(
-        item.result.process_metrics.raw_verifier_rejected_count
-        for item in candidate_runs
-    )
-    deterministic_rejections = sum(
-        item.result.process_metrics.deterministic_evidence_rejected_count
-        for item in candidate_runs
-    )
-    if raw_findings and filtered_runs:
-        return (
-            f"{len(candidate_runs)} 个 valid candidate runs 共提出 {raw_findings} 条 raw findings，"
-            f"但其中 {filtered_runs} 个 runs 在最终输出前被过滤；语义 verifier 拒绝 "
-            f"{semantic_rejections} 条，deterministic evidence gate 拒绝 "
-            f"{deterministic_rejections} 条。当前首要问题是 verifier/evidence 链造成的 recall loss，"
-            "而不是 workspace、completion 或 semantic judge failure。"
-        )
     if not candidate_runs:
         return "Candidate runs 没有合法完成，当前首要问题是 runtime reliability。"
-    return "当前 candidate runs 没有形成可归纳的单一 failure mode。"
+    combined = FindingFunnel.sum(
+        [item.result.process_metrics.finding_funnel for item in candidate_runs]
+    )
+    stages = {
+        "no finding submitted": combined.no_finding_run_count,
+        "non-risk not routed": combined.non_risk_not_routed_count,
+        "pre-verifier rejected": combined.pre_verifier_rejected_count,
+        "semantic rejected": combined.semantic_rejected_count,
+        "deterministic rejected": combined.deterministic_rejected_count,
+    }
+    stage_summary = ", ".join(f"{name}={count}" for name, count in stages.items())
+    if combined.final_risk_finding_count:
+        return (
+            f"Candidate funnel: {stage_summary}, calibration/rescue routed="
+            f"{combined.calibration_rescue_candidate_count}, final risk="
+            f"{combined.final_risk_finding_count}. Risk reached final output; any remaining "
+            "gold miss is attributable after the funnel rather than to an unspecified "
+            "pre-verifier disappearance."
+        )
+    primary_stage, primary_count = max(stages.items(), key=lambda item: item[1])
+    if primary_count:
+        return (
+            f"Candidate funnel: {stage_summary}, calibration/rescue routed="
+            f"{combined.calibration_rescue_candidate_count}, final risk=0. The primary "
+            f"zeroing stage is `{primary_stage}` ({primary_count}); the report no longer "
+            "combines distinct pre-verifier, semantic, and deterministic losses."
+        )
+    return (
+        "Candidate funnel contains no attributed loss and no final risk finding; inspect "
+        "the run event logs because legacy or incomplete telemetry cannot explain the miss."
+    )
 
 
 def _readme_conclusion(report: CoreEvalReport) -> str:

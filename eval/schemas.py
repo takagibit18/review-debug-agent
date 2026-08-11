@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from src.analyzer.context_mode import ReviewContextMode
+from src.analyzer.finding_funnel import FindingFunnel
 from src.analyzer.output_formatter import Severity
 
 FixtureType = Literal["review", "debug"]
@@ -358,6 +359,7 @@ class ReviewProcessMetrics(BaseModel):
     final_root_cause_count: int = Field(default=0, ge=0)
     finding_inflation_ratio: float = Field(default=0.0, ge=0.0)
     event_log_status: Literal["ok", "missing", "parse_error"] = "missing"
+    finding_funnel: FindingFunnel = Field(default_factory=FindingFunnel)
 
     @property
     def evidence_binding_rate(self) -> float:
@@ -533,6 +535,7 @@ class MetricSummary(BaseModel):
     workflow_filtered_issue_count: int = Field(default=0, ge=0)
     final_effective_issue_count: int = Field(default=0, ge=0)
     workflow_invalid_run_count: int = Field(default=0, ge=0)
+    finding_funnel: FindingFunnel = Field(default_factory=FindingFunnel)
     human_acceptability_note: str = Field(
         default="Manual review template generated; scores are filled offline."
     )
@@ -694,7 +697,7 @@ def _aggregate_structural_metrics(
 
 def _aggregate_process_metrics(
     results: list[EvalResult],
-) -> dict[str, int | float]:
+) -> dict[str, Any]:
     raw_issues = sum(item.process_metrics.model_raw_issue_count for item in results)
     verifier_candidates = sum(
         item.process_metrics.verifier_candidate_count for item in results
@@ -781,6 +784,9 @@ def _aggregate_process_metrics(
         * item.process_metrics.consolidator_block_count
         for item in results
     )
+    finding_funnel = FindingFunnel.sum(
+        [item.process_metrics.finding_funnel for item in results]
+    )
     return {
         "model_raw_issue_count": raw_issues,
         "verifier_candidate_count": verifier_candidates,
@@ -798,6 +804,7 @@ def _aggregate_process_metrics(
         "workflow_filtered_issue_count": filtered,
         "final_effective_issue_count": final_effective,
         "workflow_invalid_run_count": invalid_runs,
+        "finding_funnel": finding_funnel,
         "evidence_binding_rate": evidence_bound / candidates if candidates else 1.0,
         "verifier_accept_rate": accepted / candidates if candidates else 0.0,
         "verifier_reject_rate": rejected / candidates if candidates else 0.0,

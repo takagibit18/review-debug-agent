@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from eval.core_eval import (
+    CoreEvalReport,
     CoreFixtureSpec,
     CoreRunRecord,
     GoldFinding,
@@ -16,7 +17,8 @@ from eval.core_eval import (
     match_review_findings,
     render_core_report,
 )
-from eval.schemas import EvalResult
+from eval.schemas import EvalResult, ReviewProcessMetrics
+from src.analyzer.finding_funnel import FindingFunnel
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "eval/core_eval_v1.yaml"
@@ -358,3 +360,84 @@ def test_report_prioritizes_missing_candidate_completions_over_quality_filters()
     assert "mergewarden 1 个 candidate fixtures 缺少 valid completion" in markdown
     assert "runtime reliability 与完整 PR 上下文的预算伸缩" in markdown
     assert "review quality A/B 暂不可比较" in markdown
+
+
+def test_core_report_aggregates_candidate_funnel_by_variant() -> None:
+    config = load_core_config(CONFIG_PATH)
+    candidate_spec = config.fixtures[0]
+    baseline = next(item for item in config.variants if item.label == "baseline")
+    mergewarden = next(item for item in config.variants if item.label == "mergewarden")
+    baseline_result = _result(raw_output=_raw()).model_copy(
+        update={
+            "process_metrics": ReviewProcessMetrics(
+                finding_funnel=FindingFunnel(no_finding_run_count=1)
+            )
+        }
+    )
+    mergewarden_result = _result(raw_output=_raw(_issue())).model_copy(
+        update={
+            "process_metrics": ReviewProcessMetrics(
+                finding_funnel=FindingFunnel(
+                    submitted_finding_count=2,
+                    non_risk_not_routed_count=1,
+                    severity_calibration_candidate_count=1,
+                    calibration_rescue_candidate_count=1,
+                    semantic_rejected_count=1,
+                    final_risk_finding_count=1,
+                )
+            )
+        }
+    )
+    report = build_core_report_from_runs(
+        config,
+        [
+            assess_run(candidate_spec, baseline, baseline_result, attempt=1),
+            assess_run(candidate_spec, mergewarden, mergewarden_result, attempt=1),
+        ],
+    )
+    by_label = {item.label: item for item in report.variants}
+
+    assert by_label["baseline"].candidate_funnel.no_finding_run_count == 1
+    assert by_label["mergewarden"].candidate_funnel.submitted_finding_count == 2
+    assert by_label["mergewarden"].candidate_funnel.non_risk_not_routed_count == 1
+    assert (
+        by_label["mergewarden"].candidate_funnel.calibration_rescue_candidate_count
+        == 1
+    )
+    assert by_label["mergewarden"].candidate_funnel.semantic_rejected_count == 1
+    assert by_label["mergewarden"].candidate_funnel.final_risk_finding_count == 1
+    markdown = render_core_report(report)
+    assert "## Candidate Finding Funnel" in markdown
+    assert "| No finding submitted | 1 | 0 |" in markdown
+    assert "| Calibration / rescue routed | 0 | 1 |" in markdown
+    assert "| Final risk findings | 0 | 1 |" in markdown
+    assert "Risk reached final output" in markdown
+
+
+def test_core_report_deserializes_legacy_payload_without_funnel_fields() -> None:
+    config = load_core_config(CONFIG_PATH)
+    candidate_spec = config.fixtures[0]
+    records = [
+        assess_run(
+            candidate_spec,
+            variant,
+            _result(raw_output=_raw()),
+            attempt=1,
+        )
+        for variant in config.variants
+    ]
+    payload = build_core_report_from_runs(config, records).model_dump()
+    for variant in payload["variants"]:
+        variant.pop("candidate_funnel", None)
+    for run in payload["runs"]:
+        run["result"]["process_metrics"].pop("finding_funnel", None)
+
+    restored = CoreEvalReport.model_validate(payload)
+
+    assert all(
+        item.candidate_funnel == FindingFunnel() for item in restored.variants
+    )
+    assert all(
+        item.result.process_metrics.finding_funnel == FindingFunnel()
+        for item in restored.runs
+    )

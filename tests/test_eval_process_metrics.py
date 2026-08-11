@@ -56,6 +56,23 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
             },
         },
         {
+            "event_type": "finding_funnel_completed",
+            "phase": "finding_funnel",
+            "payload": {
+                "submitted_finding_count": 4,
+                "no_finding_run_count": 0,
+                "non_risk_not_routed_count": 1,
+                "pre_verifier_rejected_count": 0,
+                "risk_candidate_count": 1,
+                "filter_rescue_candidate_count": 1,
+                "severity_calibration_candidate_count": 1,
+                "calibration_rescue_candidate_count": 2,
+                "semantic_rejected_count": 1,
+                "deterministic_rejected_count": 1,
+                "final_risk_finding_count": 1,
+            },
+        },
+        {
             "event_type": "tool_io",
             "phase": "execute_tools",
             "payload": {"deduplicated": True},
@@ -94,6 +111,12 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
     assert metrics.final_effective_issue_count == 1
     assert metrics.workflow_invalid is True
     assert metrics.workflow_missing_steps == ["inspect_changed_context"]
+    assert metrics.finding_funnel.submitted_finding_count == 4
+    assert metrics.finding_funnel.non_risk_not_routed_count == 1
+    assert metrics.finding_funnel.calibration_rescue_candidate_count == 2
+    assert metrics.finding_funnel.semantic_rejected_count == 1
+    assert metrics.finding_funnel.deterministic_rejected_count == 1
+    assert metrics.finding_funnel.final_risk_finding_count == 1
 
 
 def test_eval_result_serializes_zero_value_process_metrics() -> None:
@@ -136,6 +159,14 @@ def test_metric_summary_aggregates_process_metrics() -> None:
             workflow_filtered_issue_count=1,
             final_effective_issue_count=1,
             workflow_invalid=True,
+            finding_funnel={
+                "submitted_finding_count": 3,
+                "pre_verifier_rejected_count": 1,
+                "calibration_rescue_candidate_count": 1,
+                "semantic_rejected_count": 1,
+                "deterministic_rejected_count": 1,
+                "final_risk_finding_count": 1,
+            },
         ),
     )
 
@@ -161,6 +192,12 @@ def test_metric_summary_aggregates_process_metrics() -> None:
     assert summary.workflow_filtered_issue_count == 1
     assert summary.final_effective_issue_count == 1
     assert summary.workflow_invalid_run_count == 1
+    assert summary.finding_funnel.submitted_finding_count == 3
+    assert summary.finding_funnel.pre_verifier_rejected_count == 1
+    assert summary.finding_funnel.calibration_rescue_candidate_count == 1
+    assert summary.finding_funnel.semantic_rejected_count == 1
+    assert summary.finding_funnel.deterministic_rejected_count == 1
+    assert summary.finding_funnel.final_risk_finding_count == 1
 
 
 def test_compare_reports_rejects_quality_and_cost_regression() -> None:

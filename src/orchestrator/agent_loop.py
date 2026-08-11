@@ -149,6 +149,8 @@ class AgentOrchestrator:
         self._risk_candidate_count = 0
         self._filter_rescue_candidate_count = 0
         self._severity_calibration_candidate_count = 0
+        self._semantic_rejected_count = 0
+        self._deterministic_rejected_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0
@@ -235,6 +237,7 @@ class AgentOrchestrator:
             0.0, verifier_total - self._consolidation_latency_seconds
         )
         response = self._finalize_review_workflow(response, state)
+        self._record_finding_funnel(response)
         self._record_review_telemetry(state)
         self._close_event_log()
         return response
@@ -389,6 +392,8 @@ class AgentOrchestrator:
         if verifier is None and self._model_client is not None:
             verifier = FindingVerifier(self._model_client)
         if verifier is None:
+            if self._finding_verifier_mode == "enforce":
+                self._semantic_rejected_count = len(candidates)
             self._record_event(
                 EventType.FINDING_VERIFICATION_FAILED,
                 "verify_findings",
@@ -542,6 +547,8 @@ class AgentOrchestrator:
             item.status == "needs_evidence" for item in raw_batch.results
         )
         raw_downgraded = sum(item.status == "downgraded" for item in raw_batch.results)
+        self._semantic_rejected_count = max(0, len(candidates) - raw_accepted)
+        self._deterministic_rejected_count = validation_stats.rejected_count
         self._verifier_accepted_count = accepted
         self._verifier_rejected_count = rejected
         self._verifier_needs_evidence_count = needs_evidence
@@ -583,6 +590,8 @@ class AgentOrchestrator:
                 "deterministic_evidence_checked_count": validation_stats.checked_count,
                 "deterministic_evidence_passed_count": validation_stats.passed_count,
                 "deterministic_evidence_rejected_count": validation_stats.rejected_count,
+                "semantic_rejected_count": self._semantic_rejected_count,
+                "deterministic_rejected_count": self._deterministic_rejected_count,
                 "mode": self._finding_verifier_mode,
                 "reason_codes": [
                     code for item in batch.results for code in item.reason_codes
@@ -1822,6 +1831,8 @@ class AgentOrchestrator:
         self._risk_candidate_count = 0
         self._filter_rescue_candidate_count = 0
         self._severity_calibration_candidate_count = 0
+        self._semantic_rejected_count = 0
+        self._deterministic_rejected_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0
@@ -2283,6 +2294,47 @@ class AgentOrchestrator:
             "fallback_reason": graph.get("fallback_reason", ""),
         }
         self._record_event(EventType.PHASE_END, "review_complete", payload)
+
+    def _record_finding_funnel(self, response: ReviewResponse) -> None:
+        """Emit one mutually inspectable finding funnel after all output gates."""
+
+        calibration_rescue = (
+            self._filter_rescue_candidate_count
+            + self._severity_calibration_candidate_count
+        )
+        payload = {
+            "submitted_finding_count": self._submitted_issue_count,
+            "no_finding_run_count": int(self._submitted_issue_count == 0),
+            "non_risk_not_routed_count": max(
+                0,
+                self._non_risk_issue_count
+                - self._severity_calibration_candidate_count,
+            ),
+            "pre_verifier_rejected_count": max(
+                0,
+                self._policy_rejected_issue_count
+                - self._filter_rescue_candidate_count,
+            ),
+            "risk_candidate_count": self._risk_candidate_count,
+            "filter_rescue_candidate_count": self._filter_rescue_candidate_count,
+            "severity_calibration_candidate_count": (
+                self._severity_calibration_candidate_count
+            ),
+            "calibration_rescue_candidate_count": calibration_rescue,
+            "semantic_rejected_count": self._semantic_rejected_count,
+            "deterministic_rejected_count": self._deterministic_rejected_count,
+            "final_risk_finding_count": sum(
+                issue.severity.value in {"critical", "warning"}
+                for issue in response.report.issues
+            ),
+            "final_effective_issue_count": len(response.report.issues),
+            "mode": self._finding_verifier_mode,
+        }
+        self._record_event(
+            EventType.FINDING_FUNNEL_COMPLETED,
+            "finding_funnel",
+            payload,
+        )
 
     @staticmethod
     def _tool_error_hint(*, tool_name: str, message: str) -> dict[str, Any]:
