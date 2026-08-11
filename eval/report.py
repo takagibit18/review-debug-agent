@@ -12,6 +12,10 @@ from eval.diagnostics import build_eval_diagnostics
 from eval.schemas import EvalReport
 
 
+def _optional_percent(value: float | None) -> str:
+    return f"{value:.2%}" if value is not None else "n/a"
+
+
 def save_report_json(
     report: EvalReport,
     output_dir: str | Path = Path("eval") / "outputs",
@@ -55,7 +59,38 @@ def render_report(
     summary.add_row(
         "Mean False Positive Rate", f"{report.metrics.mean_false_positive_rate:.2%}"
     )
+    summary.add_row("Overall Recall", _optional_percent(report.metrics.overall_recall))
+    summary.add_row("Precision", _optional_percent(report.metrics.precision))
+    summary.add_row("Local Recall", _optional_percent(report.metrics.local_recall))
+    summary.add_row(
+        "Direct Cross-file Recall",
+        _optional_percent(report.metrics.direct_cross_file_recall),
+    )
+    summary.add_row(
+        "Multi-hop Recall", _optional_percent(report.metrics.multi_hop_recall)
+    )
+    summary.add_row(
+        "Graph-observable Recall",
+        _optional_percent(report.metrics.graph_observable_recall),
+    )
+    summary.add_row(
+        "Graph-unobservable Recall",
+        _optional_percent(report.metrics.graph_unobservable_recall),
+    )
+    summary.add_row(
+        "Structural Annotation Coverage",
+        _optional_percent(report.metrics.structural_annotation_coverage),
+    )
+    summary.add_row(
+        "Graph Observability Annotation Coverage",
+        _optional_percent(report.metrics.graph_observability_annotation_coverage),
+    )
     summary.add_row("Root-Cause Coverage", f"{report.metrics.root_cause_coverage:.2%}")
+    summary.add_row(
+        "Root-Cause Recall", _optional_percent(report.metrics.root_cause_recall)
+    )
+    summary.add_row("Over-Merge Count", str(report.metrics.over_merge_count))
+    summary.add_row("Under-Merge Count", str(report.metrics.under_merge_count))
     summary.add_row("Over-Merge Rate", f"{report.metrics.over_merge_rate:.2%}")
     summary.add_row("Under-Merge Rate", f"{report.metrics.under_merge_rate:.2%}")
     summary.add_row(

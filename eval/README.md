@@ -1,5 +1,46 @@
 # 评测方案
 
+## 当前主路径：Core Eval v1
+
+当前阶段使用一个 **small curated evaluation set** 回答两个问题：
+
+1. MergeWarden 是否比冻结配置的简单 `agent_search` baseline 更能发现真实 PR 问题；
+2. 两个 variant 是否能可靠完成审查。
+
+Core Eval v1 固定为 5 个 real-world full-workspace fixtures：
+
+- Candidate：`pydantic#12117`、`pytest#9350`，各有一个人工复核、结构化的 `gold_findings`。
+- Clean controls：`pydantic#12568`、`pydantic#12590`、`pytest#13969`，沿用已完成 full-workspace replay 的零问题样本。
+
+Core fixture 的 review input 不再信任 JSON 中可能过期的 `diff_text` 快照。`review_scope=full_pr` 要求 `checkout_sha=head_sha`、`diff_base_sha=base_sha`、禁止 fixture overlay，并在每次运行时直接从 Git 派生完整 `base..head` diff。确需审查独立子 patch 时只能使用 `review_scope=partial_pr`，同时显式填写安全的仓库相对路径和 `scope_reason`；candidate 的所有 gold 路径必须位于声明 scope 内。历史 fixture 保持 `legacy` 行为，但不能进入 Core set。
+
+配置位于 [`core_eval_v1.yaml`](core_eval_v1.yaml)。A/B 只比较：
+
+- A：`A-agent-search`，graph disabled；
+- B：`B-mergewarden`，当前 `graph_hybrid` 路径，每次使用 cold index，避免隐藏 cache 状态。
+
+两边使用相同 model、temperature、4096 output-token cap、12k prompt-context budget、60k/80k soft/hard cumulative token budget、iteration/tool budget、fixture 与 judge。这组边界允许 graph-hybrid 完成一次上下文探索和一次结构化提交，同时避免无限扩张上下文；应用的日常交互默认值不受影响。默认每个 fixture × variant 只跑 1 次；只有 placeholder、incomplete、validator failure 或 runtime error 才重试，最多 3 次。
+
+```bash
+# 只检查 5 个 fixture 的 reviewed/full-workspace/review-scope/gold 声明，不调用模型
+python -m eval.core_eval audit
+
+# 运行 5 × 2 的主 A/B；仅不稳定 case 会额外重试
+python -m eval.core_eval run
+
+# 从已有机器报告重新渲染
+python -m eval.core_eval report --input eval/outputs/core-eval-v1.json
+```
+
+Core report 将两个维度分开：
+
+- Review Quality（只统计 valid completions）：Precision、Recall、F1、High-severity Recall（有数据时）与 False findings / PR。
+- Runtime Reliability（统计全部 attempts）：valid completion rate、placeholder/incomplete、workspace failure、fixture validation failure 与 output validator failure。
+
+2026-08-11 的首个 Git-derived full-PR 新基线包含 15 个 attempts。Baseline valid completion rate 为 83.3%，MergeWarden 为 33.3%；MergeWarden 在两个 positive fixtures 上 6/6 attempts 都在 hard token cap 后、提交 review 前结束，因此本轮不能比较 A/B review quality。该结果按原预算保留，不通过临时放宽 token cap 制造分数。
+
+`core-semantic-v1` judge 以“是否为同一 underlying issue”为准，结合文件、允许容差的位置范围和 root-cause 文本做确定性语义匹配；它先去除明显重复 finding，再做全局一对一分配。因此一条 generated finding 不能重复命中多个 gold findings。旧 formal-readiness pipeline、历史 artifacts 和冻结 baseline 均保留，但不再是 Core Eval v1 的前置 gate。
+
 ## 概述
 
 本目录包含两类能力：
@@ -99,7 +140,70 @@ CI uses a soft eval gate to prevent obvious MergeWarden regression. It is not a 
 
 Workspace-backed fixtures are validated before model execution: every added line in `diff_text` must match the restored `checkout_sha` repository snapshot. A mismatch is treated as fixture validation failure, not as a model miss or false positive.
 
-The CI gate uses the stable MVP+ numeric target:
+Fixtures that intentionally pin a pre-change snapshot may set
+`input.workspace.apply_fixture_diff=true`. The runner then checks out the exact
+`checkout_sha`, applies `input.diff_text` without moving HEAD, and runs the same
+workspace validation against the patched files.
+
+Workspace caches are targeted bare partial-clone caches, not full repository
+mirrors. On a miss the runner initializes a bare cache, requests only the
+fixture checkout SHA (falling back to the fixture PR head), materializes that
+snapshot's tree and blobs, verifies it with lazy fetching disabled, and then
+atomically publishes the cache. Later commits from the same repository are
+added incrementally. Offline restores never fetch and fail explicitly when a
+snapshot is absent or incomplete.
+
+Selected fixtures can be prefetched and offline-verified before a measured run:
+
+```bash
+python -m eval.workspace_prefetch \
+  --fixtures eval/fixtures/golden_real_requests_netrc_pr7205.json \
+  --cache-dir eval/outputs/workspace_cache \
+  --output eval/outputs/workspace_prefetch.json
+```
+
+Omit `--fixtures` to read the fixture manifest. The JSON result records each
+checkout SHA, overlay-aware repository snapshot, cache size, and offline
+checkout status. Held-out fixtures are rejected before cache access.
+
+Graph A/B structural metrics use optional expected-issue annotations:
+`structural_scope` (`local`, `direct_cross_file`, or `multi_hop`) and
+`graph_observable`. Null remains unclassified and is excluded from the relevant
+group denominator while still contributing to overall recall. Compact summaries
+and terminal reports expose group recall plus structural and graph-observability
+annotation coverage.
+
+For the formal-readiness candidates, `pydantic#12117` is local and graph
+unobservable because its compatibility mechanism is contained in
+`pydantic/main.py`; the llxprt reverse fixture is graph-observable multi-hop
+across retry classification, orchestration, and delay-policy files; the Haystack
+reverse fixture is local and graph unobservable because all unsafe accesses are
+inside `json.py`. The requests and pydantic documentation candidates contain no
+expected issues, so no structural label is invented for them.
+
+Paired Graph A/B runs support durable JSONL checkpoint/resume. The stable key
+includes the experiment, fixture, sample, variant, overlay-aware repository
+snapshot, and a hash of the frozen shared/variant contract. Every completed
+attempt is appended with flush and fsync as `measured`, `invalid`, or
+`workspace_failure`; warm priming is recorded separately and never completes a
+measured key. Valid measured records resume without rerunning, while invalid
+records are retained and retried by default.
+
+```bash
+python -m eval.graph_ab_pilot \
+  --resume eval/outputs/graph-ab-formal-readiness/checkpoint.jsonl
+
+# Preserve prior failures but do not retry them:
+python -m eval.graph_ab_pilot --no-retry-invalid
+```
+
+Use `--no-resume` to atomically start a fresh journal. Checkpoint records omit
+raw model output, prompt/API-key fields, event-log paths, and index paths.
+
+As of 2026-08-11, hosted CI only runs `ruff check .`. Model-backed eval,
+comparison, and quality gates run locally so PR checks stay fast and do not
+depend on model credentials or long-running fixture execution. The local gate
+uses the stable MVP+ numeric target:
 
 ```bash
 python -m eval.gate --report eval/outputs/ci_report.json --schema-validity-min 1.0 --hit-rate-min 0.6 --false-positive-rate-max 0.5

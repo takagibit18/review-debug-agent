@@ -188,15 +188,25 @@ python cli.py review . --diff --output-json review_response.json --summary-json 
 python scripts/github_changed_lines.py --diff-file pr.diff --output changed_lines.json
 python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
 python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
+python -m eval.core_eval audit
+python -m eval.core_eval run
 python -m eval.run diagnose --input eval/outputs/20260518_151719_report.json
 python -m eval.run trend --inputs "eval/outputs/*_report.json"
 ```
 
-## MVP+ 状态
+## Core Eval v1
+
+当前主评测是一个 5 个 real-world full-workspace PR 组成的 **small curated evaluation set**：2 个带人工复核 gold finding 的 candidate，加 3 个已稳定的零问题 controls。A/B 在相同模型、预算、fixture 和 deterministic one-to-one judge 下各跑一次；仅 runtime instability 才重试。
+
+契约修复后的 `deepseek-v4-pro` 新基线共运行 15 个 attempts：simple baseline valid completion rate 为 `83.3%`，MergeWarden 为 `33.3%`。MergeWarden 在两个 positive fixtures 上连续 6 次都在 hard token cap 后、`submit_review` 前结束，因此没有可用于 Review Quality 的 valid candidate completion，A/B Precision/Recall/F1 暂不可比较。Baseline 的两个 candidate runs 均 valid，但未命中 gold；3 个 controls 上两侧均没有 warning/critical false finding。Workspace 与 validator failure 均为 0。
+
+新基线表格、per-fixture 对比和契约修复前的逐条审计见 [eval/reports/core-eval-v1.md](eval/reports/core-eval-v1.md) 与 [eval/reports/core-eval-v1-finding-audit.md](eval/reports/core-eval-v1-finding-audit.md)。
+
+## MVP+ 历史状态
 
 当前版本的 MVP+ 工程范围已闭环：CLI、FastAPI、Docker CLI demo、event logs、workspace-backed golden fixtures、GitHub Actions advisory 模板和稳定 eval gate 都已落地。
 
-当前记录的 golden baseline 是 `eval/outputs/20260518_151719_report.json`：
+历史 MVP+ golden baseline 是 `eval/outputs/20260518_151719_report.json`：
 
 - schema validity：`1.0`
 - hit rate：`0.75`

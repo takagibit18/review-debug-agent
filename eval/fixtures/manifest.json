@@ -2,6 +2,24 @@
   "generated_at": "2026-06-04T00:00:00+00:00",
   "entries": [
     {
+      "fixture_id": "golden_deepset-ai_haystack_pr12208_reverse",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "deepset-ai/haystack",
+      "pr_number": 12208,
+      "path": "eval/fixtures/golden_deepset-ai_haystack_pr12208_reverse.json",
+      "reviewed": false
+    },
+    {
+      "fixture_id": "golden_vybestack_llxprt-code_pr3012_reverse",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "vybestack/llxprt-code",
+      "pr_number": 3012,
+      "path": "eval/fixtures/golden_vybestack_llxprt-code_pr3012_reverse.json",
+      "reviewed": false
+    },
+    {
       "fixture_id": "golden_astral-sh_ruff_pr24648",
       "suite": "golden",
       "fixture_type": "review",

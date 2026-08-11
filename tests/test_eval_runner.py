@@ -9,29 +9,32 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
 import eval.runner as runner_module
+from eval.graph_ab_pilot import run_single_lifecycle
 from eval.runner import (
     _aggregate_sampled_result,
     _checkout_git_workspace,
-    _eval_schema_valid,
     _effective_review_max_iterations,
-    _validate_diff_added_lines_against_workspace,
-    _prepare_fixture_workspace,
+    _eval_schema_valid,
     _is_empty_business_output,
     _match_issues,
     _persist_event_log_to_outputs,
+    _prepare_fixture_workspace,
     _read_event_log_stats,
-    _semantic_location_matches,
-    _validate_expected_locations_against_diff,
     _resolve_event_log_path,
     _resolve_fixture_paths,
     _run_git,
     _sanitize_fixture_id_for_filename,
+    _semantic_location_matches,
+    _validate_diff_added_lines_against_workspace,
+    _validate_expected_locations_against_diff,
     load_fixtures,
     run_suite,
 )
 from eval.schemas import (
     EvalResult,
+    EvalVariant,
     Fixture,
     FixtureWorkspace,
     MetricSummary,
@@ -47,8 +50,7 @@ def _git(cwd: Path, *args: str) -> str:
         ["git", *args],
         cwd=cwd,
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     return completed.stdout.strip()
@@ -61,7 +63,10 @@ def test_run_git_uses_configured_timeout(monkeypatch, tmp_path: Path) -> None:
     def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
         captured["args"] = args
         captured["timeout"] = kwargs.get("timeout")
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+        captured["errors"] = kwargs.get("errors")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="ok\n", stderr=""
+        )
 
     monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
 
@@ -69,10 +74,13 @@ def test_run_git_uses_configured_timeout(monkeypatch, tmp_path: Path) -> None:
     assert captured["args"] == [
         "git",
         "-c",
+        "core.longpaths=true",
+        "-c",
         f"safe.directory={tmp_path.resolve()}",
         "status",
     ]
     assert captured["timeout"] == 7.0
+    assert captured["errors"] == "replace"
 
 
 def test_run_git_uses_configured_ssl_backend(monkeypatch, tmp_path: Path) -> None:
@@ -81,13 +89,17 @@ def test_run_git_uses_configured_ssl_backend(monkeypatch, tmp_path: Path) -> Non
 
     def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
         captured["args"] = args
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="ok\n", stderr=""
+        )
 
     monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
 
     assert _run_git(["status"], cwd=tmp_path) == "ok"
     assert captured["args"] == [
         "git",
+        "-c",
+        "core.longpaths=true",
         "-c",
         "http.sslBackend=openssl",
         "-c",
@@ -96,7 +108,7 @@ def test_run_git_uses_configured_ssl_backend(monkeypatch, tmp_path: Path) -> Non
     ]
 
 
-def test_offline_cache_uses_existing_mirror_without_remote_update(
+def test_offline_cache_uses_materialized_bare_cache_without_remote_update(
     monkeypatch, tmp_path: Path
 ) -> None:
     workspace = FixtureWorkspace(
@@ -104,19 +116,19 @@ def test_offline_cache_uses_existing_mirror_without_remote_update(
         checkout_sha="abc123",
     )
     cache_root = tmp_path / runner_module._workspace_cache_key(workspace.repo_url)
-    (cache_root / "objects").mkdir(parents=True)
-    calls: list[list[str]] = []
+    verified: list[tuple[Path, str]] = []
+    monkeypatch.setattr(runner_module, "_is_valid_bare_cache", lambda path: True)
+    monkeypatch.setattr(
+        runner_module,
+        "_verify_cache_snapshot_materialized",
+        lambda path, sha: verified.append((path, sha)),
+    )
 
-    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
-        calls.append(args)
-        return ""
-
-    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
-
-    assert runner_module._ensure_git_workspace_cache(
-        workspace, tmp_path, offline=True
-    ) == cache_root
-    assert calls == [["cat-file", "-e", "abc123^{commit}"]]
+    assert (
+        runner_module._ensure_git_workspace_cache(workspace, tmp_path, offline=True)
+        == cache_root
+    )
+    assert verified == [(cache_root, "abc123")]
 
 
 def test_offline_cache_miss_has_actionable_error(tmp_path: Path) -> None:
@@ -134,7 +146,9 @@ def test_offline_cache_miss_has_actionable_error(tmp_path: Path) -> None:
         raise AssertionError("Expected an offline cache miss")
 
 
-def test_workspace_cache_resumes_valid_partial_mirror(monkeypatch, tmp_path: Path) -> None:
+def test_workspace_cache_does_not_publish_interrupted_staging_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
     workspace = FixtureWorkspace(
         repo_url="https://example.test/acme/repo.git",
         checkout_sha="abc123",
@@ -143,22 +157,28 @@ def test_workspace_cache_resumes_valid_partial_mirror(monkeypatch, tmp_path: Pat
     partial_root = cache_root.with_name(f"{cache_root.name}.tmp")
     (partial_root / "objects").mkdir(parents=True)
     (partial_root / "config").write_text("[core]\nrepositoryformatversion = 0\n")
-    calls: list[list[str]] = []
+    initialized: list[Path] = []
 
-    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
-        calls.append(args)
-        if args[0] == "cat-file":
-            raise RuntimeError("missing commit")
-        return ""
+    def fake_init(path: Path, _repo_url: str) -> None:
+        initialized.append(path)
+        (path / "objects").mkdir(parents=True)
+        (path / "config").write_text("[core]\nbare = true\n")
 
-    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+    monkeypatch.setattr(runner_module, "_is_valid_bare_cache", lambda _path: False)
+    monkeypatch.setattr(runner_module, "_init_targeted_cache", fake_init)
+    monkeypatch.setattr(runner_module, "_fetch_cache_ref", lambda *a, **kw: None)
+    monkeypatch.setattr(runner_module, "_materialize_cache_snapshot", lambda *a: None)
+    monkeypatch.setattr(
+        runner_module, "_verify_cache_snapshot_materialized", lambda *a: None
+    )
 
     assert runner_module._ensure_git_workspace_cache(workspace, tmp_path) == cache_root
-    assert not any(args[0] == "clone" for args in calls)
-    assert ["fetch", "--quiet", "--depth=1", "origin", "abc123"] in calls
+    assert initialized and initialized[0] != partial_root
+    assert partial_root.exists()
+    assert cache_root.exists()
 
 
-def test_workspace_cache_clone_uses_unique_temporary_directory(
+def test_workspace_cache_init_uses_unique_temporary_directory(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -167,24 +187,44 @@ def test_workspace_cache_clone_uses_unique_temporary_directory(
         checkout_sha="abc123",
     )
     cache_root = tmp_path / runner_module._workspace_cache_key(workspace.repo_url)
-    clone_targets: list[Path] = []
+    init_targets: list[Path] = []
 
-    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
-        if args[0] == "clone":
-            target = Path(args[-1])
-            clone_targets.append(target)
-            (target / "objects").mkdir(parents=True)
-            (target / "config").write_text("[core]\nrepositoryformatversion = 0\n")
+    def fake_init(path: Path, _repo_url: str) -> None:
+        init_targets.append(path)
+        (path / "objects").mkdir(parents=True)
+        (path / "config").write_text("[core]\nbare = true\n")
+
+    monkeypatch.setattr(runner_module, "_is_valid_bare_cache", lambda _path: False)
+    monkeypatch.setattr(runner_module, "_init_targeted_cache", fake_init)
+    monkeypatch.setattr(runner_module, "_fetch_cache_ref", lambda *a, **kw: None)
+    monkeypatch.setattr(runner_module, "_materialize_cache_snapshot", lambda *a: None)
+    monkeypatch.setattr(
+        runner_module, "_verify_cache_snapshot_materialized", lambda *a: None
+    )
+
+    assert runner_module._ensure_git_workspace_cache(workspace, tmp_path) == cache_root
+    assert len(init_targets) == 1
+    assert init_targets[0] != cache_root.with_name(f"{cache_root.name}.tmp")
+    assert init_targets[0].parent == tmp_path
+    assert init_targets[0].name.endswith(".tmp")
+    assert not init_targets[0].exists()
+
+
+def test_targeted_cache_initialization_never_uses_clone_mirror(
+    monkeypatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(args)
         return ""
 
     monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+    runner_module._init_targeted_cache(tmp_path / "cache.git", "https://x/repo.git")
 
-    assert runner_module._ensure_git_workspace_cache(workspace, tmp_path) == cache_root
-    assert len(clone_targets) == 1
-    assert clone_targets[0] != cache_root.with_name(f"{cache_root.name}.tmp")
-    assert clone_targets[0].parent.parent == tmp_path
-    assert clone_targets[0].parent.name.endswith(".tmp")
-    assert not clone_targets[0].parent.exists()
+    assert calls[0][:3] == ["init", "--bare", "--quiet"]
+    assert ["remote", "add", "origin", "https://x/repo.git"] in calls
+    assert not any("--mirror" in call for call in calls)
 
 
 def test_publish_cache_retries_windows_permission_error(
@@ -216,7 +256,7 @@ def test_publish_cache_retries_windows_permission_error(
     assert not source.exists()
 
 
-def test_workspace_cache_cleanup_retries_without_masking_clone_error(
+def test_workspace_cache_cleanup_retries_without_masking_init_error(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -227,14 +267,11 @@ def test_workspace_cache_cleanup_retries_without_masking_clone_error(
     original_rmtree = shutil.rmtree
     cleanup_attempts = 0
 
-    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
-        if args[0] == "clone":
-            target = Path(args[-1])
-            pack = target / "objects" / "pack"
-            pack.mkdir(parents=True)
-            (pack / "tmp_pack_locked").write_text("partial")
-            raise RuntimeError("clone transport failed")
-        return ""
+    def fake_init(target: Path, _repo_url: str) -> None:
+        pack = target / "objects" / "pack"
+        pack.mkdir(parents=True)
+        (pack / "tmp_pack_locked").write_text("partial")
+        raise RuntimeError("init transport failed")
 
     def flaky_rmtree(path, *args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal cleanup_attempts
@@ -245,33 +282,31 @@ def test_workspace_cache_cleanup_retries_without_masking_clone_error(
             raise error
         return original_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
+    monkeypatch.setattr(runner_module, "_is_valid_bare_cache", lambda _path: False)
+    monkeypatch.setattr(runner_module, "_init_targeted_cache", fake_init)
     monkeypatch.setattr(runner_module.shutil, "rmtree", flaky_rmtree)
     monkeypatch.setattr(runner_module, "sleep", lambda _seconds: None)
 
-    with pytest.raises(RuntimeError, match="clone transport failed"):
+    with pytest.raises(RuntimeError, match="init transport failed"):
         runner_module._ensure_git_workspace_cache(workspace, tmp_path)
 
     assert cleanup_attempts >= 2
-    assert list(tmp_path.glob("*.tmp")) == []
-    assert list(tmp_path.glob(".*.tmp")) == []
+    assert list(tmp_path.glob("wc-*.tmp")) == []
 
 
 def test_fetch_failure_cleans_residual_pack_temp_files(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    workspace = FixtureWorkspace(
-        repo_url="https://example.test/acme/repo.git",
-        checkout_sha="abc123",
-    )
-    cache_root = tmp_path / runner_module._workspace_cache_key(workspace.repo_url)
+    cache_root = tmp_path / "cache.git"
     pack_dir = cache_root / "objects" / "pack"
     pack_dir.mkdir(parents=True)
 
-    def fake_run_git(args, *, cwd=None):  # type: ignore[no-untyped-def]
+    def fake_run_git(args, **_kwargs):  # type: ignore[no-untyped-def]
         if args[0] == "cat-file":
             raise RuntimeError("missing commit")
+        if args[:3] == ["remote", "get-url", "origin"]:
+            return "https://example.test/acme/repo.git"
         if args[0] == "fetch":
             (pack_dir / "tmp_pack_failed").write_text("partial")
             raise RuntimeError("fetch transport failed")
@@ -279,8 +314,8 @@ def test_fetch_failure_cleans_residual_pack_temp_files(
 
     monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
 
-    with pytest.raises(RuntimeError, match="fetch transport failed"):
-        runner_module._ensure_git_workspace_cache(workspace, tmp_path)
+    with pytest.raises(RuntimeError, match="Unable to fetch targeted commit"):
+        runner_module._fetch_cache_ref(cache_root, "abc123")
 
     assert list(pack_dir.glob("tmp_*")) == []
 
@@ -503,7 +538,9 @@ def test_effective_review_max_iterations_keeps_context_round_when_settings_are_z
     assert _effective_review_max_iterations(1) == 2
 
 
-def test_run_single_forces_eval_prefetch_and_tool_round(monkeypatch, tmp_path: Path) -> None:
+def test_run_single_forces_eval_prefetch_and_tool_round(
+    monkeypatch, tmp_path: Path
+) -> None:
     captured: dict[str, object] = {}
 
     class FakeOrchestrator:
@@ -664,6 +701,190 @@ def test_prepare_fixture_workspace_restores_git_snapshot(tmp_path: Path) -> None
     assert (workspace / "pkg" / "helper.py").exists()
 
 
+def test_prepare_fixture_workspace_applies_diff_to_fixed_snapshot(
+    tmp_path: Path,
+) -> None:
+    source, base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-with-patch",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": diff_text,
+                "files": {},
+                "workspace": {
+                    "kind": "git",
+                    "repo_url": str(source),
+                    "base_sha": base_sha,
+                    "head_sha": head_sha,
+                    "checkout_sha": base_sha,
+                    "diff_base_sha": base_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+
+    workspace = _prepare_fixture_workspace(fixture, tmp_path / "workspace-patched")
+
+    assert _git(workspace, "rev-parse", "HEAD") == base_sha
+    assert "return normalize(value)" in (workspace / "pkg" / "module.py").read_text(
+        encoding="utf-8"
+    )
+    assert _git(workspace, "diff", "--name-only") == "pkg/module.py"
+    assert _validate_diff_added_lines_against_workspace(fixture, workspace) == []
+
+
+def test_prepare_fixture_workspace_recounts_legacy_hunk_header(
+    tmp_path: Path,
+) -> None:
+    source, base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    malformed_diff = diff_text.replace(
+        "@@ -1,4 +1,4 @@", "@@ -1,5 +1,5 @@", 1
+    )
+    assert malformed_diff != diff_text
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-with-legacy-hunk-count",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": malformed_diff,
+                "files": {},
+                "workspace": {
+                    "kind": "git",
+                    "repo_url": str(source),
+                    "base_sha": base_sha,
+                    "head_sha": head_sha,
+                    "checkout_sha": base_sha,
+                    "diff_base_sha": base_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+
+    workspace = _prepare_fixture_workspace(
+        fixture, tmp_path / "workspace-recounted"
+    )
+
+    assert _git(workspace, "rev-parse", "HEAD") == base_sha
+    assert "return normalize(value)" in (workspace / "pkg" / "module.py").read_text(
+        encoding="utf-8"
+    )
+    assert _validate_diff_added_lines_against_workspace(fixture, workspace) == []
+
+
+def test_prepare_fixture_workspace_rejects_unapplicable_fixture_diff(
+    tmp_path: Path,
+) -> None:
+    source, _base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-bad-patch",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": diff_text,
+                "files": {},
+                "workspace": {
+                    "kind": "git",
+                    "repo_url": str(source),
+                    "checkout_sha": head_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to apply fixture diff"):
+        _prepare_fixture_workspace(fixture, tmp_path / "workspace-bad-patch")
+
+
+def test_paired_lifecycle_applies_fixture_diff_before_graph_creation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source, base_sha, head_sha, diff_text = _build_source_repo(tmp_path)
+    fixture = Fixture.model_validate(
+        {
+            "id": "workspace-fixture-before-graph",
+            "type": "review",
+            "source": {"repo_full_name": "example/repo", "pr_number": 1},
+            "input": {
+                "diff_text": diff_text,
+                "workspace": {
+                    "repo_url": str(source),
+                    "base_sha": base_sha,
+                    "head_sha": head_sha,
+                    "checkout_sha": base_sha,
+                    "diff_base_sha": base_sha,
+                    "apply_fixture_diff": True,
+                },
+            },
+            "expected": {"issues": []},
+        }
+    )
+    graph_created = False
+    prepared: dict[str, Path] = {}
+    original_prepare = runner_module._prepare_fixture_workspace
+
+    def tracked_prepare(*args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs["workspace_cache_dir"] = None
+        repo_root = original_prepare(*args, **kwargs)
+        prepared["repo_root"] = repo_root
+        return repo_root
+
+    class FakeOrchestrator:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal graph_created
+            assert kwargs["context_mode"] == "graph_hybrid"
+            assert "return normalize(value)" in (
+                prepared["repo_root"] / "pkg/module.py"
+            ).read_text(encoding="utf-8")
+            graph_created = True
+
+        async def run_review(self, request):  # type: ignore[no-untyped-def]
+            assert "return normalize(value)" in (
+                Path(request.repo_path) / "pkg/module.py"
+            ).read_text(encoding="utf-8")
+            return ReviewResponse(
+                run_id="patched-before-graph",
+                report=ReviewReport(summary="No issues found."),
+                context=ContextState(goal="review"),
+            )
+
+    monkeypatch.setattr(
+        "eval.graph_ab_pilot.base_runner._prepare_fixture_workspace",
+        tracked_prepare,
+    )
+    monkeypatch.setattr("eval.graph_ab_pilot.AgentOrchestrator", FakeOrchestrator)
+    variant = EvalVariant(
+        id="B1-graph-hybrid-cold",
+        context_mode="graph_hybrid",
+        graph_cache_mode="cold",
+    )
+    graph_index = tmp_path / "graph-index" / "index.sqlite3"
+
+    result, _ = asyncio.run(
+        run_single_lifecycle(
+            fixture,
+            variant=variant,
+            relation_graph_index_path=graph_index,
+            prime_graph_index=False,
+            temperature=0.0,
+            review_max_iterations=1,
+        )
+    )
+
+    assert graph_created is True, result.error
+    assert result.schema_valid is True
+
+
 def test_prepare_fixture_workspace_fetches_pr_ref_when_checkout_is_not_cloned(
     tmp_path: Path,
 ) -> None:
@@ -723,7 +944,9 @@ def test_prepare_fixture_workspace_fetches_pr_ref_after_checkout_failure(
     calls: list[list[str]] = []
     checkout_attempts = 0
 
-    def fake_run_git(args: list[str], *, cwd: Path | None = None) -> str:
+    def fake_run_git(
+        args: list[str], *, cwd: Path | None = None, **_kwargs: object
+    ) -> str:
         nonlocal checkout_attempts
         calls.append(args)
         if args[0] == "clone":
@@ -732,7 +955,7 @@ def test_prepare_fixture_workspace_fetches_pr_ref_after_checkout_failure(
         if args[:2] == ["checkout", "--quiet"]:
             checkout_attempts += 1
             if checkout_attempts == 1:
-                raise subprocess.CalledProcessError(1, ["git", *args])
+                raise RuntimeError("checkout failed")
             return ""
         if args[0] == "fetch":
             return ""
@@ -779,7 +1002,9 @@ def test_checkout_git_workspace_uses_shallow_partial_clone_without_cache(
     assert workspace is not None
     calls: list[list[str]] = []
 
-    def fake_run_git(args: list[str], *, cwd: Path | None = None) -> str:
+    def fake_run_git(
+        args: list[str], *, cwd: Path | None = None, **_kwargs: object
+    ) -> str:
         calls.append(args)
         if args[0] == "clone":
             Path(args[-1]).mkdir(parents=True)
@@ -804,7 +1029,7 @@ def test_checkout_git_workspace_uses_shallow_partial_clone_without_cache(
     ]
 
 
-def test_checkout_git_workspace_configures_cached_partial_clone(
+def test_checkout_git_workspace_uses_network_free_object_alternates_from_cache(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -821,17 +1046,17 @@ def test_checkout_git_workspace_configures_cached_partial_clone(
         lambda *args, **kwargs: cache_root,
     )
 
-    def fake_run_git(args: list[str], *, cwd: Path | None = None) -> str:
+    def fake_run_git(
+        args: list[str], *, cwd: Path | None = None, **_kwargs: object
+    ) -> str:
         calls.append(args)
-        if args[0] == "clone":
-            Path(args[-1]).mkdir(parents=True)
+        if args[0] == "init":
+            (Path(args[-1]) / ".git" / "objects" / "info").mkdir(parents=True)
             return ""
         if args[:2] == ["checkout", "--quiet"]:
             return ""
         if args == ["rev-parse", "HEAD"]:
             return "head"
-        if args[0] in {"remote", "config"}:
-            return ""
         raise AssertionError(f"Unexpected git args: {args}")
 
     monkeypatch.setattr(runner_module, "_run_git", fake_run_git)
@@ -842,10 +1067,17 @@ def test_checkout_git_workspace_configures_cached_partial_clone(
         workspace_cache_dir=tmp_path / "cache-root",
     )
 
-    assert ["remote", "set-url", "origin", workspace.repo_url] in calls
-    assert ["config", "remote.origin.promisor", "true"] in calls
-    assert ["config", "remote.origin.partialclonefilter", "blob:none"] in calls
-    assert ["config", "extensions.partialClone", "origin"] in calls
+    assert calls[0] == [
+        "init",
+        "--quiet",
+        str(tmp_path / "workspace"),
+    ]
+    assert (
+        tmp_path / "workspace" / ".git" / "objects" / "info" / "alternates"
+    ).read_text(encoding="utf-8").strip() == (
+        cache_root / "objects"
+    ).resolve().as_posix()
+    assert not any(call[0] in {"fetch", "remote", "config"} for call in calls)
 
 
 def test_prepare_fixture_workspace_reuses_git_workspace_cache(tmp_path: Path) -> None:
@@ -924,9 +1156,7 @@ def test_run_suite_limits_fixture_concurrency(monkeypatch) -> None:
             runs=[],
         )
 
-    monkeypatch.setattr(
-        runner_module, "run_single_sampled", fake_run_single_sampled
-    )
+    monkeypatch.setattr(runner_module, "run_single_sampled", fake_run_single_sampled)
 
     results = runner_module.asyncio.run(
         run_suite(
@@ -1275,8 +1505,8 @@ def test_match_issues_counts_high_confidence_warning_on_changed_line() -> None:
         report=ReviewReport(
             summary="found regression",
             issues=[
-                    ReviewIssue(
-                        severity=Severity.WARNING,
+                ReviewIssue(
+                    severity=Severity.WARNING,
                     location="src/main.py:9",
                     evidence="risky_change() now runs inside parse",
                     suggestion="Restore the original guard.",
@@ -1344,7 +1574,9 @@ def test_match_issues_ignores_warning_fp_when_fixture_expects_critical() -> None
     assert false_positive_count == 0
 
 
-def test_match_issues_counts_expected_location_warning_with_eval_relaxed_confidence() -> None:
+def test_match_issues_counts_expected_location_warning_with_eval_relaxed_confidence() -> (
+    None
+):
     fixture = Fixture.model_validate(
         {
             "id": "warning-fixture",
@@ -1545,7 +1777,7 @@ def test_golden_fixture_distribution_has_required_buckets() -> None:
     )
     manifest = json.loads((Path("eval") / "fixtures" / "manifest.json").read_text())
 
-    assert 14 <= len(real) <= 16
+    assert len(real) == 17
     assert sum(1 for fixture in real if fixture.expected.issues) >= 9
     assert sum(1 for fixture in real if not fixture.expected.issues) >= 4
 
@@ -1571,20 +1803,27 @@ def test_golden_fixture_distribution_has_required_buckets() -> None:
     assert len(source_keys) == len(real)
     assert synth == []
     fixture_by_path = {
-        entry["path"]: Fixture.model_validate_json(Path(entry["path"]).read_text())
+        entry["path"]: Fixture.model_validate_json(
+            Path(entry["path"]).read_text(encoding="utf-8")
+        )
         for entry in manifest["entries"]
     }
     assert {entry["fixture_id"] for entry in manifest["entries"]} == {
-        fixture.id for fixture in real
+        fixture.id
+        for fixture in load_fixtures(
+            Path("eval") / "fixtures", suite="golden", reviewed_only=False
+        )
     }
     for entry in manifest["entries"]:
-        assert entry["reviewed"] == fixture_by_path[entry["path"]].metadata.reviewed
+        assert entry["fixture_id"] == fixture_by_path[entry["path"]].id
 
 
 def test_reviewed_golden_fixtures_use_git_workspaces_without_sparse_files(
     tmp_path: Path,
 ) -> None:
-    fixtures = load_fixtures(Path("eval") / "fixtures", suite="golden", reviewed_only=True)
+    fixtures = load_fixtures(
+        Path("eval") / "fixtures", suite="golden", reviewed_only=True
+    )
 
     assert fixtures
     for fixture in fixtures:
@@ -1603,17 +1842,18 @@ def test_reviewed_golden_fixtures_use_git_workspaces_without_sparse_files(
                 "\n".join("line" for _ in range(issue.end_line or issue.line)),
                 encoding="utf-8",
             )
-        assert _validate_expected_locations_against_diff(
-            fixture, tmp_path / fixture.id
-        ) == []
+        assert (
+            _validate_expected_locations_against_diff(fixture, tmp_path / fixture.id)
+            == []
+        )
 
 
 def test_nethermind_expected_issue_tracks_runtime_risk_as_warning() -> None:
-    fixtures = load_fixtures(Path("eval") / "fixtures", suite="golden", reviewed_only=True)
+    fixtures = load_fixtures(
+        Path("eval") / "fixtures", suite="golden", reviewed_only=True
+    )
     fixture = next(
-        item
-        for item in fixtures
-        if item.id == "golden_NethermindEth_nethermind_pr5381"
+        item for item in fixtures if item.id == "golden_NethermindEth_nethermind_pr5381"
     )
 
     assert fixture.expected.issues[0].category == "runtime"

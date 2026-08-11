@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from statistics import mean, pstdev
 from typing import Any, Literal
 
@@ -13,6 +14,8 @@ from src.analyzer.output_formatter import Severity
 
 FixtureType = Literal["review", "debug"]
 EvalGraphCacheMode = Literal["disabled", "cold", "warm"]
+StructuralScope = Literal["local", "direct_cross_file", "multi_hop"]
+ReviewPatchScope = Literal["legacy", "full_pr", "partial_pr"]
 EVAL_MATCHER_VERSION = "semantic-v2"
 
 
@@ -77,6 +80,14 @@ class ExpectedIssue(BaseModel):
         default_factory=list,
         description="Optional paths that must be covered by primary or related locations.",
     )
+    structural_scope: StructuralScope | None = Field(
+        default=None,
+        description="Optional issue-level structural reach annotation.",
+    )
+    graph_observable: bool | None = Field(
+        default=None,
+        description="Whether repository graph evidence can expose the issue mechanism.",
+    )
 
 
 class ExpectedResult(BaseModel):
@@ -97,6 +108,79 @@ class FixtureWorkspace(BaseModel):
     head_sha: str = Field(default="")
     checkout_sha: str = Field(..., min_length=1)
     diff_base_sha: str = Field(default="")
+    apply_fixture_diff: bool = Field(
+        default=False,
+        description="Apply input.diff_text after restoring checkout_sha.",
+    )
+    review_scope: ReviewPatchScope = Field(
+        default="legacy",
+        description=(
+            "Authoritative Git range used for review input. Non-legacy scopes "
+            "derive diff_text from Git instead of trusting the stored snapshot."
+        ),
+    )
+    review_paths: list[str] = Field(
+        default_factory=list,
+        description="Explicit repository-relative paths for a partial PR review.",
+    )
+    scope_reason: str = Field(
+        default="",
+        description="Human-auditable reason for intentionally reviewing a partial PR.",
+    )
+
+    @model_validator(mode="after")
+    def _review_scope_contract(self) -> FixtureWorkspace:
+        if self.review_scope == "legacy":
+            if self.review_paths or self.scope_reason.strip():
+                raise ValueError(
+                    "legacy workspaces cannot declare review_paths or scope_reason"
+                )
+            return self
+
+        required = {
+            "base_sha": self.base_sha,
+            "head_sha": self.head_sha,
+            "diff_base_sha": self.diff_base_sha,
+        }
+        missing = [name for name, value in required.items() if not value.strip()]
+        if missing:
+            raise ValueError(
+                "non-legacy review scopes require " + ", ".join(sorted(missing))
+            )
+        if self.diff_base_sha != self.base_sha:
+            raise ValueError("diff_base_sha must equal base_sha for PR review scopes")
+        if self.checkout_sha != self.head_sha:
+            raise ValueError("PR review scopes must restore checkout_sha=head_sha")
+        if self.apply_fixture_diff:
+            raise ValueError("PR review scopes cannot apply a fixture overlay")
+
+        normalized_paths: list[str] = []
+        for raw_path in self.review_paths:
+            normalized = raw_path.strip().replace("\\", "/")
+            parsed = PurePosixPath(normalized)
+            if (
+                not normalized
+                or parsed.is_absolute()
+                or ".." in parsed.parts
+                or (parsed.parts and ":" in parsed.parts[0])
+            ):
+                raise ValueError(f"review path must be repository-relative: {raw_path}")
+            normalized_paths.append(parsed.as_posix())
+        self.review_paths = sorted(set(normalized_paths))
+
+        if self.review_scope == "full_pr":
+            if self.review_paths:
+                raise ValueError("full_pr review scope cannot restrict review_paths")
+            if self.scope_reason.strip():
+                raise ValueError("full_pr review scope does not accept scope_reason")
+            return self
+
+        if not self.review_paths:
+            raise ValueError("partial_pr review scope requires explicit review_paths")
+        if not self.scope_reason.strip():
+            raise ValueError("partial_pr review scope requires scope_reason")
+        self.scope_reason = self.scope_reason.strip()
+        return self
 
 
 class FixtureInput(BaseModel):
@@ -136,6 +220,73 @@ class EvalIssueMatch(BaseModel):
     expected_index: int
     matched: bool
     matched_actual_index: int | None = None
+
+
+class StructuralIssueMetrics(BaseModel):
+    """Issue-level structural counts; null annotations stay outside group denominators."""
+
+    expected_count: int = Field(default=0, ge=0)
+    matched_count: int = Field(default=0, ge=0)
+    structural_annotated_count: int = Field(default=0, ge=0)
+    local_expected_count: int = Field(default=0, ge=0)
+    local_matched_count: int = Field(default=0, ge=0)
+    direct_cross_file_expected_count: int = Field(default=0, ge=0)
+    direct_cross_file_matched_count: int = Field(default=0, ge=0)
+    multi_hop_expected_count: int = Field(default=0, ge=0)
+    multi_hop_matched_count: int = Field(default=0, ge=0)
+    graph_observability_annotated_count: int = Field(default=0, ge=0)
+    graph_observable_expected_count: int = Field(default=0, ge=0)
+    graph_observable_matched_count: int = Field(default=0, ge=0)
+    graph_unobservable_expected_count: int = Field(default=0, ge=0)
+    graph_unobservable_matched_count: int = Field(default=0, ge=0)
+
+    @staticmethod
+    def _ratio(numerator: int, denominator: int) -> float | None:
+        return numerator / denominator if denominator else None
+
+    @property
+    def overall_recall(self) -> float | None:
+        return self._ratio(self.matched_count, self.expected_count)
+
+    @property
+    def local_recall(self) -> float | None:
+        return self._ratio(self.local_matched_count, self.local_expected_count)
+
+    @property
+    def direct_cross_file_recall(self) -> float | None:
+        return self._ratio(
+            self.direct_cross_file_matched_count,
+            self.direct_cross_file_expected_count,
+        )
+
+    @property
+    def multi_hop_recall(self) -> float | None:
+        return self._ratio(self.multi_hop_matched_count, self.multi_hop_expected_count)
+
+    @property
+    def graph_observable_recall(self) -> float | None:
+        return self._ratio(
+            self.graph_observable_matched_count,
+            self.graph_observable_expected_count,
+        )
+
+    @property
+    def graph_unobservable_recall(self) -> float | None:
+        return self._ratio(
+            self.graph_unobservable_matched_count,
+            self.graph_unobservable_expected_count,
+        )
+
+    @property
+    def structural_annotation_coverage(self) -> float | None:
+        return self._ratio(self.structural_annotated_count, self.expected_count)
+
+    @property
+    def graph_observability_annotation_coverage(self) -> float | None:
+        return self._ratio(
+            self.graph_observability_annotated_count,
+            self.expected_count,
+        )
 
 
 class ReviewProcessMetrics(BaseModel):
@@ -266,6 +417,9 @@ class EvalResult(BaseModel):
     error: str | None = None
     stage_timings: dict[str, float] = Field(default_factory=dict)
     issue_matches: list[EvalIssueMatch] = Field(default_factory=list)
+    structural_metrics: StructuralIssueMetrics = Field(
+        default_factory=StructuralIssueMetrics
+    )
     raw_output: dict[str, Any] = Field(default_factory=dict)
     placeholder_summary: bool = Field(
         default=False,
@@ -312,6 +466,20 @@ class MetricSummary(BaseModel):
     hit_rate_stddev: float = Field(default=0.0, ge=0.0)
     false_positive_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     mean_false_positive_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    overall_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    precision: float | None = Field(default=None, ge=0.0, le=1.0)
+    local_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    direct_cross_file_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    multi_hop_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    graph_observable_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    graph_unobservable_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    structural_annotation_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    graph_observability_annotation_coverage: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    root_cause_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    over_merge_count: int = Field(default=0, ge=0)
+    under_merge_count: int = Field(default=0, ge=0)
     root_cause_coverage: float = Field(default=0.0, ge=0.0, le=1.0)
     over_merge_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     under_merge_rate: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -396,6 +564,7 @@ class MetricSummary(BaseModel):
         token_values = [float(item.total_tokens) for item in results]
         process = _aggregate_process_metrics(results)
         quality = _aggregate_quality_metrics(results)
+        structural = _aggregate_structural_metrics(results)
 
         return cls(
             schema_validity_rate=valid_count / len(results),
@@ -420,6 +589,7 @@ class MetricSummary(BaseModel):
             p95_total_tokens=cls._percentile(token_values, 0.95),
             **quality,
             **process,
+            **structural,
         )
 
     @classmethod
@@ -442,6 +612,7 @@ class MetricSummary(BaseModel):
         token_values = [float(run.total_tokens) for run in all_runs]
         process = _aggregate_process_metrics(all_runs)
         quality = _aggregate_quality_metrics(all_runs)
+        structural = _aggregate_structural_metrics(all_runs)
 
         return cls(
             schema_validity_rate=float(mean(schema_valid_values)),
@@ -464,6 +635,7 @@ class MetricSummary(BaseModel):
             p95_total_tokens=cls._percentile(token_values, 0.95),
             **quality,
             **process,
+            **structural,
         )
 
 
@@ -471,6 +643,53 @@ def _sampled_expected_count(item: SampledFixtureResult) -> int:
     if item.expected_count > 0:
         return item.expected_count
     return max((run.expected_count for run in item.runs), default=0)
+
+
+def _aggregate_structural_metrics(
+    results: list[EvalResult],
+) -> dict[str, int | float | None]:
+    expected = sum(item.expected_count for item in results)
+    matched = sum(item.matched_count for item in results)
+    false_positives = sum(item.false_positive_count for item in results)
+    expected_roots = sum(item.expected_root_cause_count for item in results)
+    matched_roots = sum(item.matched_root_cause_count for item in results)
+    structural = [item.structural_metrics for item in results]
+
+    def total(field: str) -> int:
+        return sum(int(getattr(item, field)) for item in structural)
+
+    def ratio(numerator: int, denominator: int) -> float | None:
+        return numerator / denominator if denominator else None
+
+    local_expected = total("local_expected_count")
+    direct_expected = total("direct_cross_file_expected_count")
+    multi_hop_expected = total("multi_hop_expected_count")
+    observable_expected = total("graph_observable_expected_count")
+    unobservable_expected = total("graph_unobservable_expected_count")
+    return {
+        "overall_recall": ratio(matched, expected),
+        "precision": ratio(matched, matched + false_positives),
+        "local_recall": ratio(total("local_matched_count"), local_expected),
+        "direct_cross_file_recall": ratio(
+            total("direct_cross_file_matched_count"), direct_expected
+        ),
+        "multi_hop_recall": ratio(total("multi_hop_matched_count"), multi_hop_expected),
+        "graph_observable_recall": ratio(
+            total("graph_observable_matched_count"), observable_expected
+        ),
+        "graph_unobservable_recall": ratio(
+            total("graph_unobservable_matched_count"), unobservable_expected
+        ),
+        "structural_annotation_coverage": ratio(
+            total("structural_annotated_count"), expected
+        ),
+        "graph_observability_annotation_coverage": ratio(
+            total("graph_observability_annotated_count"), expected
+        ),
+        "root_cause_recall": ratio(matched_roots, expected_roots),
+        "over_merge_count": sum(item.over_merge_count for item in results),
+        "under_merge_count": sum(item.under_merge_count for item in results),
+    }
 
 
 def _aggregate_process_metrics(
