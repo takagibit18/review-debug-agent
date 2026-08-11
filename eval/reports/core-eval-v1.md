@@ -2,7 +2,7 @@
 
 > small curated evaluation set: 5 个 full-workspace PR fixtures （2 个 candidate，3 个 clean control）。
 > 该结果用于项目能力验证，不主张统计代表性或显著性。
-> Generated at：`2026-08-11T11:50:15.381389+00:00`。
+> Generated at：`2026-08-11T14:29:11.261801+00:00`。
 > Review input：按 fixture 声明的 `full_pr` / `partial_pr` scope 从 Git range 派生。
 
 ## Infrastructure
@@ -11,7 +11,7 @@
 - Successful workspace setups：10/10 attempts
 - Completion failures：0
 - Matcher：`core-semantic-v1`（deterministic, one-to-one, duplicate-aware）
-- Shared runtime：`deepseek-v4-pro`，temperature 0，4096 output tokens，12000 prompt-context tokens，3 iterations，64 tool calls，60000/80000 token budget，12000 final-submit reserve，4000 finalize prompt-context tokens
+- Shared runtime：`deepseek-v4-pro`，temperature 0，4096 output tokens，12000 prompt-context tokens，3 iterations，64 tool calls，60000/80000 token budget，12000 final-submit reserve，4000 finalize prompt-context tokens，1200 retained-evidence tokens
 
 ## Review Quality
 
@@ -34,6 +34,20 @@ Quality 仅统计 valid completions。
 | Workspace failures | 0 | 0 |
 | Validator failures | 0 | 0 |
 
+## Candidate Finding Funnel
+
+Counts cover valid candidate runs only; missing legacy fields deserialize as zero.
+
+| Stage | Baseline | MergeWarden |
+|---|---:|---:|
+| No finding submitted | 0 | 0 |
+| Non-risk not routed | 0 | 0 |
+| Pre-verifier rejected | 0 | 0 |
+| Calibration / rescue routed | 0 | 0 |
+| Semantic rejected | 0 | 0 |
+| Deterministic rejected | 2 | 2 |
+| Final risk findings | 0 | 0 |
+
 ## Per-fixture comparison
 
 | Fixture | Gold | Baseline hit | MergeWarden hit | Baseline FP | MergeWarden FP | Valid A/B |
@@ -46,7 +60,7 @@ Quality 仅统计 valid completions。
 
 ## Main failure mode
 
-4 个 valid candidate runs 共提出 4 条 raw findings，但其中 1 个 runs 在最终输出前被过滤；语义 verifier 拒绝 1 条，deterministic evidence gate 拒绝 0 条。当前首要问题是 verifier/evidence 链造成的 recall loss，而不是 workspace、completion 或 semantic judge failure。
+Candidate funnel: no finding submitted=0, non-risk not routed=0, pre-verifier rejected=0, semantic rejected=0, deterministic rejected=4, calibration/rescue routed=0, final risk=0. The primary zeroing stage is `deterministic rejected` (4); the report no longer combines distinct pre-verifier, semantic, and deterministic losses.
 
 ## Controls and optional oracles
 

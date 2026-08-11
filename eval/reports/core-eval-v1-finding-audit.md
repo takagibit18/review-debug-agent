@@ -60,6 +60,18 @@
 
 充值前的首次修复后重跑因 provider 返回 `402 Insufficient Balance` 而 30/30 attempts 失败、token 记录均为 0；它属于外部运行故障，不纳入本次模型能力基线。此次复跑没有修改 gold、verifier、evidence gate、fixture 或 60k/80k 总预算，只加入了通用的图 prompt 预算与最终提交预留机制。
 
+### 零命中链路修复后复跑（2026-08-11）
+
+在保持 warning 阈值 `0.85/0.70`、gold、matcher、fail-closed evidence gate 和 60k/80k 总预算不变的前提下，完成了过滤决策可观测性、forced-submit 证据保留、边界 finding 校准及逐阶段 funnel 修复，并重新运行正式 5 × 2 Core Eval：
+
+- 10/10 runs 均为 valid completion，10/10 均调用 `submit_review`；workspace、placeholder/incomplete 与 validator failure 均为 0，最大累计 token 为 68,680。
+- 4 个 candidate runs 共产生并提交 4 条 raw findings，4 条都通过 pre-verifier policy 并进入 semantic verifier；其中 semantic reject 为 0，deterministic evidence reject 为 4，final risk finding 为 0。
+- Pydantic 与 pytest 的 A/B finding 均不再在 verifier 前无理由消失。四次未命中现在都唯一归属到 `deterministic evidence reject`，与逐运行事件和聚合 funnel 一致。
+- 3 个 clean controls 的 6 个运行均未提交 finding，warning/critical false positive 保持 0。
+- 本轮没有触发 `filter_rescue` 或 `severity_calibration`；candidate 原始 finding 已满足既有阈值，直接作为普通 risk candidate 进入 verifier。对应边界路径由脱敏离线回放测试覆盖，不为本轮数字调整阈值或增加 fixture 特例。
+
+因此，本轮修复达成的是“零命中原因可唯一审计”和“候选不再于 verifier 前静默丢失”，没有把 F1=0 包装成质量提升。当前剩余落点明确为 deterministic evidence binding；后续若继续修复，应保持 fail closed，并针对 manifest/hunk/window provenance 合同本身补足可验证证据。
+
 ## 逐条结果
 
 | ID | Fixture / Variant | Raw finding | 与 gold 的关系 | 审计结论 | 当前过滤点 |
