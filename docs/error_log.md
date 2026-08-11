@@ -4,6 +4,19 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-08-11 | Git staging | `git add` 无法创建 `.git/index.lock`；提升权限请求又因审批额度上限被拒绝 | workspace 允许修改项目文件，但 Git 元数据写入需要额外审批；当前审批服务返回 usage limit | 未绕过权限、未重复提升；保留已验证工作树，待额度/审批恢复后原样暂存并提交 |
+| 2026-08-11 | Touched-file format gate | Ruff lint 通过，但 `context_priority.py` 的 format-check 要求重排 1 个文件 | 类型变量改名后触发了 formatter 的局部换行规则 | 仅格式化该触及文件；随后 Ruff lint 与 format-check 均通过 |
+| 2026-08-11 | Graph manifest reconstruction typing | `mypy src` 报告 `Any | None` 不能赋给同函数内已推断为 `str` 的 `path` | 文件路径循环与 manifest path 重用了同名局部变量，触发 mypy 的函数级变量类型冲突 | 将后者改名为 `manifest_path`；`mypy src` 随后通过 75 个源文件 |
+| 2026-08-11 | Core report rendering | 成功复跑后的 Markdown 报告中文出现错误转码，机器 JSON 与指标正常 | 报告文本在一次中间处理里发生 GBK/Latin-1 往返，非 Eval 计算或模型输出错误 | 从同一份 `core-eval-v1.json` 重新调用正式 renderer，以 UTF-8 写回并增加字符校验 |
+| 2026-08-11 | Final-submit telemetry | 成功复跑末尾出现一次 `submit_review` 参数 JSON 字符串未闭合警告，但 10/10 runs 最终均 valid | 模型产生过一次 malformed intermediate tool argument；现有容错未让它逃逸为最终失败，但 event log 未暴露足够细的修复路径 | 保留严格 schema，不放宽契约；将该警告作为后续 parser telemetry 改进项，不影响本轮基线 |
+| 2026-08-11 | Core Eval resume smoke | 尝试用单个旧失败 candidate 做一次 A/B 余额恢复检查时，`CoreEvalConfig` 拒绝少于 5 个 fixtures | Core Eval v1 契约明确要求 5–10 个 curated fixtures，不支持单 fixture smoke | 不放宽或特判契约；删除一次性配置，按正式 5-fixture 配置重跑 |
+| 2026-08-11 | Post-fix Core Eval rerun | 30/30 attempts 均返回 placeholder，事件日志中每次模型调用均为 `402 Insufficient Balance`、`total_tokens=0` | 模型供应商账户余额不足，与 prompt budget/final-submit 状态机无关；Core runner 按 placeholder 重试放大为 30 attempts | 不将该运行记为新质量基线；保留事件遥测作为 prompt 尺寸证据，在余额恢复后以相同契约重跑 |
+| 2026-08-11 | Interrupted Core audit process | 用户中断前台 audit 后仍可见 PID 50400；普通和提升权限的 `Stop-Process` 都报 `Access is denied` | 该 PID 失去终端通道、CPU 不变且无 Git 子进程，但它属于当前会话无法管理的外层进程 | 未继续扩大进程操作范围；重新运行独立 audit 并得到 5/5 PASS，后续以新命令输出为准 |
+| 2026-08-11 | Configuration documentation search | 一次只读 `rg` 命令包含不存在的 `pyproject.toml`，因此以 exit 1 结束 | 仓库使用 `setup.cfg` 和 `ruff.toml`，没有 `pyproject.toml` | 通过根目录列表确认实际配置文件，并直接更新 `.env.example`、共享契约和 Eval 说明 |
+| 2026-08-11 | Reserved-submit agent-loop test | 定向测试 118 项中 1 项失败：旧 assertion 要求 soft-cap stop 必须是最后一个 decision | reserved finalize 会在 stop decision 之后再记录一次 format decision，但 stop reason 本身未改变 | 测试改为按 `phase=continue` 定位最后一个停止决策，不依赖其他 phase 的记录顺序 |
+| 2026-08-11 | Core Eval reserve assertions | 首次更新 `tests/test_core_eval.py` 的补丁因上下文未包含中间的 `token_budget` assertion 而未应用 | 补丁预期了两条相邻 assertion，实际文件中还有 soft-budget 检查 | 读取精确行后以更稳定的 `token_hard_budget` 单行作为补丁锚点 |
+| 2026-08-11 | Git branch setup | 首次 `git fetch origin main` 报无法写入 `.git/FETCH_HEAD` | 当前 workspace sandbox 对 Git 元数据仅允许读取 | 按授权流程以提升权限重试，成功同步 `origin/main@1866c9b` 并从该提交创建修复分支 |
+| 2026-08-11 | Budget test discovery | 一次只读 `rg` 命令引用了不存在的 `tests/test_context_planner.py` | 实际测试文件名为 `tests/test_change_context_planner.py` | 用 `rg --files tests` 重新定位，后续只使用实际路径 |
 | 2026-08-11 | GitHub Actions / baseline seal | PR #73 CI 在 lint/mypy 通过后出现 2 个 baseline seal 测试失败：compact artifact 哈希不一致，且 `git show eval/agent-baseline-v1:eval/runner.py` 返回 128 | Windows CRLF 与 Linux LF checkout 使同一文本产物产生不同原始字节哈希；`actions/checkout` 默认浅克隆未包含测试依赖的历史冻结 tag | Seal test 仅对文本换行接受等价的 LF/CRLF 规范哈希，不放宽内容校验；CI checkout 设为 `fetch-depth: 0` 以保留冻结 tag 校验 |
 | 2026-08-11 | GitHub Actions / Ruff lint | PR #73 CI 使用 `ruff check .` 报 141 条全仓错误，而本地 Ruff 0.15.10 通过 | `requirements-dev.txt` 的 `ruff>=0.4` 在 CI 解析为 Ruff 0.16.2；0.16 将默认规则从 59 条扩大到 413 条，本项目未显式声明 lint 规则契约 | 新增 `ruff.toml`，仅显式固定项目既有 `E4`/`E7`/`E9`/`F` lint 规则；不改变 formatter 契约，不对 141 处存量代码做过拟合式改写 |
 | 2026-08-11 | Ruff cross-version verification | 隔离安装 Ruff 0.16.2 的普通与提权尝试分别在 180/300 秒后超时；首轮还确认全仓 `ruff format --check .` 存在历史格式差异 | 临时 pip 获取持续阻塞；首版 `ruff.toml` 还携带了会影响 formatter 的顶层选项 | 终止并清理仅属于临时安装的遗留进程，将配置缩小为 lint-only；本地 Ruff 0.15.10、显式规则解析、mypy 与全量 pytest 通过，0.16.2 由下次 CI 实跑验证 |

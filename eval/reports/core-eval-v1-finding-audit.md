@@ -48,6 +48,18 @@
 
 6 个 MergeWarden candidate attempts 的累计 token 记录约为 92k–106k，均超过声明的 80k hard budget后才结束，说明预算在模型调用后结算，单次调用可以造成 overshoot。后续修复应优先控制进入调用前的 context size/预留输出预算，而不是简单提高全局 hard cap。
 
+### 图预算与预留提交修复后复跑（2026-08-11）
+
+额度恢复后从上述失败点重新运行正式 5 × 2 Core Eval，共产生 10 个 attempts：
+
+- Baseline 与 MergeWarden 均为 5/5 valid（100.0%）；2 个 candidates 与 3 个 controls 的 A/B 都在首次 attempt 完成。
+- Placeholder/incomplete、workspace failure 与 validator failure 均为 0；10/10 runs 都调用了 `submit_review`，最大累计 token 为 69,606，低于 80k hard cap。
+- Pydantic candidate 的图模式普通轮次选择了 1/2 个 manifest core 和 4 条 graph paths；pytest candidate 选择了 5/7 个 manifest core 和 1 条 graph path。图上下文被纳入 prompt budget 后仍实际进入模型，而不是退化为纯工具搜索。
+- 图模式普通模型调用的 provider prompt 最大为 27,096 tokens；修复前失败运行的累计 token 约为 92k–106k。两者口径不同，不能解释为精确的同口径降幅，但足以确认本轮没有再次出现单次超大 graph prompt 导致 hard-cap overshoot。
+- 两侧 Precision/Recall/F1 仍均为 0；4 个 valid candidate runs 共提出 4 条 raw findings，其中 1 个 run 的 finding 在最终输出前被过滤。当前首要质量问题重新回到 verifier/evidence recall loss，不能据此宣称 MergeWarden 质量优于 baseline。
+
+充值前的首次修复后重跑因 provider 返回 `402 Insufficient Balance` 而 30/30 attempts 失败、token 记录均为 0；它属于外部运行故障，不纳入本次模型能力基线。此次复跑没有修改 gold、verifier、evidence gate、fixture 或 60k/80k 总预算，只加入了通用的图 prompt 预算与最终提交预留机制。
+
 ## 逐条结果
 
 | ID | Fixture / Variant | Raw finding | 与 gold 的关系 | 审计结论 | 当前过滤点 |

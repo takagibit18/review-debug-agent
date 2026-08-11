@@ -162,9 +162,11 @@ CLI、FastAPI 与 CI 校验应只依赖上述稳定字段；**增删字段** 需
 | `LOG_LEVEL` | 日志级别 | 与可观测性约定一致 |
 | `REVIEW_MAX_ITERATIONS` | Review 模式最大循环轮次 | 默认 `1`，对应 `Settings.review_max_iterations` |
 | `DEBUG_MAX_ITERATIONS` | Debug 模式最大循环轮次 | 默认 `3`，对应 `Settings.debug_max_iterations` |
-| `TOKEN_BUDGET` | 单次运行累计 token 用量软上限（soft cap） | 默认 `30000`，对应 `Settings.token_budget`；达到后停止追加 finalize-only 调用 |
+| `TOKEN_BUDGET` | 单次运行累计 token 用量软上限（soft cap） | 默认 `30000`，对应 `Settings.token_budget`；达到后停止普通分析，仍可使用受保护预留执行 finalize-only 提交 |
 | `TOKEN_HARD_BUDGET` | 单次运行累计 token 用量硬上限（hard cap） | 默认 `36000`，对应 `Settings.token_hard_budget`；不低于 `TOKEN_BUDGET` |
-| `PROMPT_INPUT_TOKEN_BUDGET` | 首轮用户消息中 **可截断上下文块**（meta、diff hunk、文件、结构等）的估算 token 上限 | 默认 `32000`，对应 `Settings.prompt_input_token_budget`；与 `TOKEN_BUDGET` 语义分离，见 [analyzer_dev_plan.md](./analyzer_dev_plan.md) §2.3 |
+| `PROMPT_INPUT_TOKEN_BUDGET` | 每次模型请求中 **可截断上下文块**（meta、diff hunk、graph manifest、文件、结构等）的估算 token 上限 | 默认 `32000`，对应 `Settings.prompt_input_token_budget`；graph manifest 不得绕过该预算追加到 payload |
+| `FINAL_SUBMIT_RESERVE_TOKENS` | 从 hard budget 中保护的最终结构化提交预留 | 默认 `12000`；普通分析的有效上限为 `min(TOKEN_BUDGET, TOKEN_HARD_BUDGET - reserve)` |
+| `FINAL_SUBMIT_PROMPT_TOKEN_BUDGET` | finalize-only 请求可使用的可截断上下文预算 | 默认 `4000`；两种 context mode 以及 Review/Debug 共用该上限 |
 | `MODEL_MAX_TOKENS` | 非 finalize 模型调用的最大输出 token | 默认 `2048`，对应 `Settings.model_max_tokens` |
 
 GitHub advisory workflows should set `MODEL_MAX_TOKENS` explicitly, with

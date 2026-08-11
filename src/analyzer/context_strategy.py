@@ -199,7 +199,7 @@ class GraphHybridContextStrategy:
         return ReviewContext(
             context_mode=self.mode,
             candidate_context_manifests=[
-                manifest.prompt_payload() for manifest in plan.manifests
+                manifest.model_dump(mode="json") for manifest in plan.manifests
             ],
             graph_telemetry=telemetry,
         )

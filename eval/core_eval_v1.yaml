@@ -10,6 +10,8 @@ runtime:
   prompt_input_token_budget: 12000
   token_budget: 60000
   token_hard_budget: 80000
+  final_submit_reserve_tokens: 12000
+  final_submit_prompt_token_budget: 4000
   review_max_iterations: 3
   fixture_concurrency: 1
   repeat_on_instability: true

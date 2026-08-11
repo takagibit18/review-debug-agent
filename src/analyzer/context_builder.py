@@ -86,7 +86,10 @@ class ContextBuilder:
             if truncated or depth > max_depth:
                 return
             try:
-                children = sorted(path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+                children = sorted(
+                    path.iterdir(),
+                    key=lambda item: (not item.is_dir(), item.name.lower()),
+                )
             except OSError:
                 return
             for child in children:
@@ -237,7 +240,9 @@ class ContextBuilder:
         encoding = _tiktoken.get_encoding("cl100k_base")
         return len(encoding.encode(text))
 
-    def truncate_context(self, parts: list[ContextPart], budget: int) -> list[ContextPart]:
+    def truncate_context(
+        self, parts: list[ContextPart], budget: int
+    ) -> list[ContextPart]:
         if budget <= 0:
             return []
         selected: list[ContextPart] = []
@@ -269,7 +274,12 @@ class ContextBuilder:
         """Two-layer truncation: greedy fit first, then summarize overflowed parts."""
         selected = self.truncate_context(parts, budget)
         selected_labels = {item.label for item in selected}
-        discarded = [item for item in parts if item.label not in selected_labels]
+        discarded = [
+            item
+            for item in parts
+            if item.label not in selected_labels
+            and not item.label.startswith("manifest")
+        ]
         if not discarded or compressor is None:
             return selected, False
 

@@ -196,7 +196,7 @@ def build_review_messages(
         selected = all_parts
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
-    _populate_planner_telemetry(telemetry_sink, context)
+    _populate_planner_telemetry(telemetry_sink, context, selected)
     return [
         Message(role="system", content=review_system_prompt(context.context_mode)),
         Message(
@@ -240,7 +240,7 @@ async def build_review_messages_async(
         selected = cb.truncate_context(all_parts, prompt_token_budget)
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
-    _populate_planner_telemetry(telemetry_sink, context)
+    _populate_planner_telemetry(telemetry_sink, context, selected)
     return [
         Message(role="system", content=review_system_prompt(context.context_mode)),
         Message(
@@ -362,11 +362,24 @@ def _populate_context_telemetry(
 def _populate_planner_telemetry(
     sink: dict[str, Any] | None,
     context: ContextState,
+    selected: list[Any],
 ) -> None:
     if sink is None:
         return
     manifests = context.candidate_context_manifests
     sink["candidate_context_manifest_count"] = len(manifests)
+    selected_manifests = [
+        item for item in selected if str(item.label).startswith("manifest:")
+    ]
+    selected_manifest_paths = [
+        item for item in selected if str(item.label).startswith("manifest_path:")
+    ]
+    sink["candidate_context_manifest_selected_count"] = len(selected_manifests)
+    sink["candidate_context_graph_path_selected_count"] = len(selected_manifest_paths)
+    sink["candidate_context_prompt_token_cost"] = sum(
+        int(item.token_count or 0)
+        for item in [*selected_manifests, *selected_manifest_paths]
+    )
     sink["candidate_context_token_cost"] = sum(
         int(item.get("token_cost", 0) or 0) for item in manifests
     )
@@ -422,6 +435,10 @@ def _context_part_kind(label: str) -> str:
         return "diff_hunk"
     if label.startswith("file:"):
         return "file"
+    if label.startswith("manifest_path:"):
+        return "manifest_path"
+    if label.startswith("manifest:"):
+        return "manifest"
     if label in {"meta", "structure", "error_log"}:
         return label
     return "other"

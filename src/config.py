@@ -187,6 +187,18 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("TOKEN_HARD_BUDGET", "36000")),
         ge=1,
     )
+    final_submit_reserve_tokens: int = Field(
+        default_factory=lambda: int(os.getenv("FINAL_SUBMIT_RESERVE_TOKENS", "12000")),
+        ge=1,
+        description="Tokens protected from normal analysis for one final structured submission.",
+    )
+    final_submit_prompt_token_budget: int = Field(
+        default_factory=lambda: int(
+            os.getenv("FINAL_SUBMIT_PROMPT_TOKEN_BUDGET", "4000")
+        ),
+        ge=1,
+        description="Max truncatable context tokens in a finalize-only model request.",
+    )
     feedback_window_iterations: int = Field(
         default_factory=lambda: int(os.getenv("FEEDBACK_WINDOW_ITERATIONS", "3")),
         ge=1,
@@ -658,6 +670,14 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def _normalize_budget_relationships(self) -> "Settings":
         self.token_hard_budget = max(self.token_hard_budget, self.token_budget)
+        self.final_submit_reserve_tokens = min(
+            self.final_submit_reserve_tokens,
+            self.token_hard_budget,
+        )
+        self.final_submit_prompt_token_budget = min(
+            self.final_submit_prompt_token_budget,
+            self.prompt_input_token_budget,
+        )
         if (
             "review_context_mode" not in self.model_fields_set
             and "relation_graph_enabled" in self.model_fields_set

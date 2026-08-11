@@ -101,9 +101,12 @@ class CandidateContextManifest(BaseModel):
     retrieval_provenance: list[dict[str, Any]] = Field(default_factory=list)
 
     def prompt_payload(self) -> dict[str, Any]:
-        """Return the exact serializable envelope placed in the reviewer prompt."""
+        """Return the evidence envelope eligible for the reviewer prompt."""
 
-        return self.model_dump(mode="json")
+        return self.model_dump(
+            mode="json",
+            exclude={"excluded_low_confidence_paths", "discarded_paths"},
+        )
 
     def contains_location(
         self, file: str, line: int, end_line: int | None = None

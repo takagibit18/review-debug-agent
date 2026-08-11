@@ -23,7 +23,12 @@ from src.analyzer.prompts import (
     build_review_messages,
     build_review_messages_async,
 )
-from src.analyzer.schemas import AnalysisPlan, DebugRequest, DebugResponse, ReviewRequest
+from src.analyzer.schemas import (
+    AnalysisPlan,
+    DebugRequest,
+    DebugResponse,
+    ReviewRequest,
+)
 from src.analyzer.trace import TraceRecorder
 from src.config import get_settings
 from src.models.client import ModelClient
@@ -53,7 +58,8 @@ class InferenceEngine:
         self,
         model_client: ModelClient,
         trace_recorder: TraceRecorder | None = None,
-        trace_event_writer: Callable[[EventType, str, dict[str, Any]], None] | None = None,
+        trace_event_writer: Callable[[EventType, str, dict[str, Any]], None]
+        | None = None,
     ) -> None:
         self._model_client = model_client
         self._trace_recorder = trace_recorder
@@ -78,11 +84,14 @@ class InferenceEngine:
         defer_submit: bool = False,
     ) -> tuple[AnalysisPlan, int, str]:
         file_contents = file_contents or {}
+        settings = get_settings()
         budget = (
             prompt_input_token_budget
             if prompt_input_token_budget is not None
-            else get_settings().prompt_input_token_budget
+            else settings.prompt_input_token_budget
         )
+        if force_submit or near_last_iteration:
+            budget = min(budget, settings.final_submit_prompt_token_budget)
         cb = ContextBuilder()
         context_telemetry: dict[str, Any] = {}
         if isinstance(request, ReviewRequest):
@@ -141,7 +150,9 @@ class InferenceEngine:
                 )
 
         window_iterations = {
-            item.get("iteration") for item in (tool_feedback or []) if isinstance(item, dict)
+            item.get("iteration")
+            for item in (tool_feedback or [])
+            if isinstance(item, dict)
         }
         folded = self._build_folded_feedback_summary(
             feedback_digest_index or {}, window_iterations
@@ -192,9 +203,11 @@ class InferenceEngine:
         )
         self._record_context_telemetry(
             context_telemetry=context_telemetry,
+            messages=messages,
             tools=tools,
             iteration=iteration,
             prompt_input_token_budget=budget,
+            force_submit=submit_only,
         )
         config = None
         if submit_only:
@@ -207,7 +220,9 @@ class InferenceEngine:
             else:
                 config.model = request.model_name
         config = self._with_thinking_disabled_if_needed(config)
-        response = await self._model_client.chat(messages=messages, config=config, tools=tools)
+        response = await self._model_client.chat(
+            messages=messages, config=config, tools=tools
+        )
         self._record_length_finish(response, iteration, config)
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=submit_only
@@ -221,7 +236,11 @@ class InferenceEngine:
             and parse_meta.get("submit_review_validation_error")
         ):
             initial_usage = response.usage
-            repair_plan, repair_response, repair_meta = await self._retry_submit_review_validation_repair(
+            (
+                repair_plan,
+                repair_response,
+                repair_meta,
+            ) = await self._retry_submit_review_validation_repair(
                 messages=messages,
                 request=request,
                 tool_schemas=tool_schemas or [],
@@ -252,8 +271,17 @@ class InferenceEngine:
         if incomplete_reason:
             plan.incomplete_reason = incomplete_reason
             parse_meta["incomplete_reason"] = incomplete_reason
-            self._record_incomplete_response(response, iteration, config, incomplete_reason)
-        self._record_trace(response, plan, parse_meta, iteration, fallback_json_found, fallback_parse_valid)
+            self._record_incomplete_response(
+                response, iteration, config, incomplete_reason
+            )
+        self._record_trace(
+            response,
+            plan,
+            parse_meta,
+            iteration,
+            fallback_json_found,
+            fallback_parse_valid,
+        )
         return plan, response.usage.total_tokens, response.reasoning_content
 
     async def _retry_submit_review_validation_repair(
@@ -295,7 +323,9 @@ class InferenceEngine:
         parse_meta["thinking_disabled"] = self._is_thinking_disabled(config)
         return plan, response, parse_meta
 
-    def _build_submit_config(self, request: ReviewRequest | DebugRequest) -> ModelConfig:
+    def _build_submit_config(
+        self, request: ReviewRequest | DebugRequest
+    ) -> ModelConfig:
         return self._model_client.default_config.model_copy(
             update={
                 "max_tokens": _SUBMIT_MAX_TOKENS,
@@ -330,7 +360,9 @@ class InferenceEngine:
         tool_schemas: list[dict[str, Any]],
         request: ReviewRequest | DebugRequest,
     ) -> list[dict[str, Any]]:
-        expected = "submit_review" if isinstance(request, ReviewRequest) else "submit_debug"
+        expected = (
+            "submit_review" if isinstance(request, ReviewRequest) else "submit_debug"
+        )
         return [
             tool
             for tool in tool_schemas
@@ -405,13 +437,18 @@ class InferenceEngine:
             if name == "submit_review":
                 parse_meta["submit_review_seen"] = True
                 if argument_error or not isinstance(payload, dict):
-                    error = argument_error or f"Invalid submit_review arguments type: {type(payload).__name__}"
+                    error = (
+                        argument_error
+                        or f"Invalid submit_review arguments type: {type(payload).__name__}"
+                    )
                     logger.warning("Invalid submit_review arguments ignored: %s", error)
                     parse_meta["submit_review_validation_error"] = error
                     continue
                 payload_error = self._validate_submit_review_payload(payload)
                 if payload_error:
-                    logger.warning("Invalid submit_review payload ignored: %s", payload_error)
+                    logger.warning(
+                        "Invalid submit_review payload ignored: %s", payload_error
+                    )
                     parse_meta["submit_review_validation_error"] = payload_error
                     continue
                 normalized_payload, warnings = self._normalize_review_payload(payload)
@@ -426,7 +463,10 @@ class InferenceEngine:
             if name == "submit_debug":
                 parse_meta["submit_debug_seen"] = True
                 if argument_error or not isinstance(payload, dict):
-                    error = argument_error or f"Invalid submit_debug arguments type: {type(payload).__name__}"
+                    error = (
+                        argument_error
+                        or f"Invalid submit_debug arguments type: {type(payload).__name__}"
+                    )
                     logger.warning("Invalid submit_debug arguments ignored: %s", error)
                     parse_meta["submit_debug_validation_error"] = error
                     continue
@@ -501,7 +541,9 @@ class InferenceEngine:
                     "context": {"goal": "", "constraints": [], "decisions": []},
                 }
             )
-            return AnalysisPlan(needs_tools=False, tool_calls=[], draft_debug=draft_debug)
+            return AnalysisPlan(
+                needs_tools=False, tool_calls=[], draft_debug=draft_debug
+            )
         except ValidationError:
             return None
 
@@ -553,7 +595,9 @@ class InferenceEngine:
         return ""
 
     @staticmethod
-    def _normalize_review_payload(payload: Any) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    def _normalize_review_payload(
+        payload: Any,
+    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         if not isinstance(payload, dict):
             return {}, []
         normalized = dict(payload)
@@ -606,7 +650,9 @@ class InferenceEngine:
         return mapping.get(value, value)
 
     @staticmethod
-    def _build_tool_feedback_messages(tool_feedback: list[dict[str, Any]]) -> list[Message]:
+    def _build_tool_feedback_messages(
+        tool_feedback: list[dict[str, Any]],
+    ) -> list[Message]:
         messages: list[Message] = []
         for item in tool_feedback:
             raw_tool_call = item.get("tool_call", {})
@@ -743,7 +789,9 @@ class InferenceEngine:
             data = payload.get("data")
             if isinstance(data, dict):
                 recommendation = str(data.get("recommended_next_step", "")).strip()
-            failed.append(f"- tool={fn or 'unknown'} error={error} next={recommendation or 'inspect args'}")
+            failed.append(
+                f"- tool={fn or 'unknown'} error={error} next={recommendation or 'inspect args'}"
+            )
         if not failed:
             return None
         return Message(
@@ -813,7 +861,9 @@ class InferenceEngine:
                 "fallback_json_found": fallback_json_found,
                 "fallback_parse_valid": fallback_parse_valid,
                 "incomplete_reason": parse_meta.get("incomplete_reason", ""),
-                "force_submit_discarded_count": parse_meta.get("force_submit_discarded_count", 0),
+                "force_submit_discarded_count": parse_meta.get(
+                    "force_submit_discarded_count", 0
+                ),
             },
         )
 
@@ -821,18 +871,29 @@ class InferenceEngine:
         self,
         *,
         context_telemetry: dict[str, Any],
+        messages: list[Message],
         tools: list[dict[str, Any]],
         iteration: int,
         prompt_input_token_budget: int,
+        force_submit: bool,
     ) -> None:
         if self._trace_event_writer is None:
             return
+        builder = ContextBuilder()
+        message_tokens = sum(builder.estimate_tokens(item.content) for item in messages)
+        tool_schema_tokens = builder.estimate_tokens(
+            json.dumps(tools, ensure_ascii=True)
+        )
         self._trace_event_writer(
             EventType.CONTEXT_TELEMETRY,
             "analyze",
             {
                 "iteration": iteration,
                 "prompt_input_token_budget": prompt_input_token_budget,
+                "estimated_message_tokens": message_tokens,
+                "estimated_tool_schema_tokens": tool_schema_tokens,
+                "estimated_prompt_tokens": message_tokens + tool_schema_tokens,
+                "force_submit": force_submit,
                 "tool_schema_count": len(tools),
                 **context_telemetry,
             },

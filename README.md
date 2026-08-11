@@ -198,7 +198,7 @@ python -m eval.run trend --inputs "eval/outputs/*_report.json"
 
 当前主评测是一个 5 个 real-world full-workspace PR 组成的 **small curated evaluation set**：2 个带人工复核 gold finding 的 candidate，加 3 个已稳定的零问题 controls。A/B 在相同模型、预算、fixture 和 deterministic one-to-one judge 下各跑一次；仅 runtime instability 才重试。
 
-契约修复后的 `deepseek-v4-pro` 新基线共运行 15 个 attempts：simple baseline valid completion rate 为 `83.3%`，MergeWarden 为 `33.3%`。MergeWarden 在两个 positive fixtures 上连续 6 次都在 hard token cap 后、`submit_review` 前结束，因此没有可用于 Review Quality 的 valid candidate completion，A/B Precision/Recall/F1 暂不可比较。Baseline 的两个 candidate runs 均 valid，但未命中 gold；3 个 controls 上两侧均没有 warning/critical false finding。Workspace 与 validator failure 均为 0。
+预算修复后的 `deepseek-v4-pro` 新基线共运行 10 个 attempts，simple baseline 与 MergeWarden 的 valid completion rate 均为 `100.0%`；2 个 candidate 和 3 个 controls 的 A/B 都在首次 attempt 产生有效提交。MergeWarden 图模式的普通模型调用 prompt 最大为 27,096 tokens；全部运行都调用了 `submit_review`，最大累计 token 为 69,606，未触及 80k hard cap。修复前失败运行的约 92k–106k 是累计 token，与单次 provider prompt 口径不同，只用于确认本轮没有再次 overshoot，不作为精确降幅。两侧 Precision/Recall/F1 仍均为 0，当前数据不支持相对质量优势，首要质量问题回到 verifier/evidence recall loss。
 
 新基线表格、per-fixture 对比和契约修复前的逐条审计见 [eval/reports/core-eval-v1.md](eval/reports/core-eval-v1.md) 与 [eval/reports/core-eval-v1-finding-audit.md](eval/reports/core-eval-v1-finding-audit.md)。
 

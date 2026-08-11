@@ -8,7 +8,12 @@ from pathlib import Path, PurePath
 
 from src.analyzer.event_log import EventType
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
-from src.analyzer.schemas import AnalysisPlan, DebugRequest, ReviewRequest
+from src.analyzer.schemas import (
+    AnalysisPlan,
+    DebugRequest,
+    DebugResponse,
+    ReviewRequest,
+)
 from src.models.exceptions import ModelTimeoutError
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
@@ -103,7 +108,9 @@ def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:
     orchestrator = AgentOrchestrator()
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
 
-    continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
+    continue_steps = [
+        step for step in response.context.decisions if step.phase == "continue"
+    ]
     assert len(continue_steps) == 1
     assert continue_steps[-1].result in {
         "stop:model_completed",
@@ -135,9 +142,14 @@ def test_review_iterations_respect_settings(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(orchestrator, "analyze", _always_needs_tool)
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
 
-    continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
+    continue_steps = [
+        step for step in response.context.decisions if step.phase == "continue"
+    ]
     assert len(continue_steps) == 2
-    assert continue_steps[-1].result in {"stop:max_iterations", "stop:budget_hard_capped"}
+    assert continue_steps[-1].result in {
+        "stop:max_iterations",
+        "stop:budget_hard_capped",
+    }
 
 
 def test_review_min_tool_iterations_defers_first_round_submit(
@@ -163,7 +175,9 @@ def test_review_min_tool_iterations_defers_first_round_submit(
 
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
 
-    continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
+    continue_steps = [
+        step for step in response.context.decisions if step.phase == "continue"
+    ]
     assert analyze_calls == 2
     assert continue_steps[0].result == "continue"
     assert continue_steps[-1].result == "stop:max_iterations"
@@ -191,9 +205,14 @@ def test_debug_run_stops_at_iteration_limit(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(orchestrator, "analyze", _always_needs_tool)
     response = asyncio.run(orchestrator.run_debug(DebugRequest(repo_path=".")))
 
-    continue_steps = [step for step in response.context.decisions if step.phase == "continue"]
+    continue_steps = [
+        step for step in response.context.decisions if step.phase == "continue"
+    ]
     assert len(continue_steps) == 3
-    assert continue_steps[-1].result in {"stop:max_iterations", "stop:budget_hard_capped"}
+    assert continue_steps[-1].result in {
+        "stop:max_iterations",
+        "stop:budget_hard_capped",
+    }
 
 
 def test_event_log_directory_is_relative_to_repo_path(tmp_path, monkeypatch) -> None:
@@ -381,7 +400,9 @@ def test_execute_tools_supports_file_read_tool(monkeypatch) -> None:
                 "function": {
                     "name": "read_file",
                     "arguments": (
-                        '{"file_path": "' + str(target_file).replace("\\", "\\\\") + '", "limit": 1}'
+                        '{"file_path": "'
+                        + str(target_file).replace("\\", "\\\\")
+                        + '", "limit": 1}'
                     ),
                 }
             }
@@ -393,7 +414,11 @@ def test_execute_tools_supports_file_read_tool(monkeypatch) -> None:
     assert len(results) == 1
     assert results[0].ok is True
     assert results[0].data["file_path"] == str(target_file)
-    assert results[0].data["content"].startswith('1: """Unit tests for orchestrator loop behavior."""')
+    assert (
+        results[0]
+        .data["content"]
+        .startswith('1: """Unit tests for orchestrator loop behavior."""')
+    )
 
 
 def test_execute_tools_wraps_readonly_tool_errors() -> None:
@@ -489,7 +514,10 @@ def test_execute_tools_supports_grep_tool() -> None:
         "tests",
         "test_file_read_tool.py",
     )
-    assert "test_file_read_tool_reads_full_file" in results[0].data["matches"][0]["line_text"]
+    assert (
+        "test_file_read_tool_reads_full_file"
+        in results[0].data["matches"][0]["line_text"]
+    )
 
 
 def test_execute_tools_supports_list_dir_tool() -> None:
@@ -521,7 +549,9 @@ def test_execute_tools_supports_list_dir_tool() -> None:
     assert "grep_tool.py" in names
 
 
-def test_execute_tools_runs_readonly_batch_concurrently_and_preserves_result_order() -> None:
+def test_execute_tools_runs_readonly_batch_concurrently_and_preserves_result_order() -> (
+    None
+):
     events: list[str] = []
     registry = ToolRegistry()
     registry.register(SlowReadonlyTool("slow_tool", events, delay=0.05))
@@ -539,11 +569,16 @@ def test_execute_tools_runs_readonly_batch_concurrently_and_preserves_result_ord
 
     results = asyncio.run(orchestrator.execute_tools(plan, registry, state))
 
-    assert [result.data["name"] for result in results if result.ok] == ["slow_tool", "fast_tool"]
+    assert [result.data["name"] for result in results if result.ok] == [
+        "slow_tool",
+        "fast_tool",
+    ]
     assert events == ["fast_tool", "slow_tool"]
 
 
-def test_execute_tools_uses_repo_root_for_path_checks_when_cwd_differs(monkeypatch) -> None:
+def test_execute_tools_uses_repo_root_for_path_checks_when_cwd_differs(
+    monkeypatch,
+) -> None:
     registry = ToolRegistry()
     registry.register(FileReadTool())
     orchestrator = AgentOrchestrator(registry=registry)
@@ -583,7 +618,9 @@ def test_execute_tools_uses_repo_root_for_path_checks_when_cwd_differs(monkeypat
     assert "outside the allowed workspace" in (results[1].error or "")
 
 
-def test_plan_mode_skips_tool_execution_even_when_plan_requests_tools(monkeypatch) -> None:
+def test_plan_mode_skips_tool_execution_even_when_plan_requests_tools(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "1")
     calls: list[str] = []
 
@@ -613,13 +650,17 @@ def test_plan_mode_skips_tool_execution_even_when_plan_requests_tools(monkeypatc
     monkeypatch.setattr(orchestrator, "analyze", _always_needs_tool)
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
 
-    execute_steps = [step for step in response.context.decisions if step.phase == "execute_tools"]
+    execute_steps = [
+        step for step in response.context.decisions if step.phase == "execute_tools"
+    ]
     assert execute_steps[-1].result == "Plan mode: tool execution disabled"
     assert "plan_mode" in response.context.constraints
     assert calls == []
 
 
-def test_execute_tools_emits_tool_io_event_with_iteration(tmp_path, monkeypatch) -> None:
+def test_execute_tools_emits_tool_io_event_with_iteration(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_TRACE_DETAIL", "compact")
     registry = ToolRegistry()
@@ -641,7 +682,9 @@ def test_execute_tools_emits_tool_io_event_with_iteration(tmp_path, monkeypatch)
         for line in log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    tool_io = next(item for item in events if item["event_type"] == EventType.TOOL_IO.value)
+    tool_io = next(
+        item for item in events if item["event_type"] == EventType.TOOL_IO.value
+    )
     assert tool_io["payload"]["iteration"] == 0
     assert tool_io["payload"]["name"] == "echo_tool"
 
@@ -670,7 +713,10 @@ def test_execute_tools_times_out_slow_readonly_tool_and_logs_duration(
     assert results[0].ok is False
     assert results[0].data["error_type"] == "ToolTimeoutError"
     assert "timed out" in (results[0].error or "")
-    assert any(error.category == "runtime" and "timed out" in error.message for error in state.errors)
+    assert any(
+        error.category == "runtime" and "timed out" in error.message
+        for error in state.errors
+    )
     log_path = tmp_path / ".mergewarden" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
     events = [
         json.loads(line)
@@ -709,7 +755,7 @@ def test_format_result_emits_format_result_event(tmp_path, monkeypatch) -> None:
     assert "used_placeholder_summary" in format_event["payload"]
 
 
-def test_soft_budget_skips_force_submit_finalize(tmp_path, monkeypatch) -> None:
+def test_soft_budget_uses_reserved_force_submit_finalize(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOKEN_BUDGET", "10")
     orchestrator = AgentOrchestrator()
@@ -724,8 +770,11 @@ def test_soft_budget_skips_force_submit_finalize(tmp_path, monkeypatch) -> None:
 
     response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
 
-    assert analyze_calls == [False]
-    assert response.context.decisions[-1].result == "stop:budget_soft_capped"
+    assert analyze_calls == [False, True]
+    continue_steps = [
+        item for item in response.context.decisions if item.phase == "continue"
+    ]
+    assert continue_steps[-1].result == "stop:budget_soft_capped"
     log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
     events = [
         json.loads(line)
@@ -733,13 +782,18 @@ def test_soft_budget_skips_force_submit_finalize(tmp_path, monkeypatch) -> None:
         if line.strip()
     ]
     finalize_event = next(
-        item for item in events if item["event_type"] == EventType.DECISION.value and item["phase"] == "finalize"
+        item
+        for item in events
+        if item["event_type"] == EventType.DECISION.value
+        and item["phase"] == "finalize"
     )
-    assert finalize_event["payload"]["finalize_attempt"] is False
-    assert finalize_event["payload"]["skip_reason"] == "budget_soft_capped"
+    assert finalize_event["payload"]["finalize_attempt"] is True
+    assert finalize_event["payload"]["budget_state"] == "soft_capped"
 
 
-def test_soft_budget_returns_submitted_compatibility_warning(tmp_path, monkeypatch) -> None:
+def test_soft_budget_returns_submitted_compatibility_warning(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOKEN_BUDGET", "10")
     orchestrator = AgentOrchestrator()
@@ -777,7 +831,9 @@ def test_soft_budget_returns_submitted_compatibility_warning(tmp_path, monkeypat
     ]
 
 
-def test_run_timeout_stops_and_skips_force_submit_finalize(tmp_path, monkeypatch) -> None:
+def test_run_timeout_stops_and_skips_force_submit_finalize(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_RUN_TIMEOUT_SECONDS", "0.001")
     orchestrator = AgentOrchestrator()
@@ -801,10 +857,16 @@ def test_run_timeout_stops_and_skips_force_submit_finalize(tmp_path, monkeypatch
         if line.strip()
     ]
     continue_event = next(
-        item for item in events if item["event_type"] == EventType.DECISION.value and item["phase"] == "continue"
+        item
+        for item in events
+        if item["event_type"] == EventType.DECISION.value
+        and item["phase"] == "continue"
     )
     finalize_event = next(
-        item for item in events if item["event_type"] == EventType.DECISION.value and item["phase"] == "finalize"
+        item
+        for item in events
+        if item["event_type"] == EventType.DECISION.value
+        and item["phase"] == "finalize"
     )
     assert continue_event["payload"]["run_timed_out"] is True
     assert finalize_event["payload"]["finalize_attempt"] is False
@@ -836,13 +898,21 @@ def test_model_timeout_skips_force_submit_finalize(tmp_path, monkeypatch) -> Non
         if line.strip()
     ]
     error_event = next(
-        item for item in events if item["event_type"] == EventType.ERROR.value and item["phase"] == "analyze"
+        item
+        for item in events
+        if item["event_type"] == EventType.ERROR.value and item["phase"] == "analyze"
     )
     finalize_event = next(
-        item for item in events if item["event_type"] == EventType.DECISION.value and item["phase"] == "finalize"
+        item
+        for item in events
+        if item["event_type"] == EventType.DECISION.value
+        and item["phase"] == "finalize"
     )
     model_event = next(
-        item for item in events if item["event_type"] == EventType.MODEL_CALL.value and item["phase"] == "analyze"
+        item
+        for item in events
+        if item["event_type"] == EventType.MODEL_CALL.value
+        and item["phase"] == "analyze"
     )
     assert error_event["payload"]["error_type"] == "ModelTimeoutError"
     assert model_event["payload"]["model_request_timeout_seconds"] == 90.0
@@ -853,7 +923,9 @@ def test_model_timeout_skips_force_submit_finalize(tmp_path, monkeypatch) -> Non
     assert finalize_event["payload"]["skip_reason"] == "model_timeout"
 
 
-def test_prepare_start_logs_runtime_budget_and_timeout_settings(tmp_path, monkeypatch) -> None:
+def test_prepare_start_logs_runtime_budget_and_timeout_settings(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOKEN_BUDGET", "26000")
     monkeypatch.setenv("TOKEN_HARD_BUDGET", "32000")
@@ -1022,9 +1094,11 @@ def test_review_mode_registers_review_context_tools_from_diff_text(
         )
     )
 
-    assert {"get_changed_context", "find_symbol_context", "validate_review_draft"}.issubset(
-        seen_tool_names[0]
-    )
+    assert {
+        "get_changed_context",
+        "find_symbol_context",
+        "validate_review_draft",
+    }.issubset(seen_tool_names[0])
 
 
 def test_external_registry_is_not_overridden_by_review_context_tools(
@@ -1069,7 +1143,8 @@ def test_external_registry_is_not_overridden_by_review_context_tools(
 
 
 def test_pre_budget_submit_triggers_when_budget_near_and_tool_feedback_exists(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOKEN_BUDGET", "200")
@@ -1124,8 +1199,73 @@ def test_pre_budget_submit_triggers_when_budget_near_and_tool_feedback_exists(
     assert pre_budget_events[1]["payload"]["stage"] == "completed"
 
 
+def test_reserved_submit_triggers_at_analysis_ceiling_without_tool_feedback(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TOKEN_BUDGET", "200")
+    monkeypatch.setenv("TOKEN_HARD_BUDGET", "300")
+    monkeypatch.setenv("FINAL_SUBMIT_RESERVE_TOKENS", "120")
+    monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "2")
+    orchestrator = AgentOrchestrator()
+    analyze_calls: list[bool] = []
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        force_submit = bool(kwargs.get("force_submit"))
+        analyze_calls.append(force_submit)
+        orchestrator._latest_tokens = 5 if force_submit else 185  # noqa: SLF001
+        if force_submit:
+            return AnalysisPlan(
+                draft_review=ReviewReport(
+                    summary="Reserved submit completed.", issues=[]
+                )
+            )
+        return AnalysisPlan(needs_tools=True, tool_calls=[])
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+
+    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+
+    assert analyze_calls == [False, True]
+    assert response.report.summary == "Reserved submit completed."
+    assert orchestrator._analysis_token_ceiling() == 180  # noqa: SLF001
+
+
+def test_reserved_submit_is_shared_by_debug_mode(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TOKEN_BUDGET", "200")
+    monkeypatch.setenv("TOKEN_HARD_BUDGET", "300")
+    monkeypatch.setenv("FINAL_SUBMIT_RESERVE_TOKENS", "120")
+    monkeypatch.setenv("DEBUG_MAX_ITERATIONS", "2")
+    orchestrator = AgentOrchestrator()
+    analyze_calls: list[bool] = []
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        force_submit = bool(kwargs.get("force_submit"))
+        analyze_calls.append(force_submit)
+        orchestrator._latest_tokens = 5 if force_submit else 185  # noqa: SLF001
+        if force_submit:
+            return AnalysisPlan(
+                draft_debug=DebugResponse(
+                    run_id="reserved",
+                    summary="Reserved debug submit completed.",
+                    context=state,
+                )
+            )
+        return AnalysisPlan(needs_tools=True, tool_calls=[])
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+
+    response = asyncio.run(orchestrator.run_debug(DebugRequest(repo_path=".")))
+
+    assert analyze_calls == [False, True]
+    assert response.summary == "Reserved debug submit completed."
+
+
 def test_pre_budget_submit_skips_when_budget_below_threshold(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOKEN_BUDGET", "200")
@@ -1158,7 +1298,8 @@ def test_pre_budget_submit_skips_when_budget_below_threshold(
 
 
 def test_pre_budget_submit_skips_without_tool_feedback(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOKEN_BUDGET", "100")
@@ -1187,7 +1328,8 @@ def test_pre_budget_submit_skips_without_tool_feedback(
 
 
 def test_empty_review_draft_allows_force_submit_finalize(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "1")
@@ -1274,7 +1416,9 @@ def test_model_timeout_still_skips_extra_finalize(tmp_path, monkeypatch) -> None
                 return (
                     AnalysisPlan(
                         needs_tools=True,
-                        tool_calls=[{"function": {"name": "echo_tool", "arguments": "{}"}}],
+                        tool_calls=[
+                            {"function": {"name": "echo_tool", "arguments": "{}"}}
+                        ],
                     ),
                     100,
                     "",
@@ -1320,15 +1464,16 @@ def test_model_timeout_still_skips_extra_finalize(tmp_path, monkeypatch) -> None
 
     # Verify model timeout was logged
     error_event = next(
-        item for item in events
-        if item["event_type"] == EventType.ERROR.value
-        and item["phase"] == "analyze"
+        item
+        for item in events
+        if item["event_type"] == EventType.ERROR.value and item["phase"] == "analyze"
     )
     assert error_event["payload"]["error_type"] == "ModelTimeoutError"
 
 
 def test_length_truncated_empty_model_response_skips_extra_finalize(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("REVIEW_MAX_ITERATIONS", "3")
@@ -1374,7 +1519,8 @@ def test_length_truncated_empty_model_response_skips_extra_finalize(
 
 
 def test_negative_fixture_fallback_emits_no_fabricated_high_confidence_issues(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ) -> None:
     """Placeholder fallback path must not fabricate critical/warning issues."""
     monkeypatch.chdir(tmp_path)

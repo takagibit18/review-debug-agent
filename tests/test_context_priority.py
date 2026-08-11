@@ -10,6 +10,8 @@ from src.analyzer.context_builder import ContextBuilder, ContextPart
 from src.analyzer.context_priority import (
     TIER_DIFF,
     TIER_FILES,
+    TIER_MANIFEST,
+    TIER_MANIFEST_PATH,
     TIER_META,
     assemble_debug_payload,
     assemble_review_payload,
@@ -128,6 +130,60 @@ def test_review_file_tie_break_lexicographic() -> None:
     assert file_parts[0].priority < file_parts[1].priority
 
 
+def test_graph_manifest_is_budgeted_and_excludes_audit_only_paths() -> None:
+    request = ReviewRequest(repo_path=".")
+    context = ContextState(
+        candidate_context_manifests=[
+            {
+                "candidate_id": "C-1",
+                "included_spans": [{"content": "bounded evidence"}],
+                "included_graph_paths": [
+                    {"path_id": "P-1", "explanation": "PATH-MARKER" * 100}
+                ],
+                "excluded_low_confidence_paths": [{"reason": "audit-only-secret"}],
+                "discarded_paths": [{"reason": "discarded-secret"}],
+                "token_cost": 4,
+            }
+        ]
+    )
+    parts = build_review_context_parts(request, context, "", {})
+    manifest_part = next(item for item in parts if item.label == "manifest:C-1")
+    path_part = next(item for item in parts if item.label == "manifest_path:C-1:P-1")
+
+    assert manifest_part.priority == TIER_MANIFEST
+    assert path_part.priority == TIER_MANIFEST_PATH
+    assert "bounded evidence" in manifest_part.content
+    assert "audit-only-secret" not in manifest_part.content
+    assert "discarded-secret" not in manifest_part.content
+
+    meta_only = [item for item in parts if item.label == "meta"]
+    truncated = assemble_review_payload(request, context, parts, meta_only)
+    assert truncated["candidate_context_manifests"] == []
+    assert truncated["truncated"]["candidate_context_manifests"] == ["C-1"]
+
+    core_only = assemble_review_payload(
+        request,
+        context,
+        parts,
+        [*meta_only, manifest_part],
+    )
+    assert core_only["candidate_context_manifests"][0]["included_spans"]
+    assert core_only["candidate_context_manifests"][0]["included_graph_paths"] == []
+    assert core_only["truncated"]["candidate_context_graph_paths"] == 1
+
+    complete = assemble_review_payload(request, context, parts, parts)
+    assert complete["candidate_context_manifests"][0]["candidate_id"] == "C-1"
+    assert (
+        "excluded_low_confidence_paths"
+        not in complete["candidate_context_manifests"][0]
+    )
+    assert "discarded_paths" not in complete["candidate_context_manifests"][0]
+    assert (
+        complete["candidate_context_manifests"][0]["included_graph_paths"][0]["path_id"]
+        == "P-1"
+    )
+
+
 def test_assemble_review_truncated_flags() -> None:
     req = ReviewRequest(repo_path="/r")
     ctx = ContextState()
@@ -204,7 +260,9 @@ def test_review_prompt_requires_summary_issue_consistency() -> None:
     assert "use confidence >= 0.85" in combined
 
 
-def test_debug_messages_do_not_embed_full_direct_error_log_text_when_truncated() -> None:
+def test_debug_messages_do_not_embed_full_direct_error_log_text_when_truncated() -> (
+    None
+):
     direct_error_log = "E" * 20_000
     req = DebugRequest(repo_path=".", error_log_text=direct_error_log)
     ctx = ContextState()
@@ -309,9 +367,7 @@ def test_assemble_review_payload_marks_summarized_parts() -> None:
         diff_loaded="diff --git a/x b/x\n@@\n+a\n",
         file_contents={"/a": "A"},
     )
-    selected = [
-        p for p in all_parts if p.label == "meta"
-    ] + [
+    selected = [p for p in all_parts if p.label == "meta"] + [
         ContextPart(
             priority=TIER_DIFF,
             label="[summarized]diff_hunk_0",

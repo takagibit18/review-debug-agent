@@ -73,6 +73,13 @@ Only the diff and immediately relevant file fragments are fed to the model
 by default.  The context window expands on demand (interface definitions,
 adjacent modules) to control token cost and reasoning noise.
 
+Graph-assisted review follows the same input budget as agent search. Candidate
+manifests are truncatable prompt parts; audit-only discarded or low-confidence
+paths remain in event logs and are never appended outside the prompt budget.
+Every run also protects a final-submit reserve. Normal exploration stops at the
+analysis ceiling, while a compact submit-only request remains available for a
+structured `ReviewReport` or debug result.
+
 For PR review integrations, the durable product contract is diff-first:
 the submitted PR diff is the review target, while a full repository snapshot
 may be mounted as the tool workspace for contextual reads.  The model should

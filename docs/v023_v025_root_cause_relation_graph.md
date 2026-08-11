@@ -229,7 +229,7 @@ context_score =
 
 Planner 支持 token/字符预算、最大节点数、最大深度、边类型权重、节点/span 去重、截断原因、强证据优先和低置信度探索隔离。它不会把全部一至两跳邻居无条件送入模型。
 
-Manifest 中的 `included_spans` 和 `included_graph_paths` 是最终实际进入 Reviewer prompt 的内容，而不是检索过或计划发送的内容；`excluded_low_confidence_paths` 和 `discarded_paths` 不具备 accepted evidence 资格。
+Manifest 中的 `included_spans` 作为 candidate 核心块参与 `PROMPT_INPUT_TOKEN_BUDGET`，`included_graph_paths` 作为独立的低优先级块在剩余预算内选择；未选中的 path 不进入 Reviewer prompt。`excluded_low_confidence_paths` 和 `discarded_paths` 仅保留在审计状态/事件日志中，不进入 prompt，也不具备 accepted evidence 资格。
 
 ```json
 {

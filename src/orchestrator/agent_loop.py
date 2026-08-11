@@ -1711,6 +1711,11 @@ class AgentOrchestrator:
                 "run_id": self._run_id,
                 "token_budget": self._settings.token_budget,
                 "token_hard_budget": self._settings.token_hard_budget,
+                "analysis_token_ceiling": self._analysis_token_ceiling(),
+                "final_submit_reserve_tokens": self._settings.final_submit_reserve_tokens,
+                "final_submit_prompt_token_budget": (
+                    self._settings.final_submit_prompt_token_budget
+                ),
                 "prompt_input_token_budget": self._settings.prompt_input_token_budget,
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
                 "agent_run_timeout_seconds": self._settings.agent_run_timeout_seconds,
@@ -1756,11 +1761,9 @@ class AgentOrchestrator:
             return False
         if self._pre_budget_submit_attempted:
             return False
-        if self._budget_exhausted:
+        if self._budget_state == "hard_capped":
             return False
         if self._model_timeout_seen:
-            return False
-        if not self._has_useful_tool_feedback():
             return False
         plan = self._last_plan
         if plan is not None and (
@@ -1768,9 +1771,27 @@ class AgentOrchestrator:
             or plan.draft_debug is not None
         ):
             return False
+        analysis_ceiling = self._analysis_token_ceiling()
+        if self._total_tokens >= analysis_ceiling:
+            return True
+        if not self._has_useful_tool_feedback():
+            return False
         ratio = self._settings.pre_budget_submit_token_ratio
-        threshold = int(self._settings.token_budget * ratio)
+        threshold = min(
+            int(self._settings.token_budget * ratio),
+            analysis_ceiling,
+        )
         return self._total_tokens >= threshold
+
+    def _analysis_token_ceiling(self) -> int:
+        """Return the cumulative-token ceiling available to non-final model calls."""
+
+        reserve_ceiling = max(
+            0,
+            self._settings.token_hard_budget
+            - self._settings.final_submit_reserve_tokens,
+        )
+        return min(self._settings.token_budget, reserve_ceiling)
 
     def _record_pre_budget_submit(
         self,
@@ -1785,12 +1806,20 @@ class AgentOrchestrator:
             "total_tokens": self._total_tokens,
             "token_budget": self._settings.token_budget,
             "token_hard_budget": self._settings.token_hard_budget,
+            "analysis_token_ceiling": self._analysis_token_ceiling(),
+            "final_submit_reserve_tokens": self._settings.final_submit_reserve_tokens,
+            "final_submit_prompt_token_budget": (
+                self._settings.final_submit_prompt_token_budget
+            ),
             "budget_state": self._budget_state,
             "has_tool_feedback": bool(self._tool_feedback),
             "pre_budget_submit_ratio": self._settings.pre_budget_submit_token_ratio,
-            "pre_budget_submit_threshold": int(
-                self._settings.token_budget
-                * self._settings.pre_budget_submit_token_ratio
+            "pre_budget_submit_threshold": min(
+                int(
+                    self._settings.token_budget
+                    * self._settings.pre_budget_submit_token_ratio
+                ),
+                self._analysis_token_ceiling(),
             ),
         }
         if plan is not None:
@@ -1806,8 +1835,8 @@ class AgentOrchestrator:
             return "model_incomplete"
         if self._pre_budget_submit_attempted:
             return "pre_budget_submit_attempted"
-        if self._budget_state != "none":
-            return f"budget_{self._budget_state}"
+        if self._budget_state == "hard_capped":
+            return "budget_hard_capped"
         if self._run_timeout_exceeded():
             return "run_timeout"
         return ""

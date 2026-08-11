@@ -289,7 +289,7 @@ def test_custom_edge_weights_change_path_scores(tmp_path: Path) -> None:
     assert write_score > call_score
 
 
-def test_manifest_in_prompt_is_exact_planner_output_even_when_base_context_truncates(
+def test_manifest_respects_base_prompt_budget(
     tmp_path: Path,
 ) -> None:
     source = _write(tmp_path / "service.py", "def run():\n    return 2\n")
@@ -316,6 +316,8 @@ def test_manifest_in_prompt_is_exact_planner_output_even_when_base_context_trunc
     )
     payload = json.loads(messages[1].content[len(USER_PREFIX_REVIEW) :])
 
-    assert payload["candidate_context_manifests"] == [expected]
-    assert payload["candidate_context_manifests"][0]["included_spans"]
+    assert payload["candidate_context_manifests"] == []
+    assert payload["truncated"]["candidate_context_manifests"] == [
+        expected["candidate_id"]
+    ]
     assert payload["truncated"]["any"] is True

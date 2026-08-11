@@ -289,7 +289,9 @@ def test_analyze_appends_tool_feedback_messages(monkeypatch) -> None:
     assert "tool" in roles
 
 
-def test_analyze_injects_synthetic_prefetch_feedback_as_user_context(monkeypatch) -> None:
+def test_analyze_injects_synthetic_prefetch_feedback_as_user_context(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
@@ -303,7 +305,9 @@ def test_analyze_injects_synthetic_prefetch_feedback_as_user_context(monkeypatch
                 "synthetic_context": True,
                 "function": {"name": "read_file", "arguments": '{"file_path":"a.py"}'},
             },
-            "result": ToolResult(ok=True, data={"file_path": "a.py", "content": "1: pass"}),
+            "result": ToolResult(
+                ok=True, data={"file_path": "a.py", "content": "1: pass"}
+            ),
         }
     ]
 
@@ -475,7 +479,9 @@ def test_analyze_emits_model_detail_and_plan_parsed_events(monkeypatch) -> None:
     assert EventType.MODEL_RESPONSE_DETAIL in event_types
     assert EventType.PLAN_PARSED in event_types
     model_event = next(
-        payload for event_type, _, payload in events if event_type == EventType.MODEL_RESPONSE_DETAIL
+        payload
+        for event_type, _, payload in events
+        if event_type == EventType.MODEL_RESPONSE_DETAIL
     )
     assert model_event["iteration"] == 1
     assert "content_length" in model_event
@@ -483,12 +489,16 @@ def test_analyze_emits_model_detail_and_plan_parsed_events(monkeypatch) -> None:
     assert "tool_choice" in model_event
     assert "thinking_disabled" in model_event
     plan_event = next(
-        payload for event_type, _, payload in events if event_type == EventType.PLAN_PARSED
+        payload
+        for event_type, _, payload in events
+        if event_type == EventType.PLAN_PARSED
     )
     assert plan_event["iteration"] == 1
 
 
-def test_analyze_logs_length_finish_reason_even_without_trace_detail(monkeypatch) -> None:
+def test_analyze_logs_length_finish_reason_even_without_trace_detail(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
@@ -499,7 +509,9 @@ def test_analyze_logs_length_finish_reason_even_without_trace_detail(monkeypatch
         return ModelResponse(
             content="",
             tool_calls=[],
-            usage=TokenUsage(prompt_tokens=100, completion_tokens=2048, total_tokens=2148),
+            usage=TokenUsage(
+                prompt_tokens=100, completion_tokens=2048, total_tokens=2148
+            ),
             model="fake-model",
             finish_reason="length",
             reasoning_content="x" * 1000,
@@ -509,7 +521,9 @@ def test_analyze_logs_length_finish_reason_even_without_trace_detail(monkeypatch
     events: list[tuple[EventType, str, dict[str, Any]]] = []
     engine = InferenceEngine(
         model_client=client,  # type: ignore[arg-type]
-        trace_recorder=TraceRecorder(detail_mode="off", max_chars=500, log_tool_body=False),
+        trace_recorder=TraceRecorder(
+            detail_mode="off", max_chars=500, log_tool_body=False
+        ),
         trace_event_writer=lambda event_type, phase, payload: events.append(
             (event_type, phase, payload)
         ),
@@ -549,7 +563,9 @@ def test_analyze_marks_length_finish_without_output_incomplete(monkeypatch) -> N
         return ModelResponse(
             content="",
             tool_calls=[],
-            usage=TokenUsage(prompt_tokens=100, completion_tokens=2048, total_tokens=2148),
+            usage=TokenUsage(
+                prompt_tokens=100, completion_tokens=2048, total_tokens=2148
+            ),
             model="deepseek-v4-pro",
             finish_reason="length",
             reasoning_content="x" * 1000,
@@ -587,7 +603,9 @@ def test_analyze_marks_length_finish_without_output_incomplete(monkeypatch) -> N
 def test_regular_review_disables_deepseek_thinking(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
-    client.default_config = client.default_config.model_copy(update={"model": "deepseek-v4-pro"})
+    client.default_config = client.default_config.model_copy(
+        update={"model": "deepseek-v4-pro"}
+    )
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
 
     asyncio.run(
@@ -659,10 +677,14 @@ def test_normalize_review_payload_canonicalizes_location() -> None:
     assert warnings
 
 
-def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(monkeypatch) -> None:
+def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
-    client.default_config = client.default_config.model_copy(update={"model": "deepseek-v4-pro"})
+    client.default_config = client.default_config.model_copy(
+        update={"model": "deepseek-v4-pro"}
+    )
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
     state = ContextState(goal="Run structured code review")
     request = ReviewRequest(repo_path=".")
@@ -691,11 +713,51 @@ def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(m
     )
 
 
+def test_force_submit_review_uses_compact_reserved_prompt_budget(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    monkeypatch.setenv("FINAL_SUBMIT_PROMPT_TOKEN_BUDGET", "100")
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    state = ContextState(
+        goal="Run structured code review",
+        candidate_context_manifests=[
+            {
+                "candidate_id": "C-large",
+                "included_spans": [{"content": "GRAPH-MARKER" * 5000}],
+                "included_graph_paths": [],
+            }
+        ],
+    )
+
+    asyncio.run(
+        engine.analyze(
+            state=state,
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+            diff_text="DIFF-MARKER" * 5000,
+            file_contents={"large.py": "FILE-MARKER" * 5000},
+            prompt_input_token_budget=10_000,
+            force_submit=True,
+        )
+    )
+
+    user_payload = _extract_payload_from_user_message(client.calls[-1][1].content)
+    assert user_payload["candidate_context_manifests"] == []
+    assert "GRAPH-MARKER" not in client.calls[-1][1].content
+    assert "FILE-MARKER" not in client.calls[-1][1].content
+    assert "DIFF-MARKER" not in client.calls[-1][1].content
+
+
 def test_force_submit_review_disables_qwen_dashscope_thinking(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv(
+        "OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
     client = RecordingFakeModelClient()
-    client.default_config = client.default_config.model_copy(update={"model": "qwen3.6-27b"})
+    client.default_config = client.default_config.model_copy(
+        update={"model": "qwen3.6-27b"}
+    )
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
     state = ContextState(goal="Run structured code review")
     request = ReviewRequest(repo_path=".")
@@ -720,9 +782,13 @@ def test_force_submit_review_disables_qwen_dashscope_thinking(monkeypatch) -> No
 
 def test_force_submit_review_disables_glm_dashscope_thinking(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv(
+        "OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
     client = RecordingFakeModelClient()
-    client.default_config = client.default_config.model_copy(update={"model": "glm-4.7"})
+    client.default_config = client.default_config.model_copy(
+        update={"model": "glm-4.7"}
+    )
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
     state = ContextState(goal="Run structured code review")
     request = ReviewRequest(repo_path=".")
@@ -745,7 +811,9 @@ def test_force_submit_review_disables_glm_dashscope_thinking(monkeypatch) -> Non
     assert config.extra_body == {"enable_thinking": False}
 
 
-def test_force_submit_debug_forces_debug_tool_without_openai_thinking_override(monkeypatch) -> None:
+def test_force_submit_debug_forces_debug_tool_without_openai_thinking_override(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     client = RecordingFakeModelClient()
@@ -772,7 +840,9 @@ def test_force_submit_debug_forces_debug_tool_without_openai_thinking_override(m
     assert config.extra_body is None
 
 
-def test_near_last_review_iteration_switches_to_submit_only_forced_mode(monkeypatch) -> None:
+def test_near_last_review_iteration_switches_to_submit_only_forced_mode(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
@@ -869,8 +939,7 @@ def test_submit_review_rejects_dsml_issues_parameter_leak_in_summary() -> None:
     client = RecordingFakeModelClient()
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
     leaked_summary = (
-        "review notes </summary>\n"
-        '<DSML parameter name="issues" string="false">[]'
+        'review notes </summary>\n<DSML parameter name="issues" string="false">[]'
     )
 
     plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
@@ -916,7 +985,10 @@ def test_submit_review_rejects_issue_like_summary_with_empty_issues() -> None:
     )
 
     assert plan.draft_review is None
-    assert "summary mentions review concerns" in parse_meta["submit_review_validation_error"]
+    assert (
+        "summary mentions review concerns"
+        in parse_meta["submit_review_validation_error"]
+    )
 
 
 def test_submit_review_allows_empty_issues_with_honest_no_bug_summary() -> None:
@@ -1015,4 +1087,7 @@ def test_issue_like_empty_submit_review_payload_gets_repair_retry(monkeypatch) -
     assert plan.draft_review.issues[0].severity.value == "warning"
     assert total_tokens == 24
     assert len(client.calls) == 2
-    assert any("summary mentions review concerns" in message.content for message in client.calls[1])
+    assert any(
+        "summary mentions review concerns" in message.content
+        for message in client.calls[1]
+    )

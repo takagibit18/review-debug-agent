@@ -18,10 +18,15 @@ from src.analyzer.schemas import DebugRequest, ReviewRequest
 TIER_META = 10_000
 TIER_ERROR_LOG = 20_000
 TIER_DIFF = 30_000
+TIER_MANIFEST = 35_000
+TIER_MANIFEST_PATH = 36_000
 TIER_FILES = 40_000
 TIER_STRUCTURE = 50_000
 
 SUMMARY_LABEL_PREFIX = "[summarized]"
+MANIFEST_LABEL_PREFIX = "manifest:"
+MANIFEST_PATH_LABEL_PREFIX = "manifest_path:"
+_AUDIT_ONLY_MANIFEST_FIELDS = {"excluded_low_confidence_paths", "discarded_paths"}
 
 
 def _split_section_at_hunks(section: str) -> list[str]:
@@ -109,6 +114,40 @@ def build_review_context_parts(
                 content=hunk,
             )
         )
+    path_index = 0
+    for j, manifest in enumerate(context.candidate_context_manifests):
+        candidate_id = str(manifest.get("candidate_id") or f"candidate-{j}")
+        prompt_manifest = {
+            key: value
+            for key, value in manifest.items()
+            if key not in _AUDIT_ONLY_MANIFEST_FIELDS and key != "included_graph_paths"
+        }
+        prompt_manifest["included_graph_paths"] = []
+        parts.append(
+            ContextPart(
+                priority=TIER_MANIFEST + j,
+                label=f"{MANIFEST_LABEL_PREFIX}{candidate_id}",
+                content=json.dumps(prompt_manifest, ensure_ascii=True),
+            )
+        )
+        graph_paths = manifest.get("included_graph_paths", [])
+        if not isinstance(graph_paths, list):
+            continue
+        for path in graph_paths:
+            if not isinstance(path, dict):
+                continue
+            path_id = str(path.get("path_id") or path_index)
+            parts.append(
+                ContextPart(
+                    priority=TIER_MANIFEST_PATH + path_index,
+                    label=(f"{MANIFEST_PATH_LABEL_PREFIX}{candidate_id}:{path_id}"),
+                    content=json.dumps(
+                        {"candidate_id": candidate_id, "path": path},
+                        ensure_ascii=True,
+                    ),
+                )
+            )
+            path_index += 1
     for j, path in enumerate(sorted(file_contents.keys())):
         parts.append(
             ContextPart(
@@ -237,6 +276,25 @@ def assemble_review_payload(
     structure_part = _selected_part_for_label(selected, "structure")
     if structure_part is not None:
         structure_out = structure_part.content
+    manifests_out: list[dict[str, Any]] = []
+    manifests_by_id: dict[str, dict[str, Any]] = {}
+    for part in selected:
+        if not part.label.startswith(MANIFEST_LABEL_PREFIX):
+            continue
+        decoded = json.loads(part.content)
+        if isinstance(decoded, dict):
+            manifests_out.append(decoded)
+            manifests_by_id[str(decoded.get("candidate_id") or "")] = decoded
+    for part in selected:
+        if not part.label.startswith(MANIFEST_PATH_LABEL_PREFIX):
+            continue
+        decoded = json.loads(part.content)
+        if not isinstance(decoded, dict):
+            continue
+        manifest = manifests_by_id.get(str(decoded.get("candidate_id") or ""))
+        manifest_path = decoded.get("path")
+        if manifest is not None and isinstance(manifest_path, dict):
+            manifest["included_graph_paths"].append(manifest_path)
 
     truncated: dict[str, Any] = {
         "any": any(not _contains_label_or_summary(sel, label) for label in all_l),
@@ -253,6 +311,17 @@ def assemble_review_payload(
         "structure": any(p.label == "structure" for p in all_parts)
         and not _contains_label_or_summary(sel, "structure"),
         "summarized": summarized_bases,
+        "candidate_context_manifests": [
+            part.label[len(MANIFEST_LABEL_PREFIX) :]
+            for part in all_parts
+            if part.label.startswith(MANIFEST_LABEL_PREFIX)
+            and not _contains_label_or_summary(sel, part.label)
+        ],
+        "candidate_context_graph_paths": sum(
+            part.label.startswith(MANIFEST_PATH_LABEL_PREFIX)
+            and not _contains_label_or_summary(sel, part.label)
+            for part in all_parts
+        ),
     }
     raw_diff_text = request.diff_text
     if raw_diff_text and (truncated["diff_hunks"] or diff_loaded_out != raw_diff_text):
@@ -266,7 +335,7 @@ def assemble_review_payload(
         "files": files_out,
         "project_structure": structure_out,
         "constraints": context.constraints,
-        "candidate_context_manifests": context.candidate_context_manifests,
+        "candidate_context_manifests": manifests_out,
         "relation_graph_summary": context.relation_graph_summary,
         "truncated": truncated,
     }
