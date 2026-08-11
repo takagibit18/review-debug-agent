@@ -44,7 +44,16 @@ path execution. Exploratory or low-confidence graph edges cannot alone support a
 Seek counterexamples. Return exactly one structured
 verdict per candidate through submit_finding_verification. Never accept a candidate merely
 because its confidence is high. Use candidate_context as candidate-scoped evidence from
-successful source reads; distinguish missing evidence from evidence that contradicts a claim."""
+successful source reads; distinguish missing evidence from evidence that contradicts a claim.
+Severity measures supported impact while confidence measures evidentiary certainty; a narrow
+current trigger is not by itself a reason to classify an incorrect result as info. Author tests
+and PR intent establish intent, not preservation of the pre-change fallback or compatibility
+contract. Trace current operands, wrapper unwrapping, keying/grouping, and active call paths
+before accepting a claim that the concern is future-only. If the evidence supports a narrower
+impact than the candidate states, prefer status=accepted with revised_issue that narrows the
+claim instead of rejecting the supported core. For candidate_kind=filter_rescue or
+severity_calibration, acceptance requires revised_issue with evidence-calibrated severity and
+confidence; never raise confidence merely to pass a threshold."""
 
 _AGENT_VERIFIER_POLICY = """This is agent_search mode. Accept valid diff evidence and provenance
 from successful read-only tool calls without requiring a context manifest. Reject invented graph

@@ -1,6 +1,11 @@
 """Tests for model prompt contracts."""
 
-from src.analyzer.prompts import FINALIZE_REVIEW_NOTICE, SYSTEM_PROMPT_REVIEW, USER_PREFIX_REVIEW
+from src.analyzer.prompts import (
+    FINALIZE_REVIEW_NOTICE,
+    REVIEW_SEVERITY_CALIBRATION_GUIDANCE,
+    SYSTEM_PROMPT_REVIEW,
+    USER_PREFIX_REVIEW,
+)
 
 
 def test_finalize_review_notice_requires_empty_issues_for_speculative_suggestions() -> None:
@@ -49,3 +54,28 @@ def test_review_prompts_require_risk_severity_for_concrete_regressions() -> None
         assert "must use warning or critical" in normalized
         assert "never info or style" in normalized
         assert "data loss" in normalized
+
+
+def test_review_prompts_separate_impact_from_evidence_certainty() -> None:
+    for prompt in (SYSTEM_PROMPT_REVIEW, USER_PREFIX_REVIEW, FINALIZE_REVIEW_NOTICE):
+        assert REVIEW_SEVERITY_CALIBRATION_GUIDANCE in prompt
+
+    normalized = REVIEW_SEVERITY_CALIBRATION_GUIDANCE.lower()
+    assert "severity measures the impact" in normalized
+    assert "confidence measures" in normalized
+    assert "do not downgrade" in normalized
+    assert "do not inflate confidence" in normalized
+    assert "affected population is narrow" in normalized
+
+
+def test_review_prompts_cover_compatibility_positive_and_negative_examples() -> None:
+    normalized = REVIEW_SEVERITY_CALIBRATION_GUIDANCE.lower()
+
+    assert "pre-change fallback" in normalized
+    assert "author tests and pr intent" in normalized
+    assert "wrapper unwrapping" in normalized
+    assert "keying/grouping" in normalized
+    assert "compatibility fallback" in normalized
+    assert "wrapped value directly to its wrapper" in normalized
+    assert "pure optimization with unchanged results is info" in normalized
+    assert "depends only on a future caller" in normalized

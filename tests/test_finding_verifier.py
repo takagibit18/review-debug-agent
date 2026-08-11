@@ -47,7 +47,26 @@ def test_build_candidates_uses_stable_ids_and_only_risk_findings() -> None:
 def test_build_candidates_routes_only_structured_boundary_risks() -> None:
     module = importlib.import_module("src.analyzer.finding_verifier")
     rescue = _structured_boundary_issue(Severity.WARNING, confidence=0.65)
-    calibration = _structured_boundary_issue(Severity.INFO, confidence=0.75)
+    calibration = _structured_boundary_issue(
+        Severity.INFO,
+        confidence=0.75,
+        evidence=(
+            "`self.obj == other` compares the current wrapped operand directly "
+            "against its wrapper."
+        ),
+        suggestion=(
+            "Compare with `other.obj`; current wrapper equality returns an "
+            "incorrect result."
+        ),
+    ).model_copy(
+        update={
+            "observed_behavior": "Equal wrapped values currently compare unequal.",
+            "causal_mechanism": (
+                "The implementation compares the wrapped operand to the wrapper object."
+            ),
+            "violated_invariant": "Wrapper equality must compare wrapped operands.",
+        }
+    )
     optimization = _structured_boundary_issue(
         Severity.INFO,
         confidence=0.90,
@@ -85,6 +104,18 @@ def test_build_candidates_routes_only_structured_boundary_risks() -> None:
         "severity_calibration",
     ]
     assert [item.source_issue_index for item in candidates] == [0, 1]
+
+
+def test_verifier_guidance_prefers_narrow_revision_over_wholesale_rejection() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    prompt = module._COMMON_VERIFIER_SYSTEM_PROMPT  # noqa: SLF001
+
+    assert "status=accepted with revised_issue" in prompt
+    assert "candidate_kind=filter_rescue" in prompt
+    assert "severity_calibration" in prompt
+    assert "pre-change fallback or compatibility" in prompt
+    assert "wrapper unwrapping" in prompt
+    assert "never raise confidence merely" in prompt
 
 
 def test_orchestrator_accepts_revised_boundary_calibration_and_rescue(

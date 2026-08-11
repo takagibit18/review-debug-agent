@@ -21,6 +21,22 @@ from src.models.schemas import Message
 if TYPE_CHECKING:
     from src.models.client import ModelClient
 
+REVIEW_SEVERITY_CALIBRATION_GUIDANCE = (
+    "Severity measures the impact of the behavior; confidence measures how certain the "
+    "evidence makes you. Do not downgrade a current correctness, compatibility, or "
+    "user-visible regression to info merely because its trigger or affected population is "
+    "narrow. Do not inflate confidence merely to cross a policy threshold. "
+    "Independently compare the pre-change fallback and compatibility contract against the "
+    "new behavior. Author tests and PR intent demonstrate intended behavior, but do not "
+    "prove that existing callers retain their prior contract. "
+    "Before calling a concern future-only, trace the operands currently compared, wrapper "
+    "unwrapping, and keying/grouping call paths, then look for a concrete current counterexample. "
+    "Examples: removing a compatibility fallback or comparing a wrapped value directly to "
+    "its wrapper can be a warning when current callers get an incorrect result; a pure "
+    "optimization with unchanged results is info; a vague risk that depends only on a future "
+    "caller or hypothetical extension is not a risk finding. "
+)
+
 SYSTEM_PROMPT_REVIEW = (
     "You are a senior code reviewer. Analyze the provided diff/files and return structured, "
     "actionable findings. The final answer must be submitted via the submit_review tool. "
@@ -67,7 +83,8 @@ SYSTEM_PROMPT_REVIEW = (
     "validate_review_draft on candidate findings; treat its result as policy feedback, "
     "not as a replacement for submit_review. "
     "When paths are uncertain, use list_dir first before glob/grep/read_file. "
-    "After any Directory/File not found error, validate parent directory first and avoid blind retries."
+    "After any Directory/File not found error, validate parent directory first and avoid blind retries. "
+    + REVIEW_SEVERITY_CALIBRATION_GUIDANCE
 )
 
 _MANIFEST_SCHEMA_REQUIREMENT = "and context_manifest_id. Never invent or emit root_cause_id; only the later consolidator assigns it. "
@@ -135,7 +152,9 @@ USER_PREFIX_REVIEW = (
     "Use get_changed_context before broad reads when you need changed hunk context, "
     "find_symbol_context before blind grep when you need symbol relationships, and "
     "validate_review_draft before final warning/critical submit_review when another tool round is available. "
-    "Do not return plain-text-only final answers.\n"
+    "Do not return plain-text-only final answers. "
+    + REVIEW_SEVERITY_CALIBRATION_GUIDANCE
+    + "\n"
 )
 USER_PREFIX_DEBUG = (
     "Return tool calls if needed, then submit_debug with final JSON. "
@@ -164,7 +183,8 @@ FINALIZE_REVIEW_NOTICE = (
     "Do not promote a hypothetical fix side effect into its own warning unless the current diff "
     "already creates that separate risk. "
     "If uncertain, return whatever partial findings are supported by what was already read; "
-    "an empty issues list is acceptable with an honest summary."
+    "an empty issues list is acceptable with an honest summary. "
+    + REVIEW_SEVERITY_CALIBRATION_GUIDANCE
 )
 FINALIZE_DEBUG_NOTICE = (
     "FINAL CALL — this is your last opportunity to respond. You MUST call submit_debug "
