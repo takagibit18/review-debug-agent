@@ -200,7 +200,10 @@ python -m eval.graph_ab_pilot --no-retry-invalid
 Use `--no-resume` to atomically start a fresh journal. Checkpoint records omit
 raw model output, prompt/API-key fields, event-log paths, and index paths.
 
-The CI gate uses the stable MVP+ numeric target:
+As of 2026-08-11, hosted CI only runs `ruff check .`. Model-backed eval,
+comparison, and quality gates run locally so PR checks stay fast and do not
+depend on model credentials or long-running fixture execution. The local gate
+uses the stable MVP+ numeric target:
 
 ```bash
 python -m eval.gate --report eval/outputs/ci_report.json --schema-validity-min 1.0 --hit-rate-min 0.6 --false-positive-rate-max 0.5
