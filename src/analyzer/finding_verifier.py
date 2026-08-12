@@ -74,7 +74,13 @@ before accepting a claim that the concern is future-only. If the evidence suppor
 impact than the candidate states, prefer status=accepted with revised_issue that narrows the
 claim instead of rejecting the supported core. For candidate_kind=filter_rescue or
 severity_calibration, acceptance requires revised_issue with evidence-calibrated severity and
-confidence; never raise confidence merely to pass a threshold."""
+confidence; never raise confidence merely to pass a threshold.
+When constraints include verifier_auxiliary_narrowing, deterministic validation found the exact
+unsupported trigger/impact evidence named there. Reconsider that auxiliary claim semantically.
+Accept only with revised_issue that removes or narrows the failed claim and its evidence while
+preserving a complete, independently supported current bug with cause and contract evidence. If
+the failed trigger is necessary to the causal claim, or deleting the auxiliary description leaves
+no current correctness risk, reject the finding. Never return the unchanged finding as accepted."""
 
 _AGENT_VERIFIER_POLICY = """This is agent_search mode. Accept valid diff evidence and provenance
 from successful read-only tool calls without requiring a context manifest. Reject invented graph
@@ -166,6 +172,65 @@ class DeterministicRejectionDetail(BaseModel):
     field: str = ""
     revised_issue: bool = False
     message: str
+
+
+_NARROWABLE_AUXILIARY_EVIDENCE_ROLES = frozenset({"trigger", "impact"})
+
+
+def narrowable_auxiliary_rejections(
+    stats: DeterministicValidationStats,
+) -> dict[str, tuple[DeterministicRejectionDetail, ...]]:
+    """Group fail-closed verdicts whose failures are auxiliary-only.
+
+    This is deliberately structural: it identifies the failed evidence roles but
+    does not decide whether removing them leaves a valid bug. The semantic verifier
+    makes that decision in a bounded repair round, and any revision is validated
+    again by the full deterministic gate.
+    """
+
+    grouped: dict[str, list[DeterministicRejectionDetail]] = {}
+    for detail in stats.rejection_details:
+        grouped.setdefault(detail.candidate_id, []).append(detail)
+
+    result: dict[str, tuple[DeterministicRejectionDetail, ...]] = {}
+    for candidate_id, details in grouped.items():
+        auxiliary = [
+            detail
+            for detail in details
+            if detail.evidence_role in _NARROWABLE_AUXILIARY_EVIDENCE_ROLES
+        ]
+        if not auxiliary:
+            continue
+        if all(
+            detail.evidence_role in _NARROWABLE_AUXILIARY_EVIDENCE_ROLES
+            or _is_mirrored_auxiliary_verifier_rejection(detail, auxiliary)
+            for detail in details
+        ):
+            result[candidate_id] = tuple(details)
+    return result
+
+
+def _is_mirrored_auxiliary_verifier_rejection(
+    detail: DeterministicRejectionDetail,
+    auxiliary: list[DeterministicRejectionDetail],
+) -> bool:
+    """Allow a verifier citation failure only when it mirrors a failed aux span."""
+
+    if (
+        detail.evidence_role != "verifier"
+        or detail.rule != "evidence_context_missing"
+        or not detail.file
+        or detail.line is None
+    ):
+        return False
+    detail_end = detail.end_line or detail.line
+    return any(
+        item.file == detail.file
+        and item.line is not None
+        and detail.line <= (item.end_line or item.line)
+        and item.line <= detail_end
+        for item in auxiliary
+    )
 
 
 class FindingVerifier:

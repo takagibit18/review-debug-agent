@@ -129,6 +129,8 @@ def test_verifier_guidance_prefers_narrow_revision_over_wholesale_rejection() ->
     assert "Do not change schema_version" in prompt
     assert "retrieval sources" in prompt
     assert "runtime-owned" in prompt
+    assert "verifier_auxiliary_narrowing" in prompt
+    assert "deleting the auxiliary description leaves" in prompt
 
 
 def test_orchestrator_accepts_revised_boundary_calibration_and_rescue(
@@ -2174,3 +2176,259 @@ def test_orchestrator_retries_needs_evidence_once_before_accepting(
         if event["event_type"] == "finding_evidence_repair_completed"
     )
     assert repair["payload"]["round"] == 1
+
+
+def _run_structured_verifier_review(
+    tmp_path: Path,
+    monkeypatch,
+    issue: ReviewIssue,
+    verifier,
+):  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("ROOT_CAUSE_CONSOLIDATION_ENABLED", "false")
+    orchestrator = AgentOrchestrator(
+        finding_verifier=verifier,
+        finding_verifier_mode="enforce",
+        review_workflow_enforcement="off",
+        review_diff_first_changed_files=False,
+    )
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        return AnalysisPlan(draft_review=ReviewReport(summary="review", issues=[issue]))
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+    return asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(
+                repo_path=str(tmp_path),
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/pkg/service.py b/pkg/service.py\n"
+                    "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+                    "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+                ),
+            )
+        )
+    )
+
+
+@pytest.mark.parametrize("missing_role", ["cause", "contract"])
+def test_core_evidence_failure_rejects_without_narrowing_repair(
+    tmp_path: Path,
+    monkeypatch,
+    missing_role: str,
+) -> None:
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue = issue.model_copy(update={f"{missing_role}_evidence": []})
+
+    class AcceptingVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.constraints: list[list[str]] = []
+
+        async def verify(self, candidates, request, state):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.constraints.append(list(state.constraints))
+            return schemas.FindingVerificationBatch(
+                results=[
+                    schemas.FindingVerification(
+                        candidate_id=item.candidate_id,
+                        status="accepted",
+                        reason_codes=["verified"],
+                        rationale="The model attempted to accept the finding.",
+                        verified_evidence=["pkg/service.py:12"],
+                    )
+                    for item in candidates
+                ]
+            )
+
+    verifier = AcceptingVerifier()
+    response = _run_structured_verifier_review(tmp_path, monkeypatch, issue, verifier)
+
+    assert response.report.issues == []
+    assert verifier.calls == 1
+    assert not any(
+        value.startswith("verifier_auxiliary_narrowing:")
+        for value in verifier.constraints[0]
+    )
+
+
+def test_invalid_extra_impact_can_be_deleted_while_supported_core_survives(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    invalid_impact = issue.cause_evidence[0].model_copy(
+        update={
+            "retrieval_source": "read_file",
+            "file": "pkg/missing.py",
+            "line": 99,
+            "statement": "Every consumer crashes after receiving this value.",
+        }
+    )
+    issue = issue.model_copy(
+        update={
+            "impact": "Every consumer crashes after receiving this value.",
+            "impact_evidence": [invalid_impact],
+        }
+    )
+
+    class NarrowingVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.constraints: list[list[str]] = []
+
+        async def verify(self, candidates, request, state):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.constraints.append(list(state.constraints))
+            results = []
+            for item in candidates:
+                revised = None
+                verified_evidence = ["pkg/service.py:12", "pkg/missing.py:99"]
+                if self.calls > 1:
+                    revised = item.issue.model_copy(
+                        update={"impact": "", "impact_evidence": []}
+                    )
+                    verified_evidence = ["pkg/service.py:12"]
+                results.append(
+                    schemas.FindingVerification(
+                        candidate_id=item.candidate_id,
+                        status="accepted",
+                        reason_codes=["verified"],
+                        rationale=(
+                            "The supported compatibility regression remains after "
+                            "removing the unsupported global impact."
+                        ),
+                        verified_evidence=verified_evidence,
+                        revised_issue=revised,
+                    )
+                )
+            return schemas.FindingVerificationBatch(results=results)
+
+    verifier = NarrowingVerifier()
+    response = _run_structured_verifier_review(tmp_path, monkeypatch, issue, verifier)
+
+    assert verifier.calls == 2
+    assert len(response.report.issues) == 1
+    assert response.report.issues[0].impact == ""
+    assert response.report.issues[0].impact_evidence == []
+    feedback = next(
+        value
+        for value in verifier.constraints[-1]
+        if value.startswith("verifier_auxiliary_narrowing:")
+    )
+    payload = json.loads(feedback.split(":", 1)[1])
+    assert payload["candidate_id"]
+    assert {item["role"] for item in payload["failed_evidence"]} == {
+        "impact",
+        "verifier",
+    }
+
+
+def test_necessary_trigger_without_evidence_is_rejected_after_semantic_repair(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92).model_copy(
+        update={
+            "trigger": "The cache must already contain the legacy sentinel.",
+            "trigger_evidence": [],
+        }
+    )
+
+    class NecessaryTriggerVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.constraints: list[list[str]] = []
+
+        async def verify(self, candidates, request, state):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.constraints.append(list(state.constraints))
+            status = "accepted" if self.calls == 1 else "rejected"
+            return schemas.FindingVerificationBatch(
+                results=[
+                    schemas.FindingVerification(
+                        candidate_id=item.candidate_id,
+                        status=status,
+                        reason_codes=[
+                            "verified"
+                            if self.calls == 1
+                            else "necessary_trigger_unverified"
+                        ],
+                        rationale=(
+                            "The trigger is necessary to establish the bug and cannot "
+                            "be deleted without evidence."
+                        ),
+                        verified_evidence=["pkg/service.py:12"]
+                        if self.calls == 1
+                        else [],
+                    )
+                    for item in candidates
+                ]
+            )
+
+    verifier = NecessaryTriggerVerifier()
+    response = _run_structured_verifier_review(tmp_path, monkeypatch, issue, verifier)
+
+    assert response.report.issues == []
+    assert verifier.calls == 2
+    feedback = next(
+        value
+        for value in verifier.constraints[-1]
+        if value.startswith("verifier_auxiliary_narrowing:")
+    )
+    payload = json.loads(feedback.split(":", 1)[1])
+    assert {item["role"] for item in payload["failed_evidence"]} == {"trigger"}
+
+
+def test_auxiliary_deletion_that_removes_current_risk_is_not_forced_to_survive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92).model_copy(
+        update={
+            "impact": "The direct lookup returns an incorrect result to callers.",
+            "impact_evidence": [],
+            "observed_behavior": "The function now returns the direct lookup result.",
+            "causal_mechanism": "The changed branch selects the direct lookup.",
+            "violated_invariant": (
+                "No correctness invariant remains without the downstream impact claim."
+            ),
+        }
+    )
+
+    class RejectAfterNarrowingVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def verify(self, candidates, request, state):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            status = "accepted" if self.calls == 1 else "rejected"
+            return schemas.FindingVerificationBatch(
+                results=[
+                    schemas.FindingVerification(
+                        candidate_id=item.candidate_id,
+                        status=status,
+                        reason_codes=[
+                            "verified" if self.calls == 1 else "no_current_risk"
+                        ],
+                        rationale=(
+                            "Removing the unsupported impact leaves no current "
+                            "correctness risk."
+                        ),
+                        verified_evidence=["pkg/service.py:12"]
+                        if self.calls == 1
+                        else [],
+                    )
+                    for item in candidates
+                ]
+            )
+
+    verifier = RejectAfterNarrowingVerifier()
+    response = _run_structured_verifier_review(tmp_path, monkeypatch, issue, verifier)
+
+    assert response.report.issues == []
+    assert verifier.calls == 2

@@ -24,6 +24,7 @@ from src.analyzer.finding_verifier import (
     FindingVerifier,
     apply_verifications,
     build_candidates,
+    narrowable_auxiliary_rejections,
     review_candidate_severities,
     validate_verifications_with_stats,
 )
@@ -455,13 +456,50 @@ class AgentOrchestrator:
             for item in batch.results
             if item.status == "needs_evidence"
         }
-        if needs_evidence_ids and self._settings.verifier_max_repair_rounds > 0:
+        raw_accepted_ids = {
+            item.candidate_id for item in raw_batch.results if item.status == "accepted"
+        }
+        auxiliary_rejections = {
+            candidate_id: details
+            for candidate_id, details in narrowable_auxiliary_rejections(
+                validation_stats
+            ).items()
+            if candidate_id in raw_accepted_ids
+        }
+        auxiliary_narrowing_ids = set(auxiliary_rejections)
+        repair_candidate_ids = needs_evidence_ids | auxiliary_narrowing_ids
+        if repair_candidate_ids and self._settings.verifier_max_repair_rounds > 0:
             repair_candidates = [
-                item for item in candidates if item.candidate_id in needs_evidence_ids
+                item for item in candidates if item.candidate_id in repair_candidate_ids
             ]
-            state.constraints.append(
-                "verifier_needs_evidence:" + ",".join(sorted(needs_evidence_ids))
-            )
+            if needs_evidence_ids:
+                state.constraints.append(
+                    "verifier_needs_evidence:" + ",".join(sorted(needs_evidence_ids))
+                )
+            for candidate_id in sorted(auxiliary_narrowing_ids):
+                details = auxiliary_rejections[candidate_id]
+                state.constraints.append(
+                    "verifier_auxiliary_narrowing:"
+                    + _json.dumps(
+                        {
+                            "candidate_id": candidate_id,
+                            "failed_evidence": [
+                                {
+                                    "role": item.evidence_role,
+                                    "index": item.evidence_index,
+                                    "rule": item.rule,
+                                    "file": item.file,
+                                    "line": item.line,
+                                    "end_line": item.end_line,
+                                    "field": item.field,
+                                }
+                                for item in details
+                            ],
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
             try:
                 returned_repaired = await self._call_finding_verifier(
                     verifier,
@@ -500,7 +538,7 @@ class AgentOrchestrator:
             batch = FindingVerificationBatch(
                 results=[
                     repaired_by_id.get(item.candidate_id, item)
-                    if item.candidate_id in needs_evidence_ids
+                    if item.candidate_id in repair_candidate_ids
                     else item
                     for item in batch.results
                 ]
@@ -508,7 +546,7 @@ class AgentOrchestrator:
             raw_batch = FindingVerificationBatch(
                 results=[
                     raw_repaired_by_id.get(item.candidate_id, item)
-                    if item.candidate_id in needs_evidence_ids
+                    if item.candidate_id in repair_candidate_ids
                     else item
                     for item in raw_batch.results
                 ]
@@ -534,6 +572,8 @@ class AgentOrchestrator:
                 {
                     "round": 1,
                     "candidate_count": len(repair_candidates),
+                    "needs_evidence_candidate_count": len(needs_evidence_ids),
+                    "auxiliary_narrowing_candidate_count": len(auxiliary_narrowing_ids),
                     "resolved_count": sum(
                         item.status in {"accepted", "rejected", "downgraded"}
                         for item in repaired.results
