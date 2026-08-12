@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from src.analyzer.finding_schema import EvidenceProvenance, RepairIntent, SourceAnchor
+from src.analyzer.finding_schema import (
+    EvidenceProvenance,
+    RelatedLocation,
+    RepairIntent,
+    SourceAnchor,
+)
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.context_state import ContextState
 from src.analyzer.schemas import AnalysisPlan, ReviewRequest
@@ -901,6 +906,486 @@ def test_context_removed_by_budget_cannot_validate_evidence() -> None:
 
     assert context[0]["file_windows"] == []
     assert result.results[0].status == "rejected"
+
+
+def test_candidate_context_retains_all_finding_cited_diff_hunks() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.impact = "The later grouping call receives the incompatible cache value."
+    issue.impact_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "line": 32,
+                "end_line": 32,
+                "statement": "The second changed hunk consumes the returned value.",
+            }
+        )
+    ]
+    issue.related_locations = [
+        RelatedLocation(
+            file="pkg/service.py",
+            line=32,
+            role="related",
+            description="The downstream changed use participates in the same repair unit.",
+        )
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+            "@@ -31,0 +32,1 @@\n+group(cache_value)\n"
+        ),
+    )
+    context = context_module.build_candidate_verifier_context(
+        [candidate], request, [], max_chars=8_000
+    )
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="Both changed hunks support the finding.",
+                verified_evidence=["pkg/service.py:12", "pkg/service.py:32"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert [item["new_start"] for item in context[0]["diff_hunks"]] == [12, 32]
+    assert result.results[0].status == "accepted"
+
+
+def test_candidate_context_retains_explicit_nonoverlapping_read_window() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.impact = "A later unchanged consumer exposes the compatibility break."
+    issue.impact_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "retrieval_source": "read_file",
+                "line": 40,
+                "end_line": 40,
+                "statement": "The later consumer passes the stale value to callers.",
+            }
+        )
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [
+            {
+                "tool_name": "read_file",
+                "arguments": {"file_path": "pkg/service.py"},
+                "data": {
+                    "file_path": "pkg/service.py",
+                    "start_line": 38,
+                    "line_count": 5,
+                    "content": "38: prepare()\n40: publish(cache_value)\n42: cleanup()",
+                },
+            }
+        ],
+        max_chars=8_000,
+    )
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The retained read confirms the downstream impact.",
+                verified_evidence=["pkg/service.py:12", "pkg/service.py:40"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert context[0]["file_windows"] == [
+        {
+            "path": "pkg/service.py",
+            "start_line": 38,
+            "end_line": 42,
+            "content": "38: prepare()\n40: publish(cache_value)\n42: cleanup()",
+            "truncated": False,
+            "source": "read_file",
+        }
+    ]
+    assert result.results[0].status == "accepted"
+
+
+def test_candidate_context_does_not_invent_unread_evidence_location() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.impact = "An alleged downstream consumer exposes the break."
+    issue.impact_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "retrieval_source": "read_file",
+                "file": "pkg/missing.py",
+                "line": 40,
+                "end_line": 40,
+                "statement": "An unobserved consumer allegedly publishes the value.",
+            }
+        )
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    context = context_module.build_candidate_verifier_context(
+        [candidate], request, [], max_chars=8_000
+    )
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The alleged consumer supports the impact.",
+                verified_evidence=["pkg/service.py:12", "pkg/missing.py:40"],
+            )
+        ]
+    )
+
+    result, stats = module.validate_verifications_with_stats(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert context[0]["file_windows"] == []
+    assert context[0]["symbol_contexts"] == []
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "tool_evidence_context_missing"
+        and item.evidence_role == "impact"
+        and item.file == "pkg/missing.py"
+        and item.line == 40
+        for item in stats.rejection_details
+    )
+
+
+def test_candidate_context_retains_explicit_symbol_context() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.trigger = "The retained caller reaches the changed lookup."
+    issue.trigger_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "retrieval_source": "find_symbol_context",
+                "file": "pkg/caller.py",
+                "line": 8,
+                "end_line": 8,
+                "statement": "The caller invokes the changed lookup.",
+            }
+        )
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [
+            {
+                "tool_name": "find_symbol_context",
+                "arguments": {
+                    "symbol": "load",
+                    "path": "pkg/caller.py",
+                },
+                "data": {
+                    "symbol": "load",
+                    "backend": "python_ast",
+                    "language": "python",
+                    "definitions": [],
+                    "references": [
+                        {
+                            "path": "pkg/caller.py",
+                            "line": 8,
+                            "line_text": "return load(key)",
+                            "context": "8: return load(key)",
+                        }
+                    ],
+                    "enclosing_symbols": [],
+                },
+            }
+        ],
+        max_chars=8_000,
+    )
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The retained symbol reference confirms the trigger.",
+                verified_evidence=["pkg/service.py:12", "pkg/caller.py:8"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert context[0]["symbol_contexts"][0]["references"][0]["line"] == 8
+    assert result.results[0].status == "accepted"
+
+
+def test_candidate_locations_precede_redundant_source_copies_under_budget() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.impact = "A later changed consumer exposes the compatibility break."
+    issue.impact_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "line": 32,
+                "end_line": 32,
+                "statement": "The later changed consumer publishes the stale value.",
+            }
+        )
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+            "@@ -31,0 +32,1 @@\n+publish(cache_value)\n"
+        ),
+    )
+    direct_context = context_module.build_candidate_verifier_context(
+        [candidate], request, [], max_chars=8_000
+    )[0]
+    direct_budget = len(json.dumps(direct_context, ensure_ascii=True))
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [
+            {
+                "tool_name": "read_file",
+                "arguments": {"file_path": "pkg/service.py"},
+                "data": {
+                    "file_path": "pkg/service.py",
+                    "start_line": 8,
+                    "line_count": 10,
+                    "content": "x" * 4_000,
+                },
+            }
+        ],
+        max_chars=direct_budget,
+    )[0]
+
+    assert [item["new_start"] for item in context["diff_hunks"]] == [12, 32]
+    assert context["file_windows"] == []
+
+
+def test_candidate_context_orders_locations_by_evidence_role_priority() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.cause_evidence[0].line = 20
+    issue.contract_evidence[0].line = 30
+    issue.trigger = "A caller supplies the stale key."
+    issue.trigger_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={"line": 40, "statement": "The caller supplies the key."}
+        )
+    ]
+    issue.impact = "The result is published."
+    issue.impact_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={"line": 50, "statement": "The stale result is published."}
+        )
+    ]
+    issue.related_locations = [
+        RelatedLocation(file="pkg/service.py", line=60, role="related")
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+
+    requested = context_module._candidate_evidence_locations(candidate)  # noqa: SLF001
+
+    assert [item.role for item in requested] == [
+        "primary",
+        "cause",
+        "contract",
+        "trigger",
+        "impact",
+        "related",
+    ]
+    assert [item.start_line for item in requested] == [12, 20, 30, 40, 50, 60]
+    assert [item.retrieval_source for item in requested] == [
+        "diff",
+        "git_diff",
+        "git_diff",
+        "git_diff",
+        "git_diff",
+        "",
+    ]
+
+
+def test_candidate_context_budget_trims_lower_priority_locations_first() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+
+    def issue_through_contract() -> ReviewIssue:
+        issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+        issue.cause_evidence[0].line = 20
+        issue.contract_evidence[0].line = 30
+        return issue
+
+    full_issue = issue_through_contract()
+    full_issue.trigger = "A caller supplies the stale key."
+    full_issue.trigger_evidence = [
+        full_issue.cause_evidence[0].model_copy(
+            update={"line": 40, "statement": "The caller supplies the key."}
+        )
+    ]
+    full_issue.impact = "The result is published."
+    full_issue.impact_evidence = [
+        full_issue.cause_evidence[0].model_copy(
+            update={"line": 50, "statement": "The stale result is published."}
+        )
+    ]
+    full_issue.related_locations = [
+        RelatedLocation(file="pkg/service.py", line=60, role="related")
+    ]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+primary_change()\n"
+            "@@ -19,0 +20,1 @@\n+cause_change()\n"
+            "@@ -29,0 +30,1 @@\n+contract_change()\n"
+            "@@ -39,0 +40,1 @@\n+trigger_change()\n"
+            "@@ -49,0 +50,1 @@\n+impact_change()\n"
+            "@@ -59,0 +60,1 @@\n+related_change()\n"
+        ),
+    )
+    contract_candidate = module.build_candidates(
+        ReviewReport(issues=[issue_through_contract()]), iteration=0
+    )[0]
+    contract_context = context_module.build_candidate_verifier_context(
+        [contract_candidate], request, [], max_chars=8_000
+    )[0]
+    exact_contract_budget = len(json.dumps(contract_context, ensure_ascii=True))
+    full_candidate = module.build_candidates(
+        ReviewReport(issues=[full_issue]), iteration=0
+    )[0]
+
+    bounded = context_module.build_candidate_verifier_context(
+        [full_candidate],
+        request,
+        [],
+        max_chars=exact_contract_budget,
+    )[0]
+
+    assert [item["new_start"] for item in bounded["diff_hunks"]] == [12, 20, 30]
+
+
+def test_candidate_context_keeps_direct_diff_before_large_manifest_span() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    manifest = {
+        "candidate_id": "C-graph",
+        "changed_anchor": {
+            "file": "pkg/service.py",
+            "line": 12,
+            "end_line": 12,
+        },
+        "included_spans": [
+            {
+                "file": "pkg/service.py",
+                "start_line": 1,
+                "end_line": 80,
+                "content": "x" * 4_000,
+                "context_hash": "manifest-hash",
+            }
+        ],
+        "included_graph_paths": [],
+        "excluded_low_confidence_paths": [],
+    }
+
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [],
+        max_chars=1_200,
+        context_manifests=[manifest],
+        context_mode="graph_hybrid",
+    )[0]
+
+    assert [item["new_start"] for item in context["diff_hunks"]] == [12]
+    assert context["included_spans"] == []
 
 
 def test_validate_verification_rejects_unretained_or_unanchored_context() -> None:

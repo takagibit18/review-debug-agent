@@ -7,7 +7,8 @@
 | Snapshot | Commit | 修改内容 | Deterministic Reject | Final Risk | Gold matched | Clean FP |
 |---|---|---|---:|---:|---:|---:|
 | Before | `8cab2fb` | 零命中审计后基线 | 4 | 0 | 0 | 0 |
-| Fix 1 | 本提交（SHA 待提交后回填） | 暴露逐 finding/evidence 的确定性拒绝规则 | 2 | 1 | 1 | 0 |
+| Fix 1 | `ffc4467` | 暴露逐 finding/evidence 的确定性拒绝规则 | 2 | 1 | 1 | 0 |
+| Fix 2 | 本提交（SHA 待提交后回填） | 为 finding 实际引用的全部位置保留 bounded verifier context | 1 | 1 | 1 | 0 |
 
 Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提交没有改变任何通过/拒绝条件，但本轮模型输出与 Before 不同。Before 的四个 candidate run 都提交 warning 并进入 deterministic gate；Fix 1 中 pytest baseline 提交了 `info`，没有进入 verifier，而 pytest MergeWarden 本轮提交的 evidence 已满足旧 gate 并正常命中 gold。Fix 1 的可信改进仅是 deterministic rejection 变得可解释。
 
@@ -43,3 +44,16 @@ Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提�
 ### 是否让命中链路前进
 
 可观测性前进了一步：后续可以按 evidence item 精确区分主位置、缺失位置、未保留上下文、diff/read 来源、manifest id/hash、candidate binding 和 revised finding 重验失败。正式质量数字也出现了 1 个 pytest 命中，但由于 reviewer/verifier 输出 cohort 已变化，不能把这个命中归因给只读诊断改动；本提交不据此宣称 recall 改善。
+
+## Fix 2：保留 finding 全部 evidence locations
+
+- 目的：按 `主位置 → cause → contract → trigger → impact → related` 收集每个 finding 明确引用位置的 diff hunk、成功 file window、symbol context 与 Manifest span/path，同时维持 12k bounded envelope 和 fail-closed。
+- Tests：全量 `pytest` 636 passed / 1 skipped；`mypy src`、全仓 Ruff、touched-file format、Core audit 与 `git diff --check` 全部通过。
+- 正式运行：这是本提交唯一正式轮次；10/10 valid、10/10 首次 attempt；candidate raw finding 3，semantic accepted 2，deterministic rejected 1，final risk 1，gold matched 1，clean-control warning/critical FP 0。
+- pytest：MergeWarden finding 的跨位置证据完整保留，deterministic passed、final 1、gold 1；baseline 的 impact 声称来自未实际读取的 `src/_pytest/fixtures.py:308-312`，继续 fail closed。
+- Pydantic：baseline 在 semantic verifier 被判不受支持；MergeWarden 本轮没有 finding。没有为了 gold score 修改 matcher 或标签。
+- 产物：`eval/outputs/core-eval-zero-hit-fix2.json`、`eval/reports/core-eval-zero-hit-fix2.md` 及报告引用的 10 个 JSONL event logs。两个在正式轮次前发现预算顺序缺陷的矩阵分别保留为 `core-eval-zero-hit-fix2-preflight` 与 `core-eval-zero-hit-fix2-source-order-preflight`，不写入正式对比行。
+
+### 是否让命中链路前进
+
+是。通用回归与真实 pytest MergeWarden case 都证明后续 evidence location 不再因围绕主位置的裁剪而消失；deterministic reject 从 Fix 1 的 2 降为 1，并保留 1 个 frozen-gold 命中与 0 clean FP。剩余拒绝来自不存在的成功读取记录，说明 fail-closed 保持不变。

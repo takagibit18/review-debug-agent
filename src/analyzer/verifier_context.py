@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.analyzer.diff_lines import parse_unified_diff_hunks
+from src.analyzer.diff_lines import ParsedDiffHunk, parse_unified_diff_hunks
 from src.analyzer.evidence_policy import evidence_policy_for_mode
 from src.analyzer.location import normalize_location
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
@@ -18,6 +19,18 @@ VERIFIER_CONTEXT_TOOL_NAMES = {
     "find_symbol_context",
     "symbol_context",
 }
+
+
+@dataclass(frozen=True)
+class _EvidenceLocationRequest:
+    """One finding-cited location ordered by deterministic retention priority."""
+
+    path: str
+    start_line: int
+    end_line: int
+    role: str
+    retrieval_source: str = ""
+    context_manifest_id: str = ""
 
 
 def capture_verifier_tool_evidence(
@@ -74,15 +87,7 @@ def build_candidate_verifier_context(
     contexts: list[dict[str, Any]] = []
     for candidate in candidates:
         location = normalize_location(candidate.issue.location)
-        relevant_paths = {
-            path
-            for path in (
-                location.path,
-                *[item.file for item in candidate.issue.all_evidence()],
-                *[item.file for item in candidate.issue.related_locations],
-            )
-            if path
-        }
+        requested_locations = _candidate_evidence_locations(candidate)
         context: dict[str, Any] = {
             "candidate_id": candidate.candidate_id,
             "location": location.canonical,
@@ -99,17 +104,96 @@ def build_candidate_verifier_context(
                 "agent_search" if context_mode == "agent_search" else "graph_hybrid"
             ).model_dump(mode="json"),
         }
-        if not location.valid or not location.path:
-            contexts.append(context)
-            continue
-        start = location.line
-        end = location.end_line or start
+        start = location.line if location.valid else None
+        end = (location.end_line or start) if location.valid else None
 
-        manifest = _select_context_manifest(
-            candidate, context_manifests or [], location.path, start, end
-        )
+        manifest = None
+        if location.valid and location.path:
+            manifest = _select_context_manifest(
+                candidate, context_manifests or [], location.path, start, end
+            )
         if manifest is not None:
             context["context_manifest_id"] = str(manifest.get("candidate_id", ""))
+
+        # Retain actual finding citations in semantic order. Once the bounded
+        # envelope is full, later roles are omitted without displacing the bug
+        # anchor or cause/contract evidence. Structured evidence requests only
+        # its declared source representation; legacy/related locations retain
+        # the compatible best-effort search across available source types.
+        for requested in requested_locations:
+            if requested.context_manifest_id:
+                if manifest is not None:
+                    _append_matching_manifest_context(
+                        context,
+                        manifest,
+                        requested=requested,
+                        budget=budget,
+                    )
+                continue
+            if _is_diff_retrieval_source(requested.retrieval_source):
+                _append_matching_diff_context(
+                    context,
+                    hunks_by_file,
+                    requested=requested,
+                    budget=budget,
+                )
+                continue
+            if requested.retrieval_source:
+                for entry in tool_evidence:
+                    _append_matching_tool_context(
+                        context,
+                        entry,
+                        requested=requested,
+                        budget=budget,
+                    )
+                continue
+
+            _append_matching_diff_context(
+                context,
+                hunks_by_file,
+                requested=requested,
+                budget=budget,
+            )
+            for entry in tool_evidence:
+                _append_matching_tool_context(
+                    context,
+                    entry,
+                    requested=requested,
+                    budget=budget,
+                )
+            if manifest is not None:
+                _append_matching_manifest_context(
+                    context, manifest, requested=requested, budget=budget
+                )
+
+        # Only after each cited location has had its declared source retained,
+        # add alternate trusted representations for semantic inspection. This
+        # keeps a redundant primary read/symbol/manifest copy from consuming
+        # the budget before a lower-priority trigger or impact location gets
+        # its first evidence record. Deduplication makes this pass additive.
+        for requested in requested_locations:
+            _append_matching_diff_context(
+                context,
+                hunks_by_file,
+                requested=requested,
+                budget=budget,
+            )
+            for entry in tool_evidence:
+                _append_matching_tool_context(
+                    context,
+                    entry,
+                    requested=requested,
+                    budget=budget,
+                    respect_requested_source=False,
+                )
+            if manifest is not None:
+                _append_matching_manifest_context(
+                    context, manifest, requested=requested, budget=budget
+                )
+
+        # Preserve the prior manifest envelope when budget remains, but only
+        # after every explicitly cited location has had a chance to be retained.
+        if manifest is not None:
             for span in manifest.get("included_spans", []):
                 if isinstance(span, dict):
                     _append_bounded(context, "included_spans", span, budget)
@@ -121,55 +205,178 @@ def build_candidate_verifier_context(
                     _append_bounded(
                         context, "excluded_low_confidence_paths", path, budget
                     )
-
-        for hunk in hunks_by_file.get(location.path, []):
-            if start is not None and not _lines_overlap(
-                start,
-                end or start,
-                hunk.changed_new_lines,
-            ):
-                continue
-            _append_bounded(
-                context,
-                "diff_hunks",
-                {
-                    "path": location.path,
-                    "header": hunk.header,
-                    "new_start": hunk.new_start,
-                    "new_count": hunk.new_count,
-                    "changed_new_lines": list(hunk.changed_new_lines),
-                    "text": "\n".join([hunk.header, *hunk.lines]),
-                    "source": "diff",
-                },
-                budget,
-            )
-
-        for entry in tool_evidence:
-            _append_matching_tool_context(
-                context,
-                entry,
-                candidate_path=location.path,
-                candidate_start=start,
-                candidate_end=end,
-                relevant_paths=relevant_paths,
-                budget=budget,
-            )
         contexts.append(context)
     return contexts
+
+
+def _candidate_evidence_locations(
+    candidate: FindingCandidate,
+) -> list[_EvidenceLocationRequest]:
+    """Return deduplicated finding locations in fail-closed retention order."""
+
+    issue = candidate.issue
+    requested: list[_EvidenceLocationRequest] = []
+    seen: set[tuple[str, int, int, str, str]] = set()
+
+    def add(
+        path: str,
+        start: int | None,
+        end: int | None,
+        role: str,
+        *,
+        retrieval_source: str = "",
+        context_manifest_id: str = "",
+    ) -> None:
+        normalized_path = _normalized_path(path)
+        if not normalized_path or start is None:
+            return
+        normalized_end = end or start
+        normalized_source = str(retrieval_source or "").strip().lower()
+        normalized_manifest = str(context_manifest_id or "").strip()
+        key = (
+            normalized_path,
+            start,
+            normalized_end,
+            normalized_source,
+            normalized_manifest,
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        requested.append(
+            _EvidenceLocationRequest(
+                path=normalized_path,
+                start_line=start,
+                end_line=normalized_end,
+                role=role,
+                retrieval_source=normalized_source,
+                context_manifest_id=normalized_manifest,
+            )
+        )
+
+    location = normalize_location(issue.location)
+    if location.valid:
+        add(
+            location.path or "",
+            location.line,
+            location.end_line,
+            "primary",
+            retrieval_source="diff" if issue.is_structured_hypothesis else "",
+        )
+    if issue.primary_anchor is not None:
+        add(
+            issue.primary_anchor.file,
+            issue.primary_anchor.line,
+            issue.primary_anchor.end_line,
+            "primary",
+            retrieval_source="diff",
+        )
+    for role, evidence_items in (
+        ("cause", issue.cause_evidence),
+        ("contract", issue.contract_evidence),
+        ("trigger", issue.trigger_evidence),
+        ("impact", issue.impact_evidence),
+    ):
+        for evidence in evidence_items:
+            add(
+                evidence.file,
+                evidence.line,
+                evidence.end_line,
+                role,
+                retrieval_source=evidence.retrieval_source,
+                context_manifest_id=evidence.context_manifest_id,
+            )
+    for related in issue.related_locations:
+        add(related.file, related.line, related.end_line, "related")
+    return requested
+
+
+def _is_diff_retrieval_source(value: str) -> bool:
+    return value in {"git_diff", "diff", "review_diff", "changed_hunk"}
+
+
+def _append_matching_manifest_context(
+    context: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    requested: _EvidenceLocationRequest,
+    budget: int,
+) -> None:
+    """Retain manifest spans and graph paths that cover one cited location."""
+
+    for span in manifest.get("included_spans", []):
+        if isinstance(span, dict) and _location_overlaps_record(
+            requested.path,
+            requested.start_line,
+            requested.end_line,
+            span,
+        ):
+            _append_bounded(context, "included_spans", span, budget)
+    for path in manifest.get("included_graph_paths", []):
+        if not isinstance(path, dict):
+            continue
+        edges = path.get("edges", [])
+        if any(
+            isinstance(edge, dict)
+            and _location_overlaps_record(
+                requested.path,
+                requested.start_line,
+                requested.end_line,
+                edge,
+            )
+            for edge in edges
+        ):
+            _append_bounded(context, "included_graph_paths", path, budget)
+
+
+def _append_matching_diff_context(
+    context: dict[str, Any],
+    hunks_by_file: dict[str, list[ParsedDiffHunk]],
+    *,
+    requested: _EvidenceLocationRequest,
+    budget: int,
+) -> None:
+    """Retain every diff hunk explicitly cited by the finding."""
+
+    for hunk in hunks_by_file.get(requested.path, []):
+        hunk_end = hunk.new_start + max(0, hunk.new_count - 1)
+        if not _ranges_overlap(
+            requested.start_line,
+            requested.end_line,
+            hunk.new_start,
+            hunk_end,
+        ):
+            continue
+        _append_bounded(
+            context,
+            "diff_hunks",
+            {
+                "path": requested.path,
+                "header": hunk.header,
+                "new_start": hunk.new_start,
+                "new_count": hunk.new_count,
+                "changed_new_lines": list(hunk.changed_new_lines),
+                "text": "\n".join([hunk.header, *hunk.lines]),
+                "source": "diff",
+            },
+            budget,
+        )
 
 
 def _append_matching_tool_context(
     context: dict[str, Any],
     entry: dict[str, Any],
     *,
-    candidate_path: str,
-    candidate_start: int | None,
-    candidate_end: int | None,
-    relevant_paths: set[str],
+    requested: _EvidenceLocationRequest,
     budget: int,
+    respect_requested_source: bool = True,
 ) -> None:
     tool_name = str(entry.get("tool_name", "")).strip()
     if tool_name not in VERIFIER_CONTEXT_TOOL_NAMES:
+        return
+    if respect_requested_source and not _tool_source_matches(
+        requested.retrieval_source, tool_name
+    ):
         return
     arguments = entry.get("arguments")
     data = entry.get("data")
@@ -178,11 +385,13 @@ def _append_matching_tool_context(
     data_path = _entry_path(data, arguments)
 
     if tool_name in {"get_changed_context", "changed_context"}:
-        if data_path not in relevant_paths:
+        if data_path != requested.path:
             return
         hunk = data.get("hunk")
-        hunk_relevant = data_path != candidate_path or _payload_matches_range(
-            hunk if isinstance(hunk, dict) else {}, candidate_start, candidate_end
+        hunk_relevant = _payload_matches_range(
+            hunk if isinstance(hunk, dict) else {},
+            requested.start_line,
+            requested.end_line,
         )
         if isinstance(hunk, dict) and hunk_relevant:
             _append_bounded(
@@ -192,8 +401,10 @@ def _append_matching_tool_context(
                 budget,
             )
         window = data.get("file_window")
-        window_relevant = data_path != candidate_path or _payload_matches_range(
-            window if isinstance(window, dict) else {}, candidate_start, candidate_end
+        window_relevant = _payload_matches_range(
+            window if isinstance(window, dict) else {},
+            requested.start_line,
+            requested.end_line,
         )
         if isinstance(window, dict) and window_relevant:
             _append_bounded(
@@ -205,22 +416,20 @@ def _append_matching_tool_context(
         _append_symbols(
             context,
             data.get("enclosing_symbols"),
-            candidate_path=candidate_path,
-            candidate_start=candidate_start,
-            candidate_end=candidate_end,
+            requested=requested,
             source=tool_name,
             budget=budget,
         )
         return
 
     if tool_name == "read_file":
-        if data_path not in relevant_paths:
+        if data_path != requested.path:
             return
         start_line = _as_int(data.get("start_line"))
         line_count = _as_int(data.get("line_count")) or 0
         end_line = start_line + max(0, line_count - 1) if start_line else None
-        if data_path == candidate_path and not _ranges_overlap(
-            candidate_start, candidate_end, start_line, end_line
+        if not _ranges_overlap(
+            requested.start_line, requested.end_line, start_line, end_line
         ):
             return
         _append_bounded(
@@ -244,11 +453,29 @@ def _append_matching_tool_context(
         if not isinstance(raw_records, list):
             continue
         records.extend(item for item in raw_records if isinstance(item, dict))
-    scoped_to_relevant = _normalized_path(arguments.get("path", "")) in relevant_paths
+    matching_records = [
+        item
+        for item in records
+        if _location_overlaps_record(
+            requested.path,
+            requested.start_line,
+            requested.end_line,
+            item,
+        )
+    ]
+    scoped_to_requested = _normalized_path(arguments.get("path", "")) == requested.path
+    if not matching_records and not (
+        scoped_to_requested
+        and any(
+            _normalized_path(item.get("path", "")) == requested.path for item in records
+        )
+    ):
+        return
     directly_relevant = any(
-        _normalized_path(item.get("path", "")) in relevant_paths for item in records
+        _normalized_path(item.get("path", "")) == requested.path
+        for item in matching_records
     )
-    if not scoped_to_relevant and not directly_relevant:
+    if not scoped_to_requested and not directly_relevant:
         return
     _append_bounded(
         context,
@@ -269,11 +496,25 @@ def _append_matching_tool_context(
     _append_symbols(
         context,
         data.get("enclosing_symbols"),
-        candidate_path=candidate_path,
-        candidate_start=candidate_start,
-        candidate_end=candidate_end,
+        requested=requested,
         source=tool_name,
         budget=budget,
+    )
+
+
+def _tool_source_matches(requested_source: str, tool_name: str) -> bool:
+    """Match aliases without upgrading one successful tool source to another."""
+
+    if not requested_source:
+        return True
+    alias_groups = (
+        {"get_changed_context", "changed_context"},
+        {"find_symbol_context", "symbol_context"},
+    )
+    if requested_source == tool_name:
+        return True
+    return any(
+        requested_source in aliases and tool_name in aliases for aliases in alias_groups
     )
 
 
@@ -281,9 +522,7 @@ def _append_symbols(
     context: dict[str, Any],
     raw_symbols: Any,
     *,
-    candidate_path: str,
-    candidate_start: int | None,
-    candidate_end: int | None,
+    requested: _EvidenceLocationRequest,
     source: str,
     budget: int,
 ) -> None:
@@ -292,14 +531,14 @@ def _append_symbols(
     for raw_symbol in raw_symbols:
         if not isinstance(raw_symbol, dict):
             continue
-        path = _normalized_path(raw_symbol.get("path", candidate_path))
-        if path != candidate_path:
+        path = _normalized_path(raw_symbol.get("path", requested.path))
+        if path != requested.path:
             continue
         symbol_start = _as_int(raw_symbol.get("line"))
         symbol_end = _as_int(raw_symbol.get("end_line")) or symbol_start
-        if candidate_start is not None and not _ranges_overlap(
-            candidate_start,
-            candidate_end,
+        if not _ranges_overlap(
+            requested.start_line,
+            requested.end_line,
             symbol_start,
             symbol_end,
         ):

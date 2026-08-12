@@ -4,6 +4,9 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-08-12 | Fix 2 full pytest gate | 第一次全量 `pytest` 在 120 秒命令窗口到期时被 runner 终止，未留下测试失败 | 当前 637 项 Windows 测试套件实际需要约 224 秒，120 秒不足以完成 | 不复用部分结果；以 300 秒窗口原样重跑，最终 636 passed、1 skipped |
+| 2026-08-12 | Fix 2 source-order preflight | 直接来源优先后的第二轮 10/10 valid 矩阵仍有 2 条 Pydantic graph `diff_evidence_context_missing` | 收集循环先穷尽主位置的 diff、工具 window 与 Manifest 副本，再处理 trigger/impact；同位置冗余表示仍可在后续 evidence location 获得首次保留机会前耗尽 12k envelope | 保留为 `core-eval-zero-hit-fix2-source-order-preflight`；改成 location-first 两阶段收集，第一阶段按 evidence role 让每个位置仅保留声明来源，第二阶段才补其他可信表示，并增加预算下后续 evidence 先于冗余副本的回归测试 |
+| 2026-08-12 | Fix 2 preflight Core Eval | 10/10 valid 的首轮 Fix 2 矩阵中，Pydantic graph finding 的四条 diff evidence 仍报 `diff_evidence_context_missing` | 同一 evidence location 先追加 Manifest span/path；12k verifier envelope 被 graph material 占满后，直接 diff hunk 被预算弹出。跨位置优先级正确，但同位置来源优先级错误 | 保留该矩阵为 `core-eval-zero-hit-fix2-preflight`；改为每个位置先保留直接 diff/read/symbol context，再补 Manifest，并增加大 Manifest 不得挤掉直接 diff 的预算回归测试后重跑正式 Fix 2 |
 | 2026-08-12 | Fix 1 Git staging | `git add` 无法创建 `.git/index.lock` | workspace 可写项目文件，但 Git 元数据在当前 managed sandbox 中只读 | 不绕过 Git 锁；按授权流程提升权限，仅暂存本提交明确列出的 8 个文件 |
 | 2026-08-12 | Fix 1 Eval result audit | 首个 PowerShell 摘要误读不存在的顶层 `results`，后续压缩版 `foreach` 末尾直接接管道又触发 `EmptyPipeElement` | Core report 的逐 run 数据位于 `runs`，且 PowerShell 单行循环不能以空管道边界拼接输出 | 按实际 schema 改读 `runs[].result/quality`，先累积 `$rows` 再单独格式化；未修改机器报告或实验指标 |
 | 2026-08-12 | Deterministic rejection diagnostics typing | 定向 `mypy` 报告 evidence detail 的 `**dict` 参数类型过宽，并暴露 `candidate_kind` 被推断为普通 `str` | 异构诊断字段放在未声明的字典中会丢失关键字参数类型；候选类型局部变量此前依赖运行时字符串赋值推断 | 用类型明确的局部构造函数生成 detail，并把候选类型标注为 `FindingCandidateKind | None`；随后重新运行 Ruff、mypy 与相关测试 |
