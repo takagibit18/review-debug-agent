@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.analyzer.context_state import ContextState
+from src.analyzer.finding_schema import normalize_repo_path
+from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport
 
 
@@ -234,6 +237,70 @@ FindingVerificationReason = Literal[
     "verified",
 ]
 
+_LEGACY_VERIFIED_LOCATION = re.compile(r"^[^\s:]+:\d+(?:-\d+)?$")
+
+
+class VerifiedEvidenceLocation(BaseModel):
+    """One verifier-confirmed repository location, separate from its rationale."""
+
+    file: str = Field(
+        min_length=1,
+        description="Repository-relative source path using forward slashes.",
+    )
+    line: int = Field(ge=1, description="One-based start line.")
+    end_line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional inclusive one-based end line.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_legacy_canonical_location(cls, value: Any) -> Any:
+        """Read only strict legacy path:line spans; never mine prose for a location."""
+
+        if not isinstance(value, str):
+            return value
+        raw = value.strip()
+        if _LEGACY_VERIFIED_LOCATION.fullmatch(raw) is None:
+            raise ValueError(
+                "legacy verified evidence must be an exact path:line[-end_line]"
+            )
+        parsed = normalize_location(raw)
+        if not parsed.valid or parsed.path is None or parsed.line is None:
+            raise ValueError("legacy verified evidence is not a repo-relative location")
+        return {
+            "file": parsed.path,
+            "line": parsed.line,
+            "end_line": parsed.end_line,
+        }
+
+    @model_validator(mode="after")
+    def _validate_repo_location(self) -> "VerifiedEvidenceLocation":
+        normalized_file = normalize_repo_path(self.file)
+        suffix = str(self.line)
+        if self.end_line is not None:
+            suffix += f"-{self.end_line}"
+        parsed = normalize_location(f"{normalized_file}:{suffix}")
+        if (
+            not parsed.valid
+            or parsed.path is None
+            or parsed.line is None
+            or parsed.path != normalized_file
+        ):
+            raise ValueError("verified evidence file must be repository-relative")
+        if self.end_line is not None and self.end_line < self.line:
+            raise ValueError("end_line must be greater than or equal to line")
+        self.file = normalized_file
+        return self
+
+    @property
+    def location(self) -> str:
+        suffix = str(self.line)
+        if self.end_line is not None and self.end_line != self.line:
+            suffix += f"-{self.end_line}"
+        return f"{self.file}:{suffix}"
+
 
 class FindingCandidate(BaseModel):
     """One risk finding awaiting independent semantic verification."""
@@ -254,7 +321,13 @@ class FindingVerification(BaseModel):
     status: FindingVerificationStatus
     reason_codes: list[FindingVerificationReason] = Field(default_factory=list)
     rationale: str
-    verified_evidence: list[str] = Field(default_factory=list)
+    verified_evidence: list[VerifiedEvidenceLocation] = Field(
+        default_factory=list,
+        description=(
+            "Structured code locations verified against supplied candidate context; "
+            "semantic explanation belongs in rationale."
+        ),
+    )
     revised_issue: ReviewIssue | None = None
 
 

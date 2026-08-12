@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from src.analyzer.context_state import ContextState
 from src.analyzer.diff_lines import changed_new_lines_by_file
@@ -18,7 +18,7 @@ from src.analyzer.evidence_binding import (
     bind_issue_candidate_id,
 )
 from src.analyzer.evidence_policy import evidence_policy_for_mode
-from src.analyzer.location import normalize_location
+from src.analyzer.location import LocationParseResult, normalize_location
 from src.analyzer.output_formatter import (
     ReviewIssue,
     ReviewReport,
@@ -31,6 +31,7 @@ from src.analyzer.schemas import (
     FindingCandidateKind,
     FindingVerificationBatch,
     ReviewRequest,
+    VerifiedEvidenceLocation,
 )
 from src.analyzer.verifier_context import (
     _location_overlaps_record,
@@ -55,6 +56,9 @@ Seek counterexamples. Return exactly one structured
 verdict per candidate through submit_finding_verification. Never accept a candidate merely
 because its confidence is high. Use candidate_context as candidate-scoped evidence from
 successful source reads; distinguish missing evidence from evidence that contradicts a claim.
+Return verified_evidence only as structured {file, line, optional end_line} objects with
+repository-relative paths. Keep all semantic explanation in rationale; never put prose in a
+verified_evidence entry.
 Severity measures supported impact while confidence measures evidentiary certainty; a narrow
 current trigger is not by itself a reason to classify an incorrect result as info. Author tests
 and PR intent establish intent, not preservation of the pre-change fallback or compatibility
@@ -320,7 +324,8 @@ def validate_verifications_with_stats(
                 effective_issue.location if effective_issue is not None else ""
             )
             locations = [
-                normalize_location(value) for value in verdict.verified_evidence
+                _parse_verified_evidence_location(value)
+                for value in verdict.verified_evidence
             ]
             valid = (
                 valid
@@ -330,10 +335,16 @@ def validate_verifications_with_stats(
                 and (not requires_revision or verdict.revised_issue is not None)
                 and _location_intersects_changed_lines(candidate_location, changed)
                 and bool(locations)
-                and all(item.valid and item.line is not None for item in locations)
                 and all(
-                    _location_intersects_changed_lines(item, changed)
-                    or location_in_candidate_context(context, item)
+                    item is not None and item.valid and item.line is not None
+                    for item in locations
+                )
+                and all(
+                    item is not None
+                    and (
+                        _location_intersects_changed_lines(item, changed)
+                        or location_in_candidate_context(context, item)
+                    )
                     for item in locations
                 )
             )
@@ -442,7 +453,7 @@ def _accepted_verdict_rejections(
     changed: dict[str, set[int]],
     requires_revision: bool,
     revised_issue: bool,
-    verified_evidence: list[str],
+    verified_evidence: list[VerifiedEvidenceLocation],
 ) -> list[DeterministicRejectionDetail]:
     """Explain every failed rule without changing the fail-closed decision."""
 
@@ -512,8 +523,8 @@ def _accepted_verdict_rejections(
             )
         )
     for index, raw_location in enumerate(verified_evidence):
-        location = normalize_location(raw_location)
-        if not location.valid or location.line is None:
+        location = _parse_verified_evidence_location(raw_location)
+        if location is None or not location.valid or location.line is None:
             details.append(
                 _rejection_detail(
                     verdict_candidate_id,
@@ -571,6 +582,16 @@ def _accepted_verdict_rejections(
             )
         )
     return details
+
+
+def _parse_verified_evidence_location(value: Any) -> LocationParseResult | None:
+    """Normalize a typed verifier location, with strict legacy-string compatibility."""
+
+    try:
+        structured = VerifiedEvidenceLocation.model_validate(value)
+    except (ValidationError, ValueError, TypeError):
+        return None
+    return normalize_location(structured.location)
 
 
 def _structured_candidate_evidence_rejections(
