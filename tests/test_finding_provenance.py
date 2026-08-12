@@ -169,6 +169,129 @@ def test_verifier_accepts_exact_manifest_span_and_hash() -> None:
     assert result.results[0].status == "accepted"
 
 
+def test_verifier_accepts_manifest_and_read_evidence_in_one_finding() -> None:
+    manifest = _manifest()
+    issue = _issue(manifest=manifest)
+    issue.contract_evidence = [
+        issue.contract_evidence[0].model_copy(
+            update={
+                "context_manifest_id": "",
+                "context_hash": "",
+                "retrieval_source": "read_file",
+                "file": "pkg/helper.py",
+                "line": 20,
+                "statement": "The unchanged helper applies the same stale cache key.",
+            }
+        )
+    ]
+    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
+    context = {
+        "candidate_id": candidate.candidate_id,
+        "context_mode": "graph_hybrid",
+        "context_manifest_id": manifest.candidate_id,
+        "included_spans": [
+            item.model_dump(mode="json") for item in manifest.included_spans
+        ],
+        "file_windows": [
+            {
+                "path": "pkg/helper.py",
+                "start_line": 18,
+                "end_line": 22,
+                "source": "read_file",
+                "content": "20: return cache[key]",
+            }
+        ],
+    }
+    batch = _accepted_batch(candidate.candidate_id)
+    batch.results[0].verified_evidence.append("pkg/helper.py:20")
+
+    result = validate_verifications(
+        [candidate], batch, _request(), candidate_context=[context]
+    )
+
+    assert result.results[0].status == "accepted"
+
+
+def test_verifier_accepts_manifest_and_diff_evidence_in_one_finding() -> None:
+    manifest = _manifest()
+    issue = _issue(manifest=manifest)
+    issue.contract_evidence = [
+        issue.contract_evidence[0].model_copy(
+            update={
+                "context_manifest_id": "",
+                "context_hash": "",
+                "retrieval_source": "git_diff",
+                "resolver": "",
+                "file": "pkg/service.py",
+                "line": 12,
+                "statement": "The changed return exposes the stale cached value.",
+            }
+        )
+    ]
+    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
+    context = {
+        "candidate_id": candidate.candidate_id,
+        "context_mode": "graph_hybrid",
+        "context_manifest_id": manifest.candidate_id,
+        "included_spans": [
+            item.model_dump(mode="json") for item in manifest.included_spans
+        ],
+        "diff_hunks": [
+            {
+                "path": "pkg/service.py",
+                "new_start": 12,
+                "new_count": 1,
+                "source": "diff",
+                "text": "+return cache[key]",
+            }
+        ],
+    }
+
+    result = validate_verifications(
+        [candidate],
+        _accepted_batch(candidate.candidate_id),
+        _request(),
+        candidate_context=[context],
+    )
+
+    assert result.results[0].status == "accepted"
+
+
+def test_verifier_rejects_manifest_finding_with_unread_tool_evidence() -> None:
+    manifest = _manifest()
+    issue = _issue(manifest=manifest)
+    issue.contract_evidence = [
+        issue.contract_evidence[0].model_copy(
+            update={
+                "context_manifest_id": "",
+                "context_hash": "",
+                "retrieval_source": "read_file",
+                "file": "pkg/missing.py",
+                "line": 20,
+            }
+        )
+    ]
+    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
+    context = {
+        "candidate_id": candidate.candidate_id,
+        "context_mode": "graph_hybrid",
+        "context_manifest_id": manifest.candidate_id,
+        "included_spans": [
+            item.model_dump(mode="json") for item in manifest.included_spans
+        ],
+        "file_windows": [],
+    }
+
+    result = validate_verifications(
+        [candidate],
+        _accepted_batch(candidate.candidate_id),
+        _request(),
+        candidate_context=[context],
+    )
+
+    assert result.results[0].status == "rejected"
+
+
 def test_verifier_rejects_code_outside_manifest() -> None:
     manifest = _manifest()
     issue = _issue(manifest=manifest)

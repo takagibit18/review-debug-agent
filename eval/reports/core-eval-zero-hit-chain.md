@@ -9,7 +9,10 @@
 | Before | `8cab2fb` | 零命中审计后基线 | 4 | 0 | 0 | 0 |
 | Fix 1 | `ffc4467` | 暴露逐 finding/evidence 的确定性拒绝规则 | 2 | 1 | 1 | 0 |
 | Fix 2 | `69355f1` | 为 finding 实际引用的全部位置保留 bounded verifier context | 1 | 1 | 1 | 0 |
-| Fix 3 | 本提交（SHA 待提交后回填） | 从可信上下文绑定 evidence 来源与 canonical candidate ID | 2 | 1 | 1 | 0 |
+| Fix 3 | `7e628cc` | 从可信上下文绑定 evidence 来源与 canonical candidate ID | 2 | 1 | 1 | 0 |
+| Fix 4 | 本提交（SHA 待提交后回填） | 支持逐条 mixed trusted sources 与 revised finding 重绑定 | N/A¹ | N/A¹ | N/A¹ | N/A¹ |
+
+¹ Fix 4 严格执行单轮、不补采：provider `connection_error` 导致 8/10 placeholder/incomplete，且 6 个 clean-control attempts 全部 invalid。报告中的有效子集计数为 deterministic reject 0 / final 0 / gold 0，但不能与完整快照比较，也不能据此声称 clean FP 为 0。
 
 Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提交没有改变任何通过/拒绝条件，但本轮模型输出与 Before 不同。Before 的四个 candidate run 都提交 warning 并进入 deterministic gate；Fix 1 中 pytest baseline 提交了 `info`，没有进入 verifier，而 pytest MergeWarden 本轮提交的 evidence 已满足旧 gate 并正常命中 gold。Fix 1 的可信改进仅是 deterministic rejection 变得可解释。
 
@@ -71,3 +74,16 @@ Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提�
 ### 是否让命中链路前进
 
 可信绑定合同与测试覆盖前进，但正式聚合数字没有改善：Fix 2 → Fix 3 的 deterministic reject 为 1 → 2，final / gold / clean FP 保持 1 / 1 / 0。新增 reject 是本轮 Pydantic baseline 输出变化；本提交只主张可重复的机制改进，不把模型 cohort 漂移包装成质量收益。
+
+## Fix 4：mixed trusted sources 与 revised finding 重绑定
+
+- 目的：Manifest/diff/read/symbol evidence 逐条独立验证；移除 issue-level“全都必须同 Manifest”约束。revised finding 从 verifier 实际收到的 context 重新绑定后，再走同一 deterministic gate。
+- Tests：全量 `pytest` 644 passed / 1 skipped；`mypy src` 通过 77 个 source files；全仓 Ruff、touched-file format、Core audit 与 `git diff --check` 全部通过。
+- 正式运行：唯一单轮，10 个 records 均为 attempt 1；2/10 valid，8/10 因 provider `connection_error` placeholder/incomplete，未补采。
+- 有效 candidate 子集：raw 1，semantic accepted 0，deterministic rejected 0，final 0，gold 0。pytest A/B 均 invalid；Pydantic baseline semantic rejected，MergeWarden 未提交 finding。
+- Controls：6/6 attempts 均 invalid，clean FP 不可评估（N/A）。
+- 产物：`eval/outputs/core-eval-zero-hit-fix4.json`、`eval/reports/core-eval-zero-hit-fix4.md` 及报告引用的 10 个 JSONL event logs。
+
+### 是否让命中链路前进
+
+代码合同前进，正式质量结论不成立。通用测试证明合法 mixed-source finding 与 revised finding 不再因 issue-level Manifest 约束误删，同时错误 hash、缺失 read、低可信 graph edge与 verifier 新增未见位置继续 fail closed；但外部 provider 故障使本轮无法验证真实 pytest 命中和 clean controls。最近可比较快照仍是 Fix 3。

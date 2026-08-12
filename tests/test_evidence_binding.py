@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from src.analyzer.evidence_binding import bind_candidate_evidence
 from src.analyzer.finding_schema import EvidenceProvenance, RepairIntent, SourceAnchor
-from src.analyzer.finding_verifier import build_candidates, validate_verifications
+from src.analyzer.finding_verifier import (
+    build_candidates,
+    validate_verifications,
+    validate_verifications_with_stats,
+)
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import (
     FindingVerification,
@@ -197,3 +201,61 @@ def test_ambiguous_unclaimed_provenance_is_not_auto_bound() -> None:
 
     assert bound[0].issue.contract_evidence[0].retrieval_source == "reviewer_context"
     assert result.results[0].status == "rejected"
+
+
+def test_revised_finding_is_rebound_to_retained_trusted_context() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(deep=True)
+    revised.observed_behavior = "The supported caller path increments the value twice."
+    revised.contract_evidence[0].candidate_id = "verifier-invented-id"
+    revised.contract_evidence[0].retrieval_source = "git_diff"
+    batch = _accepted(bound[0].candidate_id)
+    batch.results[0].revised_issue = revised
+
+    result = validate_verifications(bound, batch, request, candidate_context=context)
+
+    assert result.results[0].status == "accepted"
+    assert result.results[0].revised_issue is not None
+    accepted = result.results[0].revised_issue
+    assert accepted.contract_evidence[0].retrieval_source == "read_file"
+    assert {item.candidate_id for item in accepted.all_evidence()} == {
+        bound[0].candidate_id
+    }
+
+
+def test_revised_finding_new_unseen_location_is_rejected() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(deep=True)
+    revised.contract_evidence[0] = revised.contract_evidence[0].model_copy(
+        update={
+            "retrieval_source": "read_file",
+            "file": "missing.py",
+            "line": 99,
+            "end_line": 99,
+            "statement": "An unseen helper allegedly increments the value.",
+        }
+    )
+    batch = _accepted(bound[0].candidate_id)
+    batch.results[0].revised_issue = revised
+
+    result, stats = validate_verifications_with_stats(
+        bound, batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "tool_evidence_context_missing"
+        and item.evidence_role == "contract"
+        and item.file == "missing.py"
+        and item.line == 99
+        and item.revised_issue
+        for item in stats.rejection_details
+    )

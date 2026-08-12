@@ -118,6 +118,8 @@ Verifier 的 bounded candidate context 不再只围绕 finding 主位置收集�
 
 Structured evidence 的来源标签和 candidate identity 由系统绑定，不再信任模型自报。candidate 构建后，系统把 canonical candidate ID 写回 issue 及全部 evidence；每条 evidence 再与实际 diff、成功工具结果和 Manifest span 对照。模型声明已被观察事实支持时保留；声明错误但只有一个可信来源覆盖该位置时归一化为该来源；没有来源或多个来源都可成立但无法唯一选择时不猜测，交给 deterministic gate fail closed。
 
+Graph-hybrid finding 可以逐条混用可信来源：例如 cause/contract 来自 Manifest、trigger 来自 diff、impact 来自成功 `read_file`。Manifest evidence 单独核验 id、span hash、位置以及 strong edge 合同；diff 与工具 evidence 分别核验 retained hunk 和具体成功工具来源，不再被 issue-level Manifest id 强制同源。semantic verifier 返回 revised finding 时，系统只用该 verifier 实际收到的 bounded context 重新绑定来源，然后重新执行完整确定性校验；新增的未见位置、错误 hash、缺失 read 和低可信 graph edge仍拒绝。
+
 只有 accepted 的 Warning/Critical hypothesis 才进入归并阶段。Info/Style 和被拒绝项不参与 merger。
 
 ### Blocking、Finding Causality Graph 与保守聚类

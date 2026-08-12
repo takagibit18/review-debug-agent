@@ -4,6 +4,7 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-08-12 | Fix 4 single-pass Core Eval | 正式矩阵仅 2/10 valid；从 pytest MergeWarden 起 8 个 attempts 都以 placeholder/incomplete 结束，7 个 total tokens 为 0 | 所有无效 run 的事件上下文均记录 provider `connection_error`，不是 workspace、validator、hard-cap 或 verifier failure | 遵循用户指定的经济性策略，不自动重试或另跑矩阵；保留完整失败快照，Fix 4 质量与 clean FP 标为 N/A，最近可比较结果仍引用 10/10 valid 的 Fix 3 |
 | 2026-08-12 | Fix 3 formal Core Eval launch | 首个 2 秒启动命令在进程创建后被 runner 超时终止，未产生 event log、attempt 或报告 | 为获取异步 cell 而使用的窗口短于 Core runner 的初始化时间 | 先确认无采集产物，再以完整执行窗口启动一次正式单轮；最终恰好生成 10 个 attempt-1 records，未重复任何 measured sample |
 | 2026-08-12 | Fix 3 full pytest launch | 1 秒探测命令强制关闭 pytest stdout，出现 Windows `OSError: Invalid argument`，未进入可用测试结果 | 极短 timeout 在 pytest 初始化/flush 期间关闭了输出句柄 | 使用 300 秒窗口从头运行完整 suite，最终 639 passed、1 skipped；后续长测试不再用短探测启动 |
 | 2026-08-12 | Fix 3 candidate-ID regression test | 首轮定向测试 66/67，旧参数化用例仍要求空 evidence candidate ID 产生 `evidence_binding_missing` | Commit 3 明确把 candidate identity 改为系统生成并回填，旧断言验证的是已被替换的合同 | 保留位置/来源缺失的详细拒绝用例；将 ID 行为移到 binding 测试，分别覆盖空 ID 与错误 ID 都被 canonical ID 覆盖，定向回归 66/66 |

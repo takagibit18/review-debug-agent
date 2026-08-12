@@ -14,6 +14,7 @@ from src.analyzer.context_state import ContextState
 from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.evidence_binding import (
     bind_candidate_evidence,
+    bind_issue_evidence_from_context,
     bind_issue_candidate_id,
 )
 from src.analyzer.evidence_policy import evidence_policy_for_mode
@@ -68,9 +69,9 @@ _AGENT_VERIFIER_POLICY = """This is agent_search mode. Accept valid diff evidenc
 from successful read-only tool calls without requiring a context manifest. Reject invented graph
 or manifest provenance."""
 
-_GRAPH_VERIFIER_POLICY = """This is graph_hybrid mode. Manifest evidence must match the exact
-manifest id and context hash. Valid diff or successful read-only tool evidence remains acceptable
-when no manifest is cited."""
+_GRAPH_VERIFIER_POLICY = """This is graph_hybrid mode. Validate each evidence item by its own
+source: manifest evidence must match the exact manifest id and context hash, while valid diff or
+successful read-only tool evidence remains acceptable in the same finding."""
 
 _HIGH_CONFIDENCE_INFO_THRESHOLD = 0.85
 _CONCRETE_RISK_PATTERN = re.compile(
@@ -292,21 +293,24 @@ def validate_verifications_with_stats(
     rejection_details: list[DeterministicRejectionDetail] = []
     for verdict in batch.results:
         candidate = by_id.get(verdict.candidate_id)
+        context = contexts_by_id.get(verdict.candidate_id)
+        validated_verdict = verdict
         valid = candidate is not None
         verdict_rejections: list[DeterministicRejectionDetail] = []
         if verdict.status == "accepted":
             checked_count += 1
-            effective_issue = (
-                verdict.revised_issue
-                if verdict.revised_issue is not None
-                else candidate.issue
-                if candidate is not None
-                else None
-            )
-            if effective_issue is not None:
-                effective_issue = effective_issue.model_copy(
-                    update={"candidate_id": verdict.candidate_id}
+            effective_issue: ReviewIssue | None
+            if verdict.revised_issue is not None:
+                effective_issue = bind_issue_evidence_from_context(
+                    verdict.revised_issue,
+                    verdict.candidate_id,
+                    context,
                 )
+                validated_verdict = verdict.model_copy(
+                    update={"revised_issue": effective_issue}
+                )
+            else:
+                effective_issue = candidate.issue if candidate is not None else None
             requires_revision = bool(
                 candidate is not None
                 and candidate.candidate_kind
@@ -318,7 +322,6 @@ def validate_verifications_with_stats(
             locations = [
                 normalize_location(value) for value in verdict.verified_evidence
             ]
-            context = contexts_by_id.get(verdict.candidate_id)
             valid = (
                 valid
                 and effective_issue is not None
@@ -418,7 +421,7 @@ def validate_verifications_with_stats(
                 )
             )
         else:
-            results.append(verdict)
+            results.append(validated_verdict)
     return (
         FindingVerificationBatch(results=results),
         DeterministicValidationStats(
@@ -776,36 +779,7 @@ def _evidence_rejections(
                 message="The evidence item has no statement tying code to the finding.",
             )
         )
-    if issue.context_manifest_id:
-        if evidence_manifest != issue.context_manifest_id:
-            details.append(
-                detail(
-                    "manifest_id_mismatch",
-                    field="context_manifest_id",
-                    message=(
-                        "The evidence manifest id does not match the finding manifest id."
-                    ),
-                )
-            )
-    elif evidence_manifest:
-        details.append(
-            detail(
-                "manifest_id_mismatch",
-                field="context_manifest_id",
-                message="Evidence declares a manifest that the finding does not bind.",
-            )
-        )
-
-    if (
-        candidate_id
-        and file
-        and line is not None
-        and retrieval_source
-        and not (
-            issue.context_manifest_id and evidence_manifest != issue.context_manifest_id
-        )
-        and not (not issue.context_manifest_id and evidence_manifest)
-    ):
+    if candidate_id and file and line is not None and retrieval_source:
         provenance_rule = _provenance_rejection_rule(context, evidence)
         if provenance_rule is not None:
             rule, field, message = provenance_rule
@@ -1069,14 +1043,6 @@ def _structured_candidate_evidence_valid(
             )
         )
         for item in evidence
-    ):
-        return False
-    if issue.context_manifest_id and any(
-        item.context_manifest_id != issue.context_manifest_id for item in evidence
-    ):
-        return False
-    if not issue.context_manifest_id and any(
-        item.context_manifest_id for item in evidence
     ):
         return False
     return all(provenance_in_candidate_context(context, item) for item in evidence)

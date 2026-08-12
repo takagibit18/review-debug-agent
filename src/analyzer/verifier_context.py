@@ -754,7 +754,7 @@ def _location_in_tool_context(
     *,
     retrieval_source: str,
 ) -> bool:
-    for key in ("file_windows", "enclosing_symbols"):
+    for key in ("diff_hunks", "file_windows", "enclosing_symbols"):
         records = context.get(key)
         if isinstance(records, list) and any(
             isinstance(record, dict)
