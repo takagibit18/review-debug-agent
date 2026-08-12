@@ -15,8 +15,10 @@ runtime:
   final_submit_feedback_token_budget: 1200
   review_max_iterations: 3
   fixture_concurrency: 1
-  repeat_on_instability: true
-  max_attempts: 3
+  # User-directed collection policy: one measured pass per iteration. Runtime
+  # failures remain visible in the report instead of triggering paid retries.
+  repeat_on_instability: false
+  max_attempts: 1
 
 # A keeps the frozen simple agent-search shape. B is the current MergeWarden
 # graph-assisted path with a cold per-run index, which avoids hidden cache state.

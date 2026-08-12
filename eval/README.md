@@ -19,13 +19,13 @@ Core fixture 的 review input 不再信任 JSON 中可能过期的 `diff_text` �
 - A：`A-agent-search`，graph disabled；
 - B：`B-mergewarden`，当前 `graph_hybrid` 路径，每次使用 cold index，避免隐藏 cache 状态。
 
-两边使用相同 model、temperature、4096 output-token cap、12k prompt-context budget、60k/80k soft/hard cumulative token budget、12k final-submit reserve、4k finalize prompt-context budget、iteration/tool budget、fixture 与 judge。Graph manifest 与 diff/file context 共用 12k 可截断输入预算，discarded/excluded graph paths 只保留在审计日志中。默认每个 fixture × variant 只跑 1 次；只有 placeholder、incomplete、validator failure 或 runtime error 才重试，最多 3 次。
+两边使用相同 model、temperature、4096 output-token cap、12k prompt-context budget、60k/80k soft/hard cumulative token budget、12k final-submit reserve、4k finalize prompt-context budget、iteration/tool budget、fixture 与 judge。Graph manifest 与 diff/file context 共用 12k 可截断输入预算，discarded/excluded graph paths 只保留在审计日志中。自 2026-08-12 的零命中修复迭代起，每个 fixture × variant 只采集 1 次；placeholder、incomplete、validator failure 或 runtime error 如实记入该轮报告，不自动补跑，以平衡准确性与调用成本。
 
 ```bash
 # 只检查 5 个 fixture 的 reviewed/full-workspace/review-scope/gold 声明，不调用模型
 python -m eval.core_eval audit
 
-# 运行 5 × 2 的主 A/B；仅不稳定 case 会额外重试
+# 运行 5 × 2 的主 A/B；每个 fixture × variant 仅一次 attempt
 python -m eval.core_eval run
 
 # 从已有机器报告重新渲染

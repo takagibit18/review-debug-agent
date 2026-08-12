@@ -109,6 +109,8 @@ def test_core_config_is_small_full_workspace_set_with_structured_gold() -> None:
     assert config.runtime.final_submit_reserve_tokens == 12000
     assert config.runtime.final_submit_prompt_token_budget == 4000
     assert config.runtime.final_submit_feedback_token_budget == 1200
+    assert config.runtime.repeat_on_instability is False
+    assert config.runtime.max_attempts == 1
     assert sum(spec.role == "candidate" for spec, _ in loaded) == 2
     assert {
         "golden_pydantic_pydantic_pr12568",
@@ -295,6 +297,8 @@ def test_report_aggregates_quality_on_valid_runs_and_reliability_on_all_attempts
     assert "## Per-fixture comparison" in markdown
     assert "## Main failure mode" in markdown
     assert "## Deliberately deferred" in markdown
+    assert "只采集一次" in markdown
+    assert "不自动付费补跑" in markdown
     assert "不主张统计代表性" in markdown
 
 
@@ -401,8 +405,7 @@ def test_core_report_aggregates_candidate_funnel_by_variant() -> None:
     assert by_label["mergewarden"].candidate_funnel.submitted_finding_count == 2
     assert by_label["mergewarden"].candidate_funnel.non_risk_not_routed_count == 1
     assert (
-        by_label["mergewarden"].candidate_funnel.calibration_rescue_candidate_count
-        == 1
+        by_label["mergewarden"].candidate_funnel.calibration_rescue_candidate_count == 1
     )
     assert by_label["mergewarden"].candidate_funnel.semantic_rejected_count == 1
     assert by_label["mergewarden"].candidate_funnel.final_risk_finding_count == 1
@@ -434,9 +437,7 @@ def test_core_report_deserializes_legacy_payload_without_funnel_fields() -> None
 
     restored = CoreEvalReport.model_validate(payload)
 
-    assert all(
-        item.candidate_funnel == FindingFunnel() for item in restored.variants
-    )
+    assert all(item.candidate_funnel == FindingFunnel() for item in restored.variants)
     assert all(
         item.result.process_metrics.finding_funnel == FindingFunnel()
         for item in restored.runs

@@ -17,6 +17,7 @@ from src.analyzer.context_mode import ReviewContextMode
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
 from src.analyzer.context_strategy import ContextStrategy, build_context_strategy
 from src.analyzer.diff_lines import changed_new_lines_by_file
+from src.analyzer.evidence_binding import bind_candidate_evidence
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.finding_verifier import (
     DeterministicValidationStats,
@@ -906,6 +907,13 @@ class AgentOrchestrator:
                 verifier.last_post_validation_batch,
                 verifier.last_validation_stats,
             )
+        manifests = [dict(item) for item in state.candidate_context_manifests]
+        candidates[:] = bind_candidate_evidence(
+            candidates,
+            request,
+            list(self._verifier_tool_evidence),
+            context_manifests=manifests,
+        )
         post_batch, stats = validate_verifications_with_stats(
             candidates,
             returned_batch,
@@ -914,9 +922,7 @@ class AgentOrchestrator:
                 candidates,
                 request,
                 list(self._verifier_tool_evidence),
-                context_manifests=[
-                    dict(item) for item in state.candidate_context_manifests
-                ],
+                context_manifests=manifests,
                 context_mode=state.context_mode,
             ),
         )

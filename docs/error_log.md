@@ -4,6 +4,10 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-08-12 | Fix 3 formal Core Eval launch | 首个 2 秒启动命令在进程创建后被 runner 超时终止，未产生 event log、attempt 或报告 | 为获取异步 cell 而使用的窗口短于 Core runner 的初始化时间 | 先确认无采集产物，再以完整执行窗口启动一次正式单轮；最终恰好生成 10 个 attempt-1 records，未重复任何 measured sample |
+| 2026-08-12 | Fix 3 full pytest launch | 1 秒探测命令强制关闭 pytest stdout，出现 Windows `OSError: Invalid argument`，未进入可用测试结果 | 极短 timeout 在 pytest 初始化/flush 期间关闭了输出句柄 | 使用 300 秒窗口从头运行完整 suite，最终 639 passed、1 skipped；后续长测试不再用短探测启动 |
+| 2026-08-12 | Fix 3 candidate-ID regression test | 首轮定向测试 66/67，旧参数化用例仍要求空 evidence candidate ID 产生 `evidence_binding_missing` | Commit 3 明确把 candidate identity 改为系统生成并回填，旧断言验证的是已被替换的合同 | 保留位置/来源缺失的详细拒绝用例；将 ID 行为移到 binding 测试，分别覆盖空 ID 与错误 ID 都被 canonical ID 覆盖，定向回归 66/66 |
+| 2026-08-12 | Fix 3 multi-file patches | 首个组合补丁因 `agent_loop.py` import 锚点不匹配而整体未应用；后续报告组合补丁又因 README 结论文本多写一个“的”而整体未应用 | 组合补丁未先按各目标文件的精确文本分段 | 两次都先确认没有部分写入，再拆成小补丁逐个应用并核对；代码、报告与实验数据未出现半应用状态 |
 | 2026-08-12 | Fix 2 full pytest gate | 第一次全量 `pytest` 在 120 秒命令窗口到期时被 runner 终止，未留下测试失败 | 当前 637 项 Windows 测试套件实际需要约 224 秒，120 秒不足以完成 | 不复用部分结果；以 300 秒窗口原样重跑，最终 636 passed、1 skipped |
 | 2026-08-12 | Fix 2 source-order preflight | 直接来源优先后的第二轮 10/10 valid 矩阵仍有 2 条 Pydantic graph `diff_evidence_context_missing` | 收集循环先穷尽主位置的 diff、工具 window 与 Manifest 副本，再处理 trigger/impact；同位置冗余表示仍可在后续 evidence location 获得首次保留机会前耗尽 12k envelope | 保留为 `core-eval-zero-hit-fix2-source-order-preflight`；改成 location-first 两阶段收集，第一阶段按 evidence role 让每个位置仅保留声明来源，第二阶段才补其他可信表示，并增加预算下后续 evidence 先于冗余副本的回归测试 |
 | 2026-08-12 | Fix 2 preflight Core Eval | 10/10 valid 的首轮 Fix 2 矩阵中，Pydantic graph finding 的四条 diff evidence 仍报 `diff_evidence_context_missing` | 同一 evidence location 先追加 Manifest span/path；12k verifier envelope 被 graph material 占满后，直接 diff hunk 被预算弹出。跨位置优先级正确，但同位置来源优先级错误 | 保留该矩阵为 `core-eval-zero-hit-fix2-preflight`；改为每个位置先保留直接 diff/read/symbol context，再补 Manifest，并增加大 Manifest 不得挤掉直接 diff 的预算回归测试后重跑正式 Fix 2 |

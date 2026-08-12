@@ -1465,12 +1465,6 @@ def test_validate_verification_rejects_unretained_or_unanchored_context() -> Non
             "tool_evidence_context_missing",
             "retrieval_source/file/line",
         ),
-        (
-            lambda issue: setattr(issue.cause_evidence[0], "candidate_id", ""),
-            {"diff_hunks": []},
-            "evidence_binding_missing",
-            "candidate_id",
-        ),
     ],
 )
 def test_deterministic_rejection_details_name_failed_evidence_rule(

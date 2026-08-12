@@ -116,6 +116,8 @@ Finding Evidence Verifier 继续执行 v0.2.2 门控，并对 schema 2.0 增加�
 
 Verifier 的 bounded candidate context 不再只围绕 finding 主位置收集。它按 `主位置 → cause → contract → trigger → impact → related location` 的固定优先级遍历 finding 实际引用的位置，并分别保留覆盖这些位置的 diff hunk、成功工具读取 window、symbol context 和已选择 Manifest span/path。达到字符预算后只裁掉更低优先级位置，不把整文件塞入 verifier；不存在、未成功读取或已被预算裁掉的位置仍按 fail-closed 规则拒绝。
 
+Structured evidence 的来源标签和 candidate identity 由系统绑定，不再信任模型自报。candidate 构建后，系统把 canonical candidate ID 写回 issue 及全部 evidence；每条 evidence 再与实际 diff、成功工具结果和 Manifest span 对照。模型声明已被观察事实支持时保留；声明错误但只有一个可信来源覆盖该位置时归一化为该来源；没有来源或多个来源都可成立但无法唯一选择时不猜测，交给 deterministic gate fail closed。
+
 只有 accepted 的 Warning/Critical hypothesis 才进入归并阶段。Info/Style 和被拒绝项不参与 merger。
 
 ### Blocking、Finding Causality Graph 与保守聚类

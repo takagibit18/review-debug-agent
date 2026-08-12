@@ -12,6 +12,10 @@ from pydantic import BaseModel, Field
 
 from src.analyzer.context_state import ContextState
 from src.analyzer.diff_lines import changed_new_lines_by_file
+from src.analyzer.evidence_binding import (
+    bind_candidate_evidence,
+    bind_issue_candidate_id,
+)
 from src.analyzer.evidence_policy import evidence_policy_for_mode
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import (
@@ -191,14 +195,22 @@ class FindingVerifier:
                 "parameters": FindingVerificationBatch.model_json_schema(),
             },
         }
+        manifests = [dict(item) for item in state.candidate_context_manifests]
+        # Candidate identity and provenance labels are system-owned. Bind against
+        # all successful run evidence before building the bounded verifier envelope
+        # so a corrected source receives first-pass retention priority.
+        candidates[:] = bind_candidate_evidence(
+            candidates,
+            request,
+            tool_evidence or [],
+            context_manifests=manifests,
+        )
         self.last_candidate_context = build_candidate_verifier_context(
             candidates,
             request,
             tool_evidence or [],
             max_chars=self._context_max_chars,
-            context_manifests=[
-                dict(item) for item in state.candidate_context_manifests
-            ],
+            context_manifests=manifests,
             context_mode=state.context_mode,
         )
         payload = {
@@ -1107,10 +1119,14 @@ def build_candidates(
         if candidate_id in seen:
             continue
         seen.add(candidate_id)
+        bound_issue = bind_issue_candidate_id(issue, candidate_id)
         issue.candidate_id = candidate_id
+        for evidence in issue.all_evidence():
+            evidence.candidate_id = candidate_id
         if not issue.finding_id:
             issue.finding_id = "F-" + candidate_id[:12].upper()
-        candidate_issue = issue.model_copy(update={"candidate_id": candidate_id})
+        bound_issue.finding_id = issue.finding_id
+        candidate_issue = bound_issue
         candidates.append(
             FindingCandidate(
                 candidate_id=candidate_id,
@@ -1238,7 +1254,9 @@ def apply_verifications(
         if verdict is None:
             continue
         if verdict.status == "accepted":
-            accepted_issue = verdict.revised_issue or issue
+            accepted_issue = verdict.revised_issue or (
+                candidate.issue if candidate is not None else issue
+            )
             output.append(_bind_verified_issue(accepted_issue, candidate_id))
         elif verdict.status == "downgraded" and verdict.revised_issue is not None:
             output.append(_bind_verified_issue(verdict.revised_issue, candidate_id))
@@ -1262,7 +1280,8 @@ def apply_verifications(
 
 
 def _bind_verified_issue(issue: ReviewIssue, candidate_id: str) -> ReviewIssue:
-    return issue.model_copy(
+    bound = bind_issue_candidate_id(issue, candidate_id)
+    return bound.model_copy(
         update={
             "candidate_id": candidate_id,
             "finding_id": issue.finding_id or ("F-" + candidate_id[:12].upper()),

@@ -172,8 +172,8 @@ class CoreRuntimeConfig(BaseModel):
     final_submit_feedback_token_budget: int = Field(default=1200, ge=0, le=12000)
     review_max_iterations: int = Field(default=3, ge=2)
     fixture_concurrency: int = Field(default=1, ge=1, le=8)
-    repeat_on_instability: bool = True
-    max_attempts: int = Field(default=3, ge=1, le=3)
+    repeat_on_instability: bool = False
+    max_attempts: int = Field(default=1, ge=1, le=3)
 
     @model_validator(mode="after")
     def _ordered_token_budgets(self) -> CoreRuntimeConfig:
@@ -187,7 +187,10 @@ class CoreRuntimeConfig(BaseModel):
             raise ValueError(
                 "final_submit_prompt_token_budget must not exceed final_submit_reserve_tokens"
             )
-        if self.final_submit_feedback_token_budget >= self.final_submit_prompt_token_budget:
+        if (
+            self.final_submit_feedback_token_budget
+            >= self.final_submit_prompt_token_budget
+        ):
             raise ValueError(
                 "final_submit_feedback_token_budget must leave room for base context"
             )
@@ -739,7 +742,7 @@ async def run_core_eval(
     repo_root: str | Path,
     progress: Callable[[str], None] | None = None,
 ) -> CoreEvalReport:
-    """Run one balanced A/B pass and retry only runtime instability."""
+    """Run one balanced A/B pass under the configured attempt policy."""
     loaded = load_core_fixtures(config, repo_root=repo_root)
     semaphore = asyncio.Semaphore(config.runtime.fixture_concurrency)
 
@@ -1164,7 +1167,7 @@ def render_core_report(report: CoreEvalReport) -> str:
             "",
             "## Deliberately deferred",
             "",
-            "- 不为全部 case 默认运行 3 repeats；仅 runtime instability 才重试。",
+            "- 每个 fixture × variant 只采集一次；失败保留在报告中，不自动付费补跑。",
             "- 不增加统计显著性、几十个 fixtures 或复杂 composite score。",
             "- 不为所有 findings 建 executable oracle 或 Docker benchmark。",
             "- 不把现有零问题 controls 冒充 paired repairs；真正的 repair pair 后续按证据补充。",

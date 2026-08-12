@@ -674,7 +674,13 @@ def provenance_in_candidate_context(
         )
     if not policy.allow_tool_evidence:
         return False
-    return _location_in_tool_context(context, file, line, end_line or line)
+    return _location_in_tool_context(
+        context,
+        file,
+        line,
+        end_line or line,
+        retrieval_source=retrieval_source,
+    )
 
 
 def _manifest_provenance_valid(
@@ -741,13 +747,18 @@ def _location_in_records(records: Any, file: str, line: int, end_line: int) -> b
 
 
 def _location_in_tool_context(
-    context: dict[str, Any], file: str, line: int, end_line: int
+    context: dict[str, Any],
+    file: str,
+    line: int,
+    end_line: int,
+    *,
+    retrieval_source: str,
 ) -> bool:
     for key in ("file_windows", "enclosing_symbols"):
         records = context.get(key)
         if isinstance(records, list) and any(
             isinstance(record, dict)
-            and str(record.get("source", "")) in VERIFIER_CONTEXT_TOOL_NAMES
+            and _tool_source_matches(retrieval_source, str(record.get("source", "")))
             and _location_overlaps_record(file, line, end_line, record)
             for record in records
         ):
@@ -758,7 +769,9 @@ def _location_in_tool_context(
     for symbol_context in symbol_contexts:
         if not isinstance(symbol_context, dict):
             continue
-        if str(symbol_context.get("source", "")) not in VERIFIER_CONTEXT_TOOL_NAMES:
+        if not _tool_source_matches(
+            retrieval_source, str(symbol_context.get("source", ""))
+        ):
             continue
         for key in ("definitions", "references", "enclosing_symbols"):
             if _location_in_records(symbol_context.get(key), file, line, end_line):

@@ -1,6 +1,6 @@
 # Core Eval 零命中链路修复实验记录
 
-> 本记录只比较同一份 `eval/core_eval_v1.yaml` 的正式 5 × 2 Core Eval。冻结 gold、matcher、warning/confidence threshold、clean controls、fixture root cause、fail-closed 原则与 60k/80k 总 token budget 均未修改。
+> 本记录比较相同 5 fixtures × 2 variants、模型与质量合同的正式 Core Eval。冻结 gold、matcher、warning/confidence threshold、clean controls、fixture root cause、fail-closed 原则与 60k/80k 总 token budget 均未修改。按用户 2026-08-12 的经济性要求，Fix 3 起关闭不稳定自动补采并固定 `max_attempts=1`；此前正式快照也都实际在首次 attempt 完成，因此各行都恰好包含 10 个 measured attempts。
 
 ## 汇总
 
@@ -8,7 +8,8 @@
 |---|---|---|---:|---:|---:|---:|
 | Before | `8cab2fb` | 零命中审计后基线 | 4 | 0 | 0 | 0 |
 | Fix 1 | `ffc4467` | 暴露逐 finding/evidence 的确定性拒绝规则 | 2 | 1 | 1 | 0 |
-| Fix 2 | 本提交（SHA 待提交后回填） | 为 finding 实际引用的全部位置保留 bounded verifier context | 1 | 1 | 1 | 0 |
+| Fix 2 | `69355f1` | 为 finding 实际引用的全部位置保留 bounded verifier context | 1 | 1 | 1 | 0 |
+| Fix 3 | 本提交（SHA 待提交后回填） | 从可信上下文绑定 evidence 来源与 canonical candidate ID | 2 | 1 | 1 | 0 |
 
 Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提交没有改变任何通过/拒绝条件，但本轮模型输出与 Before 不同。Before 的四个 candidate run 都提交 warning 并进入 deterministic gate；Fix 1 中 pytest baseline 提交了 `info`，没有进入 verifier，而 pytest MergeWarden 本轮提交的 evidence 已满足旧 gate 并正常命中 gold。Fix 1 的可信改进仅是 deterministic rejection 变得可解释。
 
@@ -57,3 +58,16 @@ Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提�
 ### 是否让命中链路前进
 
 是。通用回归与真实 pytest MergeWarden case 都证明后续 evidence location 不再因围绕主位置的裁剪而消失；deterministic reject 从 Fix 1 的 2 降为 1，并保留 1 个 frozen-gold 命中与 0 clean FP。剩余拒绝来自不存在的成功读取记录，说明 fail-closed 保持不变。
+
+## Fix 3：从可信上下文绑定 provenance
+
+- 目的：系统依据实际 diff、成功 read/changed-context/symbol 结果与 Manifest 决定 evidence 来源，并覆盖模型自报的空/错误 candidate ID；只有唯一可确认的错误来源才纠正，歧义和缺失继续拒绝。
+- Tests：全量 `pytest` 639 passed / 1 skipped；`mypy src` 通过 77 个 source files；全仓 Ruff、touched-file format、Core audit 与 `git diff --check` 全部通过。
+- 正式运行：唯一单轮 5 × 2；`repeat_on_instability=false`、`max_attempts=1`；10/10 valid 且全部 attempt 1；candidate raw finding 4，semantic accepted 3，deterministic rejected 2，final risk 1，gold matched 1，clean-control warning/critical FP 0。
+- pytest：MergeWarden deterministic passed、final 1、gold 1；baseline 的 `read_file` impact 没有真实成功读取，正确拒绝。
+- Pydantic：baseline semantic accepted 后因非 changed 主锚点、非位置 verifier evidence 与未保留的测试范围被拒；MergeWarden 在 semantic verifier 被判 claim/behavior/mechanism unsupported。未修改 gold 或 matcher。
+- 产物：`eval/outputs/core-eval-zero-hit-fix3.json`、`eval/reports/core-eval-zero-hit-fix3.md` 及报告引用的 10 个 JSONL event logs。
+
+### 是否让命中链路前进
+
+可信绑定合同与测试覆盖前进，但正式聚合数字没有改善：Fix 2 → Fix 3 的 deterministic reject 为 1 → 2，final / gold / clean FP 保持 1 / 1 / 0。新增 reject 是本轮 Pydantic baseline 输出变化；本提交只主张可重复的机制改进，不把模型 cohort 漂移包装成质量收益。
