@@ -10,9 +10,12 @@
 | Fix 1 | `ffc4467` | 暴露逐 finding/evidence 的确定性拒绝规则 | 2 | 1 | 1 | 0 |
 | Fix 2 | `69355f1` | 为 finding 实际引用的全部位置保留 bounded verifier context | 1 | 1 | 1 | 0 |
 | Fix 3 | `7e628cc` | 从可信上下文绑定 evidence 来源与 canonical candidate ID | 2 | 1 | 1 | 0 |
-| Fix 4 | 本提交（SHA 待提交后回填） | 支持逐条 mixed trusted sources 与 revised finding 重绑定 | N/A¹ | N/A¹ | N/A¹ | N/A¹ |
+| Fix 4 | `efc67a2` | 支持逐条 mixed trusted sources 与 revised finding 重绑定 | N/A¹ | N/A¹ | N/A¹ | N/A¹ |
+| Contract closure | `c3de180` | 完成结构化位置、因果锚点、unseen revision、系统来源绑定与辅助证据收窄五项合同修复 | 2² | 0 | 0 | 0 |
 
 ¹ Fix 4 严格执行单轮、不补采：provider `connection_error` 导致 8/10 placeholder/incomplete，且 6 个 clean-control attempts 全部 invalid。报告中的有效子集计数为 deterministic reject 0 / final 0 / gold 0，但不能与完整快照比较，也不能据此声称 clean FP 为 0。
+
+² Contract closure 的唯一正式矩阵为 7/10 valid：四个 candidate attempts 仅 1 个 valid，但 6/6 clean controls 全部 valid。2 个 deterministic rejects 都属于同一 clean-control cosmetic info finding 的 A/B，candidate evidence chain 中为 0；因此本行不能与 10/10 valid 的 Fix 1～3 做 recall 对比。
 
 Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提交没有改变任何通过/拒绝条件，但本轮模型输出与 Before 不同。Before 的四个 candidate run 都提交 warning 并进入 deterministic gate；Fix 1 中 pytest baseline 提交了 `info`，没有进入 verifier，而 pytest MergeWarden 本轮提交的 evidence 已满足旧 gate 并正常命中 gold。Fix 1 的可信改进仅是 deterministic rejection 变得可解释。
 
@@ -87,3 +90,28 @@ Fix 1 的数字变化不能归因为诊断代码改善了命中链路：本提�
 ### 是否让命中链路前进
 
 代码合同前进，正式质量结论不成立。通用测试证明合法 mixed-source finding 与 revised finding 不再因 issue-level Manifest 约束误删，同时错误 hash、缺失 read、低可信 graph edge与 verifier 新增未见位置继续 fail closed；但外部 provider 故障使本轮无法验证真实 pytest 命中和 clean controls。最近可比较快照仍是 Fix 3。
+
+## Evidence contract closure：五项后续合同修复
+
+- `9b52faa`：semantic verifier 的 verified evidence 改为 repo-relative file/start/end 的结构化位置；旧字符串只做严格兼容读取，自然语言、缺文件/行号和不存在位置继续 fail closed。
+- `c53a0c9`：展示位置可以来自 retained unchanged context；warning/critical 必须另有 cause evidence 命中真实 changed line，证明 PR causality。
+- `c499c7d`：revised 主位置、related location、四类 role evidence 和所有 verdict 状态的 verified evidence 都必须来自 verifier 实际收到的 context；revision 重绑定后走完整 gate。
+- `6592c12`：模型只选择 span/role/statement；candidate ID、source、Manifest ID/hash 由可信上下文按固定优先级 canonical binding，歧义与不存在位置继续拒绝。
+- `c3de180`：仅当首轮 deterministic failures 全部属于 trigger/impact（或同位置 verifier citation）时，才把精确 role/rule 回送一次 semantic narrowing；cause/contract 与任何混合核心失败不重试，revision 再次完整验证。
+
+### 无模型总审计
+
+- 全量 `pytest`：684 passed / 1 skipped；`mypy src`：77 source files 无问题；全仓 Ruff lint、touched-file format 与 `git diff --check` 通过。
+- Core fixture audit：5 个 full-workspace fixtures / 2 candidates 全部通过。
+- `efc67a2..c3de180` 没有修改 `eval/`、`src/analyzer/review_policy.py` 或 `src/config.py`；gold、matcher、threshold、controls、fixture root cause 与 60k/80k budget 保持冻结。
+- 生产 diff 未出现 Pydantic/pytest fixture ID、gold 文件名、具体 fixture 文件/行号或关键词特例。
+
+### 唯一正式 5 fixtures × 2 variants 结果
+
+- 产物：`eval/outputs/core-eval-verifier-contract-final.json`、`eval/reports/core-eval-verifier-contract-final.md` 与 10 个 event logs。
+- Reliability：10 条记录均为 attempt 1；7/10 valid，3 个 candidate attempts 因 reviewer completion 在 4096 tokens 处 `finish_reason=length` 且没有 `submit_review` 而 invalid；10/10 workspace setup 成功，0 validator failure，0 hard-cap exhaustion。
+- pytest：A/B 的截断分析都明确找到了 `SafeHashWrapper.__eq__` frozen-gold bug，但没有形成 candidate，所以不能声称稳定进入最终结果。
+- Pydantic：valid baseline 提交空 review；MergeWarden 分析识别 gold 相关兼容性变化但截断未提交。当前分类是 reviewer discovery/submission reliability，不是 evidence-chain rejection。
+- Deterministic：全矩阵 2 个 rejected findings / 4 条 reason records，均来自 clean control 的 cosmetic info A/B；规则是 `finding_not_actionable_risk` + `verifier_revision_required`，合理。candidate deterministic reject 为 0。
+- Final：risk finding 0，gold matched 0；6/6 valid clean controls，warning/critical FP 0。
+- 系统误杀：本轮没有 candidate 进入 evidence gate，未观察到明确 semantic/deterministic 误杀。下一步若继续，应单独处理 reviewer 简洁提交/输出长度可靠性；不应再为本轮结果修改 verifier 或 frozen gold。
