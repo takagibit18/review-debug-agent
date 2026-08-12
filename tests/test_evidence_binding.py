@@ -116,11 +116,42 @@ def _accepted(candidate_id: str) -> FindingVerificationBatch:
     )
 
 
+def test_semantic_verifier_schema_does_not_require_model_owned_provenance() -> None:
+    schema = FindingVerificationBatch.model_json_schema()
+    evidence_schema = schema["$defs"]["EvidenceProvenance"]
+    required = set(evidence_schema.get("required", []))
+
+    assert "candidate_id" not in required
+    assert "retrieval_source" not in required
+    assert "context_manifest_id" not in required
+    assert "context_hash" not in required
+
+
 def test_read_evidence_mislabeled_as_diff_is_bound_to_successful_read() -> None:
     request = _request()
     tools = _read_evidence()
     candidates = build_candidates(
         ReviewReport(issues=[_issue(contract_source="git_diff")]), iteration=0
+    )
+
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    result = validate_verifications(
+        bound,
+        _accepted(bound[0].candidate_id),
+        request,
+        candidate_context=context,
+    )
+
+    assert bound[0].issue.contract_evidence[0].retrieval_source == "read_file"
+    assert result.results[0].status == "accepted"
+
+
+def test_omitted_source_is_bound_from_successful_read() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(
+        ReviewReport(issues=[_issue(contract_source="")]), iteration=0
     )
 
     bound = bind_candidate_evidence(candidates, request, tools)
@@ -175,10 +206,10 @@ def test_build_candidates_overwrites_empty_and_wrong_evidence_ids() -> None:
     }
 
 
-def test_ambiguous_unclaimed_provenance_is_not_auto_bound() -> None:
+def test_diff_and_read_location_uses_system_priority_not_model_label() -> None:
     request = _request()
     issue = _issue(
-        contract_source="reviewer_context",
+        contract_source="model_invented_source",
         contract_file="main.py",
         contract_line=1,
     )
@@ -195,7 +226,7 @@ def test_ambiguous_unclaimed_provenance_is_not_auto_bound() -> None:
                     candidate_id=bound[0].candidate_id,
                     status="accepted",
                     reason_codes=["verified"],
-                    rationale="The location is present in two source representations.",
+                    rationale="The location is present in two trusted representations.",
                     verified_evidence=["main.py:1"],
                 )
             ]
@@ -204,8 +235,191 @@ def test_ambiguous_unclaimed_provenance_is_not_auto_bound() -> None:
         candidate_context=context,
     )
 
-    assert bound[0].issue.contract_evidence[0].retrieval_source == "reviewer_context"
+    assert bound[0].issue.contract_evidence[0].retrieval_source == "git_diff"
+    assert result.results[0].status == "accepted"
+
+
+def test_read_precedes_other_tool_representations_without_diff() -> None:
+    request = _request()
+    issue = _issue(
+        contract_source="model_invented_source",
+        contract_file="helper.py",
+        contract_line=5,
+    )
+    candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
+    tools = [
+        *_read_evidence(),
+        {
+            "tool_name": "get_changed_context",
+            "arguments": {"file_path": "helper.py", "line": 5},
+            "data": {
+                "file_path": "helper.py",
+                "hunk": {
+                    "path": "helper.py",
+                    "start_line": 5,
+                    "end_line": 5,
+                },
+                "enclosing_symbols": [],
+            },
+        },
+    ]
+
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    result = validate_verifications(
+        bound,
+        _accepted(bound[0].candidate_id),
+        request,
+        candidate_context=context,
+    )
+
+    assert bound[0].issue.contract_evidence[0].retrieval_source == "read_file"
+    assert result.results[0].status == "accepted"
+
+
+def test_explicit_fake_manifest_is_not_rewritten_as_diff_or_read() -> None:
+    request = _request()
+    issue = _issue(
+        contract_source="relation_graph",
+        contract_file="main.py",
+        contract_line=1,
+    )
+    issue.contract_evidence[0].context_manifest_id = "C-FAKE"
+    issue.contract_evidence[0].context_hash = "fake-hash"
+    candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
+    tools = _read_evidence(file="main.py", start_line=1, line_count=2)
+
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    result = validate_verifications(
+        bound,
+        FindingVerificationBatch(
+            results=[
+                FindingVerification(
+                    candidate_id=bound[0].candidate_id,
+                    status="accepted",
+                    reason_codes=["verified"],
+                    rationale="The model supplied a manifest the runtime never created.",
+                    verified_evidence=["main.py:1"],
+                )
+            ]
+        ),
+        request,
+        candidate_context=context,
+    )
+
+    evidence = bound[0].issue.contract_evidence[0]
+    assert evidence.context_manifest_id == "C-FAKE"
+    assert evidence.context_hash == "fake-hash"
     assert result.results[0].status == "rejected"
+
+
+def test_ambiguous_manifest_only_source_remains_fail_closed() -> None:
+    request = _request()
+    issue = _issue(
+        contract_source="reviewer_context",
+        contract_file="helper.py",
+        contract_line=5,
+    )
+    candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
+    manifests = [
+        {
+            "candidate_id": manifest_id,
+            "changed_anchor": {"file": "main.py", "line": 1, "end_line": 1},
+            "included_spans": [
+                {
+                    "file": "helper.py",
+                    "start_line": 5,
+                    "end_line": 5,
+                    "retrieval_source": "relation_graph",
+                    "context_hash": digest,
+                }
+            ],
+            "included_graph_paths": [],
+            "excluded_low_confidence_paths": [],
+        }
+        for manifest_id, digest in (("C-ONE", "hash-one"), ("C-TWO", "hash-two"))
+    ]
+
+    bound = bind_candidate_evidence(
+        candidates,
+        request,
+        [],
+        context_manifests=manifests,
+    )
+    context = build_candidate_verifier_context(
+        bound,
+        request,
+        [],
+        context_manifests=manifests,
+    )
+    result = validate_verifications(
+        bound,
+        _accepted(bound[0].candidate_id),
+        request,
+        candidate_context=context,
+    )
+
+    evidence = bound[0].issue.contract_evidence[0]
+    assert evidence.retrieval_source == "reviewer_context"
+    assert evidence.context_manifest_id == ""
+    assert result.results[0].status == "rejected"
+
+
+def test_unique_manifest_source_and_issue_binding_are_system_owned() -> None:
+    request = _request()
+    issue = _issue(
+        contract_source="model_invented_source",
+        contract_file="helper.py",
+        contract_line=5,
+    )
+    issue.context_manifest_id = "C-MODEL-WRONG"
+    issue.context_hash = "model-wrong-hash"
+    candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
+    manifest = {
+        "candidate_id": "C-CANONICAL",
+        "changed_anchor": {"file": "main.py", "line": 1, "end_line": 1},
+        "included_spans": [
+            {
+                "file": "helper.py",
+                "start_line": 5,
+                "end_line": 5,
+                "retrieval_source": "relation_graph",
+                "context_hash": "canonical-hash",
+            }
+        ],
+        "included_graph_paths": [],
+        "excluded_low_confidence_paths": [],
+    }
+
+    bound = bind_candidate_evidence(
+        candidates,
+        request,
+        [],
+        context_manifests=[manifest],
+    )
+    context = build_candidate_verifier_context(
+        bound,
+        request,
+        [],
+        context_manifests=[manifest],
+    )
+    result = validate_verifications(
+        bound,
+        _accepted(bound[0].candidate_id),
+        request,
+        candidate_context=context,
+    )
+
+    bound_issue = bound[0].issue
+    evidence = bound_issue.contract_evidence[0]
+    assert bound_issue.context_manifest_id == "C-CANONICAL"
+    assert bound_issue.context_hash == ""
+    assert evidence.candidate_id == bound[0].candidate_id
+    assert evidence.context_manifest_id == "C-CANONICAL"
+    assert evidence.context_hash == "canonical-hash"
+    assert evidence.retrieval_source == "relation_graph"
+    assert result.results[0].status == "accepted"
 
 
 def test_revised_finding_is_rebound_to_retained_trusted_context() -> None:

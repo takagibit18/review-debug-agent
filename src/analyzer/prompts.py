@@ -77,7 +77,9 @@ SYSTEM_PROMPT_REVIEW = (
     "Do not promote consequences of a hypothetical fix into a separate issue; keep them "
     "inside the suggestion unless the current diff already creates that independent risk. "
     "Evidence may cite only code present in the supplied candidate_context_manifests or later successful "
-    "tool results. Copy the manifest id and exact context_hash into each evidence provenance entry. "
+    "tool results. For each role, identify the repository-relative file/span and state what that code "
+    "proves. Candidate identity, retrieval source, manifest id, and context hash are system-owned and "
+    "will be bound from the runtime context; do not invent provenance metadata. "
     "A graph edge is navigation context, not proof of runtime identity; exploratory/low-confidence edges "
     "cannot alone support a warning. When you need a changed hunk plus surrounding source, prefer get_changed_context. "
     "When you need symbol definitions, references, field initialization, or constructor "
@@ -93,7 +95,9 @@ SYSTEM_PROMPT_REVIEW = (
 _MANIFEST_SCHEMA_REQUIREMENT = "and context_manifest_id. Never invent or emit root_cause_id; only the later consolidator assigns it. "
 _GRAPH_EVIDENCE_REQUIREMENT = (
     "Evidence may cite only code present in the supplied candidate_context_manifests or later successful "
-    "tool results. Copy the manifest id and exact context_hash into each evidence provenance entry. "
+    "tool results. For each role, identify the repository-relative file/span and state what that code "
+    "proves. Candidate identity, retrieval source, manifest id, and context hash are system-owned and "
+    "will be bound from the runtime context; do not invent provenance metadata. "
     "A graph edge is navigation context, not proof of runtime identity; exploratory/low-confidence edges "
     "cannot alone support a warning. "
 )
@@ -107,16 +111,19 @@ COMMON_REVIEW_PROMPT = SYSTEM_PROMPT_REVIEW.replace(
 AGENT_SEARCH_POLICY = (
     "Context policy: agent_search. No graph or candidate context manifest exists for this run. "
     "Evidence may come from the supplied diff or successful read-only tool calls. "
-    "For tool evidence, record its real retrieval source, repository-relative file, line/span, "
-    "and a concrete content summary; never invent graph provenance, context_manifest_id, or context_hash. "
-    "Leave manifest-only fields empty. If evidence is insufficient, continue a targeted read/grep/symbol "
+    "For each evidence role, record the repository-relative file, line/span, and a concrete statement. "
+    "The runtime binds candidate_id and retrieval_source; leave manifest-only fields empty and never "
+    "invent graph provenance, context_manifest_id, or context_hash. If evidence is insufficient, "
+    "continue a targeted read/grep/symbol "
     "search when a tool round remains, otherwise do not submit that finding. "
 )
 GRAPH_CONTEXT_POLICY = (
     "Context policy: graph_hybrid. Candidate context manifests are first-pass navigation context, not a "
     "complete world model. A graph edge indicates only its named structural relation and is not runtime fact. "
-    "When citing manifest evidence, use the real manifest id and exact context_hash. Successful read-only "
-    "tool results outside a manifest remain valid independent tool provenance. Low-confidence or exploratory "
+    "Cite the exact visible file/span and what it proves; the runtime binds its real diff, read, symbol, "
+    "or manifest provenance, including canonical context_manifest_id and context_hash. Successful "
+    "read-only tool results outside a "
+    "manifest remain valid independent tool provenance. Low-confidence or exploratory "
     "graph edges cannot alone support warning or critical findings. "
 )
 

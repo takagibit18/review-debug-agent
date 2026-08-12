@@ -1,14 +1,18 @@
 """Tests for model prompt contracts."""
 
 from src.analyzer.prompts import (
+    AGENT_SEARCH_POLICY,
     FINALIZE_REVIEW_NOTICE,
+    GRAPH_CONTEXT_POLICY,
     REVIEW_SEVERITY_CALIBRATION_GUIDANCE,
     SYSTEM_PROMPT_REVIEW,
     USER_PREFIX_REVIEW,
 )
 
 
-def test_finalize_review_notice_requires_empty_issues_for_speculative_suggestions() -> None:
+def test_finalize_review_notice_requires_empty_issues_for_speculative_suggestions() -> (
+    None
+):
     assert "speculative" in FINALIZE_REVIEW_NOTICE
     assert "info/style/design" in FINALIZE_REVIEW_NOTICE
     assert "issues: []" in FINALIZE_REVIEW_NOTICE
@@ -46,6 +50,12 @@ def test_review_prompts_describe_atomic_review_tools() -> None:
     assert "validate_review_draft" in combined
     assert "policy feedback" in combined
     assert "submit_review" in combined
+
+
+def test_review_prompts_make_evidence_provenance_system_owned() -> None:
+    assert "runtime binds candidate_id and retrieval_source" in AGENT_SEARCH_POLICY
+    assert "runtime binds its real diff, read, symbol" in GRAPH_CONTEXT_POLICY
+    assert "do not invent provenance metadata" in SYSTEM_PROMPT_REVIEW
 
 
 def test_review_prompts_require_risk_severity_for_concrete_regressions() -> None:

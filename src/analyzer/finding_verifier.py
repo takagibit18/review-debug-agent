@@ -64,6 +64,8 @@ verified_evidence entry.
 Every code location in revised_issue—including location, primary_anchor, related_locations,
 and cause/contract/trigger/impact evidence—must come from the supplied diff or retained
 candidate_context. Do not change schema_version to bypass these checks.
+Candidate ids, retrieval sources, manifest ids, and context hashes are runtime-owned. Select
+the supporting file/span and evidence role; do not rely on or invent provenance labels.
 Severity measures supported impact while confidence measures evidentiary certainty; a narrow
 current trigger is not by itself a reason to classify an incorrect result as info. Author tests
 and PR intent establish intent, not preservation of the pre-change fallback or compatibility

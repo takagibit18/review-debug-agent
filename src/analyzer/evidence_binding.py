@@ -11,16 +11,23 @@ from src.analyzer.output_formatter import ReviewIssue
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
 
 _DIFF_SOURCES = {"git_diff", "diff", "review_diff", "changed_hunk"}
-_TOOL_SOURCE_ALIASES = (
-    {"get_changed_context", "changed_context"},
-    {"find_symbol_context", "symbol_context"},
-)
+_CANONICAL_TOOL_SOURCES = {
+    "changed_context": "get_changed_context",
+    "get_changed_context": "get_changed_context",
+    "symbol_context": "find_symbol_context",
+    "find_symbol_context": "find_symbol_context",
+}
 _TRUSTED_TOOL_SOURCES = {
     "read_file",
     "get_changed_context",
     "changed_context",
     "find_symbol_context",
     "symbol_context",
+}
+_TOOL_SOURCE_PRIORITY = {
+    "read_file": 1,
+    "get_changed_context": 2,
+    "find_symbol_context": 3,
 }
 
 
@@ -44,10 +51,11 @@ def bind_candidate_evidence(
 ) -> list[FindingCandidate]:
     """Return candidates whose evidence is bound only to trusted run context.
 
-    A model declaration that is already true is retained. A false declaration is
-    corrected only when exactly one trusted representation covers the cited code
-    range. Missing or ambiguous provenance remains unchanged so deterministic
-    validation can fail closed. Candidate identity is always system-owned.
+    Candidate identity and non-manifest source selection are system-owned. When a
+    location has several trusted representations, a stable runtime priority chooses
+    diff, then read, changed-context, and symbol-context evidence. Explicit manifest
+    claims still require an exact id/hash match; ambiguous manifest-only provenance
+    remains unchanged so deterministic validation can fail closed.
     """
 
     hunks_by_file = parse_unified_diff_hunks(request.diff_text or "")
@@ -56,6 +64,7 @@ def bind_candidate_evidence(
     for candidate in candidates:
         issue = candidate.issue.model_copy(deep=True)
         issue.candidate_id = candidate.candidate_id
+        bound_manifest_ids: set[str] = set()
         for evidence in issue.all_evidence():
             evidence.candidate_id = candidate.candidate_id
             matches = _trusted_bindings_for_evidence(
@@ -67,6 +76,10 @@ def bind_candidate_evidence(
             selected = _select_binding(evidence, matches)
             if selected is not None:
                 _apply_binding(evidence, selected)
+                if selected.context_manifest_id:
+                    bound_manifest_ids.add(selected.context_manifest_id)
+        issue.context_manifest_id = _single_value(bound_manifest_ids)
+        issue.context_hash = ""
         bound.append(candidate.model_copy(update={"issue": issue}))
     return bound
 
@@ -89,14 +102,20 @@ def bind_issue_evidence_from_context(
     """Rebind a verifier-revised issue to context the verifier actually received."""
 
     bound = bind_issue_candidate_id(issue, candidate_id)
+    bound.context_manifest_id = ""
+    bound.context_hash = ""
     if context is None:
         return bound
+    bound_manifest_ids: set[str] = set()
     for evidence in bound.all_evidence():
         selected = _select_binding(
             evidence, _trusted_bindings_in_candidate_context(evidence, context)
         )
         if selected is not None:
             _apply_binding(evidence, selected)
+            if selected.context_manifest_id:
+                bound_manifest_ids.add(selected.context_manifest_id)
+    bound.context_manifest_id = _single_value(bound_manifest_ids)
     return bound
 
 
@@ -129,7 +148,12 @@ def _trusted_bindings_for_evidence(
         if not isinstance(arguments, dict) or not isinstance(data, dict):
             continue
         if _tool_entry_covers(tool_name, arguments, data, file, line, end_line):
-            matches.add(TrustedEvidenceBinding(kind="tool", retrieval_source=tool_name))
+            matches.add(
+                TrustedEvidenceBinding(
+                    kind="tool",
+                    retrieval_source=_canonical_tool_source(tool_name),
+                )
+            )
 
     for manifest in manifests:
         manifest_id = str(manifest.get("candidate_id", "")).strip()
@@ -192,7 +216,10 @@ def _trusted_bindings_in_candidate_context(
                 )
             elif source in _TRUSTED_TOOL_SOURCES:
                 matches.add(
-                    TrustedEvidenceBinding(kind="tool", retrieval_source=source)
+                    TrustedEvidenceBinding(
+                        kind="tool",
+                        retrieval_source=_canonical_tool_source(source),
+                    )
                 )
 
     for key in ("file_windows", "enclosing_symbols"):
@@ -207,7 +234,10 @@ def _trusted_bindings_in_candidate_context(
             source = str(record.get("source", "")).strip().lower()
             if source in _TRUSTED_TOOL_SOURCES:
                 matches.add(
-                    TrustedEvidenceBinding(kind="tool", retrieval_source=source)
+                    TrustedEvidenceBinding(
+                        kind="tool",
+                        retrieval_source=_canonical_tool_source(source),
+                    )
                 )
 
     symbol_contexts = context.get("symbol_contexts")
@@ -223,7 +253,10 @@ def _trusted_bindings_in_candidate_context(
                 for key in ("definitions", "references", "enclosing_symbols")
             ):
                 matches.add(
-                    TrustedEvidenceBinding(kind="tool", retrieval_source=source)
+                    TrustedEvidenceBinding(
+                        kind="tool",
+                        retrieval_source=_canonical_tool_source(source),
+                    )
                 )
 
     manifest_id = str(context.get("context_manifest_id", "")).strip()
@@ -260,11 +293,10 @@ def _select_binding(
     evidence: EvidenceProvenance,
     matches: list[TrustedEvidenceBinding],
 ) -> TrustedEvidenceBinding | None:
-    """Prefer a verified declaration; otherwise require a unique correction."""
+    """Choose provenance from trusted runtime state, never a model source label."""
 
     declared_manifest = evidence.context_manifest_id.strip()
     declared_hash = evidence.context_hash.strip()
-    declared_source = evidence.retrieval_source.strip().lower()
     if declared_manifest:
         manifest_matches = [
             item
@@ -277,15 +309,12 @@ def _select_binding(
             ]
         return manifest_matches[0] if len(manifest_matches) == 1 else None
 
-    declared_matches = [
-        item
-        for item in matches
-        if item.kind != "manifest"
-        and _source_matches(declared_source, item.retrieval_source, item.kind)
-    ]
-    if len(declared_matches) == 1:
-        return declared_matches[0]
-    return matches[0] if len(matches) == 1 else None
+    non_manifest_matches = [item for item in matches if item.kind != "manifest"]
+    if non_manifest_matches:
+        return min(non_manifest_matches, key=_binding_priority)
+
+    manifest_matches = [item for item in matches if item.kind == "manifest"]
+    return manifest_matches[0] if len(manifest_matches) == 1 else None
 
 
 def _apply_binding(
@@ -304,14 +333,22 @@ def _apply_binding(
         evidence.evidence_eligibility = "strong"
 
 
-def _source_matches(declared: str, actual: str, kind: str) -> bool:
-    if kind == "diff":
-        return declared in _DIFF_SOURCES
-    if declared == actual:
-        return True
-    return any(
-        declared in aliases and actual in aliases for aliases in _TOOL_SOURCE_ALIASES
+def _binding_priority(binding: TrustedEvidenceBinding) -> tuple[int, str]:
+    if binding.kind == "diff":
+        return (0, binding.retrieval_source)
+    return (
+        _TOOL_SOURCE_PRIORITY.get(binding.retrieval_source, 100),
+        binding.retrieval_source,
     )
+
+
+def _canonical_tool_source(value: str) -> str:
+    source = value.strip().lower()
+    return _CANONICAL_TOOL_SOURCES.get(source, source)
+
+
+def _single_value(values: set[str]) -> str:
+    return next(iter(values)) if len(values) == 1 else ""
 
 
 def _tool_entry_covers(

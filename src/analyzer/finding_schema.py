@@ -69,16 +69,28 @@ class RepairIntent(BaseModel):
 
 
 class EvidenceProvenance(BaseModel):
-    """One evidence claim bound to context actually sent to a model."""
+    """One evidence claim whose provenance is canonically bound by the runtime."""
 
-    candidate_id: str = ""
-    context_manifest_id: str = ""
-    retrieval_source: str = "reviewer_context"
+    candidate_id: str = Field(
+        default="",
+        description="System-owned candidate identity; model input is overwritten.",
+    )
+    context_manifest_id: str = Field(
+        default="",
+        description="System-owned manifest identity; explicit legacy input must match.",
+    )
+    retrieval_source: str = Field(
+        default="reviewer_context",
+        description="System-selected trusted diff/read/symbol/manifest source.",
+    )
     file: str = ""
     line: int | None = Field(default=None, ge=1)
     end_line: int | None = Field(default=None, ge=1)
     symbol_id: str = ""
-    context_hash: str = ""
+    context_hash: str = Field(
+        default="",
+        description="System-bound canonical hash for manifest evidence.",
+    )
     edge_kind: str = ""
     edge_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     resolver: str = ""

@@ -115,6 +115,8 @@ def test_reviewer_submit_schema_keeps_graph_fields_optional_and_forbids_root_id(
     evidence_required = set(evidence_schema["required"])
     assert "context_manifest_id" not in evidence_required
     assert "context_hash" not in evidence_required
+    assert "candidate_id" not in evidence_required
+    assert "retrieval_source" not in evidence_required
     assert "symbol_id" not in evidence_required
     assert "resolver" not in evidence_required
     assert "root_cause_id" not in item_schema["properties"]

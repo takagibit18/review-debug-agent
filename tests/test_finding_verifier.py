@@ -127,6 +127,8 @@ def test_verifier_guidance_prefers_narrow_revision_over_wholesale_rejection() ->
     assert "cause_evidence location must intersect a real changed line" in prompt
     assert "Every code location in revised_issue" in prompt
     assert "Do not change schema_version" in prompt
+    assert "retrieval sources" in prompt
+    assert "runtime-owned" in prompt
 
 
 def test_orchestrator_accepts_revised_boundary_calibration_and_rescue(
