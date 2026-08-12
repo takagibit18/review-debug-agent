@@ -61,6 +61,9 @@ successful source reads; distinguish missing evidence from evidence that contrad
 Return verified_evidence only as structured {file, line, optional end_line} objects with
 repository-relative paths. Keep all semantic explanation in rationale; never put prose in a
 verified_evidence entry.
+Every code location in revised_issue—including location, primary_anchor, related_locations,
+and cause/contract/trigger/impact evidence—must come from the supplied diff or retained
+candidate_context. Do not change schema_version to bypass these checks.
 Severity measures supported impact while confidence measures evidentiary certainty; a narrow
 current trigger is not by itself a reason to classify an incorrect result as info. Author tests
 and PR intent establish intent, not preservation of the pre-change fallback or compatibility
@@ -140,6 +143,7 @@ DeterministicRejectionRule = Literal[
     "required_evidence_missing",
     "graph_evidence_invalid",
     "revised_evidence_invalid",
+    "revised_schema_invalid",
     "downgrade_invalid",
     "deterministic_validation_failed",
 ]
@@ -304,20 +308,32 @@ def validate_verifications_with_stats(
         validated_verdict = verdict
         valid = candidate is not None
         verdict_rejections: list[DeterministicRejectionDetail] = []
+        effective_revision: ReviewIssue | None = None
+        revision_context_rejections: list[DeterministicRejectionDetail] = []
+        if verdict.revised_issue is not None:
+            effective_revision = bind_issue_evidence_from_context(
+                verdict.revised_issue,
+                verdict.candidate_id,
+                context,
+            )
+            validated_verdict = verdict.model_copy(
+                update={"revised_issue": effective_revision}
+            )
+            if candidate is not None and not (
+                verdict.status == "accepted"
+                and effective_revision.is_structured_hypothesis
+            ):
+                revision_context_rejections = _revised_issue_context_rejections(
+                    candidate,
+                    effective_revision,
+                    context,
+                    changed,
+                )
         if verdict.status == "accepted":
             checked_count += 1
-            effective_issue: ReviewIssue | None
-            if verdict.revised_issue is not None:
-                effective_issue = bind_issue_evidence_from_context(
-                    verdict.revised_issue,
-                    verdict.candidate_id,
-                    context,
-                )
-                validated_verdict = verdict.model_copy(
-                    update={"revised_issue": effective_issue}
-                )
-            else:
-                effective_issue = candidate.issue if candidate is not None else None
+            effective_issue = effective_revision or (
+                candidate.issue if candidate is not None else None
+            )
             requires_revision = bool(
                 candidate is not None
                 and candidate.candidate_kind
@@ -380,6 +396,7 @@ def validate_verifications_with_stats(
                     context,
                     changed,
                 )
+            valid = valid and not revision_context_rejections
             verdict_rejections = _accepted_verdict_rejections(
                 verdict_candidate_id=verdict.candidate_id,
                 candidate=candidate,
@@ -390,18 +407,34 @@ def validate_verifications_with_stats(
                 revised_issue=verdict.revised_issue is not None,
                 verified_evidence=verdict.verified_evidence,
             )
+            verdict_rejections.extend(revision_context_rejections)
             if valid:
                 passed_count += 1
             else:
                 rejected_count += 1
         elif verdict.status == "downgraded":
-            valid = (
-                valid
-                and verdict.revised_issue is not None
-                and verdict.revised_issue.severity in {Severity.INFO, Severity.STYLE}
+            downgraded_verified_rejections = _verified_evidence_rejections(
+                verdict.candidate_id,
+                effective_revision
+                or (candidate.issue if candidate is not None else None),
+                context,
+                changed,
+                revised_issue=effective_revision is not None,
+                verified_evidence=verdict.verified_evidence,
+                required=False,
             )
-            if not valid:
-                verdict_rejections = [
+            downgrade_contract_valid = bool(
+                candidate is not None
+                and effective_revision is not None
+                and effective_revision.severity in {Severity.INFO, Severity.STYLE}
+            )
+            valid = (
+                downgrade_contract_valid
+                and not revision_context_rejections
+                and not downgraded_verified_rejections
+            )
+            if not downgrade_contract_valid:
+                verdict_rejections.append(
                     _rejection_detail(
                         verdict.candidate_id,
                         candidate.issue if candidate is not None else None,
@@ -413,17 +446,35 @@ def validate_verifications_with_stats(
                             "and provide an info/style revised issue."
                         ),
                     )
-                ]
-        elif not valid:
-            verdict_rejections = [
-                _rejection_detail(
-                    verdict.candidate_id,
-                    None,
-                    "candidate_binding_missing",
-                    field="candidate_id",
-                    message="The verifier verdict candidate_id does not match a finding.",
                 )
-            ]
+            verdict_rejections.extend(revision_context_rejections)
+            verdict_rejections.extend(downgraded_verified_rejections)
+        else:
+            nonpublishing_verified_rejections = _verified_evidence_rejections(
+                verdict.candidate_id,
+                effective_revision
+                or (candidate.issue if candidate is not None else None),
+                context,
+                changed,
+                revised_issue=effective_revision is not None,
+                verified_evidence=verdict.verified_evidence,
+                required=False,
+            )
+            verdict_rejections.extend(revision_context_rejections)
+            verdict_rejections.extend(nonpublishing_verified_rejections)
+            if candidate is None:
+                verdict_rejections.append(
+                    _rejection_detail(
+                        verdict.candidate_id,
+                        None,
+                        "candidate_binding_missing",
+                        field="candidate_id",
+                        message=(
+                            "The verifier verdict candidate_id does not match a finding."
+                        ),
+                    )
+                )
+            valid = candidate is not None and not verdict_rejections
         if not valid:
             if not verdict_rejections:
                 verdict_rejections = [
@@ -531,56 +582,17 @@ def _accepted_verdict_rejections(
             )
         )
 
-    if not verified_evidence:
-        details.append(
-            _rejection_detail(
-                verdict_candidate_id,
-                effective_issue,
-                "verified_evidence_missing",
-                evidence_role="verifier",
-                field="verified_evidence",
-                revised_issue=revised_issue,
-                message="The accepted verdict did not identify any verified code location.",
-            )
+    details.extend(
+        _verified_evidence_rejections(
+            verdict_candidate_id,
+            effective_issue,
+            context,
+            changed,
+            revised_issue=revised_issue,
+            verified_evidence=verified_evidence,
+            required=True,
         )
-    for index, raw_location in enumerate(verified_evidence):
-        location = _parse_verified_evidence_location(raw_location)
-        if location is None or not location.valid or location.line is None:
-            details.append(
-                _rejection_detail(
-                    verdict_candidate_id,
-                    effective_issue,
-                    "evidence_location_missing",
-                    evidence_role="verifier",
-                    evidence_index=index,
-                    field="verified_evidence",
-                    revised_issue=revised_issue,
-                    message=(
-                        "The verifier evidence entry does not contain a valid code "
-                        f"location: {raw_location!r}."
-                    ),
-                )
-            )
-            continue
-        if not (
-            _location_intersects_changed_lines(location, changed)
-            or location_in_candidate_context(context, location)
-        ):
-            details.append(
-                _rejection_detail(
-                    verdict_candidate_id,
-                    effective_issue,
-                    "evidence_context_missing",
-                    evidence_role="verifier",
-                    evidence_index=index,
-                    file=location.path or "",
-                    line=location.line,
-                    end_line=location.end_line,
-                    field="verified_evidence",
-                    revised_issue=revised_issue,
-                    message="The cited verifier evidence was not retained in candidate context.",
-                )
-            )
+    )
 
     if effective_issue.is_structured_hypothesis:
         details.extend(
@@ -615,6 +627,69 @@ def _parse_verified_evidence_location(value: Any) -> LocationParseResult | None:
     return normalize_location(structured.location)
 
 
+def _verified_evidence_rejections(
+    verdict_candidate_id: str,
+    issue: ReviewIssue | None,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+    *,
+    revised_issue: bool,
+    verified_evidence: list[VerifiedEvidenceLocation],
+    required: bool,
+) -> list[DeterministicRejectionDetail]:
+    """Validate every verifier-authored evidence location for publishing verdicts."""
+
+    details: list[DeterministicRejectionDetail] = []
+    if required and not verified_evidence:
+        details.append(
+            _rejection_detail(
+                verdict_candidate_id,
+                issue,
+                "verified_evidence_missing",
+                evidence_role="verifier",
+                field="verified_evidence",
+                revised_issue=revised_issue,
+                message="The accepted verdict did not identify any verified code location.",
+            )
+        )
+    for index, raw_location in enumerate(verified_evidence):
+        location = _parse_verified_evidence_location(raw_location)
+        if location is None or not location.valid or location.line is None:
+            details.append(
+                _rejection_detail(
+                    verdict_candidate_id,
+                    issue,
+                    "evidence_location_missing",
+                    evidence_role="verifier",
+                    evidence_index=index,
+                    field="verified_evidence",
+                    revised_issue=revised_issue,
+                    message=(
+                        "The verifier evidence entry does not contain a valid code "
+                        f"location: {raw_location!r}."
+                    ),
+                )
+            )
+            continue
+        if not _location_was_received(location, context, changed):
+            details.append(
+                _rejection_detail(
+                    verdict_candidate_id,
+                    issue,
+                    "evidence_context_missing",
+                    evidence_role="verifier",
+                    evidence_index=index,
+                    file=location.path or "",
+                    line=location.line,
+                    end_line=location.end_line,
+                    field="verified_evidence",
+                    revised_issue=revised_issue,
+                    message="The cited verifier evidence was not retained in candidate context.",
+                )
+            )
+    return details
+
+
 def _structured_candidate_evidence_rejections(
     candidate: FindingCandidate,
     context: dict[str, Any] | None,
@@ -642,17 +717,7 @@ def _structured_candidate_evidence_rejections(
             )
         )
     parsed_location = normalize_location(issue.location)
-    if (
-        anchor is None
-        or not parsed_location.valid
-        or parsed_location.path != anchor.file
-        or parsed_location.line is None
-        or not (
-            parsed_location.line
-            <= anchor.line
-            <= (parsed_location.end_line or parsed_location.line)
-        )
-    ):
+    if anchor is None or not _primary_anchor_matches_display(issue, parsed_location):
         details.append(
             _rejection_detail(
                 candidate.candidate_id,
@@ -682,6 +747,16 @@ def _structured_candidate_evidence_rejections(
                 ),
             )
         )
+
+    details.extend(
+        _related_location_rejections(
+            candidate,
+            issue,
+            context,
+            changed,
+            revised_issue=revised_issue,
+        )
+    )
 
     required_fields = {
         "observed_behavior": issue.observed_behavior,
@@ -772,6 +847,154 @@ def _structured_candidate_evidence_rejections(
                     revised_issue=revised_issue,
                 )
             )
+    return details
+
+
+def _revised_issue_context_rejections(
+    candidate: FindingCandidate,
+    issue: ReviewIssue,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+) -> list[DeterministicRejectionDetail]:
+    """Reject revised-issue locations that were not supplied to the verifier."""
+
+    details: list[DeterministicRejectionDetail] = []
+    if candidate.issue.is_structured_hypothesis and not issue.is_structured_hypothesis:
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "revised_schema_invalid",
+                field="schema_version",
+                revised_issue=True,
+                message=(
+                    "A verifier revision cannot downgrade the structured finding schema."
+                ),
+            )
+        )
+
+    display = normalize_location(issue.location)
+    display_valid = (
+        _structured_display_location_valid(issue, context, changed)
+        if issue.is_structured_hypothesis
+        else _location_was_received(display, context, changed)
+    )
+    if not display_valid:
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "finding_primary_location_invalid",
+                file=display.path or "",
+                line=display.line,
+                end_line=display.end_line,
+                field="revised_issue.location/primary_anchor",
+                revised_issue=True,
+                message=(
+                    "The verifier-revised display location was not present in its "
+                    "received context."
+                ),
+            )
+        )
+
+    if not issue.is_structured_hypothesis and issue.primary_anchor is not None:
+        anchor_location = normalize_location(issue.primary_anchor.location)
+        if not _location_was_received(anchor_location, context, changed):
+            details.append(
+                _rejection_detail(
+                    candidate.candidate_id,
+                    issue,
+                    "evidence_context_missing",
+                    evidence_role="primary",
+                    file=anchor_location.path or "",
+                    line=anchor_location.line,
+                    end_line=anchor_location.end_line,
+                    field="revised_issue.primary_anchor",
+                    revised_issue=True,
+                    message=(
+                        "The verifier-revised primary anchor was not present in its "
+                        "received context."
+                    ),
+                )
+            )
+
+    details.extend(
+        _related_location_rejections(
+            candidate,
+            issue,
+            context,
+            changed,
+            revised_issue=True,
+        )
+    )
+    for role, evidence_items in (
+        ("cause", issue.cause_evidence),
+        ("contract", issue.contract_evidence),
+        ("trigger", issue.trigger_evidence),
+        ("impact", issue.impact_evidence),
+    ):
+        for index, evidence in enumerate(evidence_items):
+            details.extend(
+                _evidence_rejections(
+                    candidate,
+                    issue,
+                    context,
+                    evidence,
+                    evidence_role=role,
+                    evidence_index=index,
+                    revised_issue=True,
+                )
+            )
+    if details:
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "revised_evidence_invalid",
+                field="revised_issue",
+                revised_issue=True,
+                message=(
+                    "The verifier-revised finding references code outside its received "
+                    "context."
+                ),
+            )
+        )
+    return details
+
+
+def _related_location_rejections(
+    candidate: FindingCandidate,
+    issue: ReviewIssue,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+    *,
+    revised_issue: bool,
+) -> list[DeterministicRejectionDetail]:
+    """Validate every secondary code location against received context."""
+
+    details: list[DeterministicRejectionDetail] = []
+    for index, related in enumerate(issue.related_locations):
+        location = normalize_location(related.location)
+        if _location_was_received(location, context, changed):
+            continue
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "evidence_context_missing",
+                evidence_role="related",
+                evidence_index=index,
+                file=location.path or "",
+                line=location.line,
+                end_line=location.end_line,
+                field="related_locations",
+                revised_issue=revised_issue,
+                message=(
+                    "The related code location was not present in the verifier's "
+                    "received context."
+                ),
+            )
+        )
     return details
 
 
@@ -1062,6 +1285,37 @@ def _location_intersects_changed_lines(
     )
 
 
+def _location_was_received(
+    location: LocationParseResult,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+) -> bool:
+    """Treat the full PR diff and retained candidate envelope as received code."""
+
+    return _location_intersects_changed_lines(
+        location, changed
+    ) or location_in_candidate_context(context, location)
+
+
+def _primary_anchor_matches_display(
+    issue: ReviewIssue,
+    display: LocationParseResult,
+) -> bool:
+    """Require the structured anchor span to remain inside the display span."""
+
+    anchor = issue.primary_anchor
+    if (
+        anchor is None
+        or not display.valid
+        or display.path != anchor.file
+        or display.line is None
+    ):
+        return False
+    display_end = display.end_line or display.line
+    anchor_end = anchor.end_line or anchor.line
+    return display.line <= anchor.line and anchor_end <= display_end
+
+
 def _structured_display_location_valid(
     issue: ReviewIssue,
     context: dict[str, Any] | None,
@@ -1069,20 +1323,10 @@ def _structured_display_location_valid(
 ) -> bool:
     """Validate a display anchor independently from its changed-code cause anchor."""
 
-    anchor = issue.primary_anchor
     location = normalize_location(issue.location)
-    if (
-        anchor is None
-        or not location.valid
-        or location.path != anchor.file
-        or location.line is None
-        or not (location.line <= anchor.line <= (location.end_line or location.line))
-    ):
+    if not _primary_anchor_matches_display(issue, location):
         return False
-    return _location_intersects_changed_lines(
-        location,
-        changed,
-    ) or location_in_candidate_context(context, location)
+    return _location_was_received(location, context, changed)
 
 
 def _has_changed_cause_evidence(
@@ -1133,6 +1377,15 @@ def _structured_candidate_evidence_valid(
     if issue.trigger.strip() and not issue.trigger_evidence:
         return False
     if issue.impact.strip() and not issue.impact_evidence:
+        return False
+    if any(
+        not _location_was_received(
+            normalize_location(related.location),
+            context,
+            changed,
+        )
+        for related in issue.related_locations
+    ):
         return False
     evidence = issue.all_evidence()
     if not evidence:
@@ -1220,16 +1473,10 @@ def _boundary_issue_eligible(
         issue.evidence
     ):
         return False
-    anchor = issue.primary_anchor
     location = normalize_location(issue.location)
-    if (
-        anchor is None
-        or not location.valid
-        or location.path != anchor.file
-        or location.line is None
-        or not (location.line <= anchor.line <= (location.end_line or location.line))
-        or not _has_changed_cause_evidence(issue, changed)
-    ):
+    if not _primary_anchor_matches_display(
+        issue, location
+    ) or not _has_changed_cause_evidence(issue, changed):
         return False
     if (
         not all(

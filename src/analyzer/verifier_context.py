@@ -261,7 +261,6 @@ def _candidate_evidence_locations(
             location.line,
             location.end_line,
             "primary",
-            retrieval_source="diff" if issue.is_structured_hypothesis else "",
         )
     if issue.primary_anchor is not None:
         add(
@@ -269,7 +268,6 @@ def _candidate_evidence_locations(
             issue.primary_anchor.line,
             issue.primary_anchor.end_line,
             "primary",
-            retrieval_source="diff",
         )
     for role, evidence_items in (
         ("cause", issue.cause_evidence),

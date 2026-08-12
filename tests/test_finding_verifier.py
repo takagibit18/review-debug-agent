@@ -125,6 +125,8 @@ def test_verifier_guidance_prefers_narrow_revision_over_wholesale_rejection() ->
     assert "never raise confidence merely" in prompt
     assert "primary_anchor identify where the problem is best displayed" in prompt
     assert "cause_evidence location must intersect a real changed line" in prompt
+    assert "Every code location in revised_issue" in prompt
+    assert "Do not change schema_version" in prompt
 
 
 def test_orchestrator_accepts_revised_boundary_calibration_and_rescue(
@@ -1043,6 +1045,62 @@ def test_candidate_context_retains_explicit_nonoverlapping_read_window() -> None
     assert result.results[0].status == "accepted"
 
 
+def test_candidate_context_retains_unchanged_primary_display_from_tool_read() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.location = "pkg/consumer.py:8"
+    issue.primary_anchor = SourceAnchor(file="pkg/consumer.py", line=8)
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [
+            {
+                "tool_name": "read_file",
+                "arguments": {"file_path": "pkg/consumer.py"},
+                "data": {
+                    "file_path": "pkg/consumer.py",
+                    "start_line": 6,
+                    "line_count": 5,
+                    "content": "8: return consume(value)",
+                },
+            }
+        ],
+        max_chars=8_000,
+    )
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The changed cause and retained consumer establish the issue.",
+                verified_evidence=["pkg/service.py:12", "pkg/consumer.py:8"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert context[0]["file_windows"][0]["path"] == "pkg/consumer.py"
+    assert result.results[0].status == "accepted"
+
+
 def test_candidate_context_does_not_invent_unread_evidence_location() -> None:
     module = importlib.import_module("src.analyzer.finding_verifier")
     context_module = importlib.import_module("src.analyzer.verifier_context")
@@ -1271,7 +1329,7 @@ def test_candidate_context_orders_locations_by_evidence_role_priority() -> None:
     ]
     assert [item.start_line for item in requested] == [12, 20, 30, 40, 50, 60]
     assert [item.retrieval_source for item in requested] == [
-        "diff",
+        "",
         "git_diff",
         "git_diff",
         "git_diff",

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from src.analyzer.evidence_binding import bind_candidate_evidence
-from src.analyzer.finding_schema import EvidenceProvenance, RepairIntent, SourceAnchor
+from src.analyzer.finding_schema import (
+    EvidenceProvenance,
+    RelatedLocation,
+    RepairIntent,
+    SourceAnchor,
+)
 from src.analyzer.finding_verifier import (
     build_candidates,
     validate_verifications,
@@ -257,5 +262,296 @@ def test_revised_finding_new_unseen_location_is_rejected() -> None:
         and item.file == "missing.py"
         and item.line == 99
         and item.revised_issue
+        for item in stats.rejection_details
+    )
+
+
+def test_revised_finding_can_delete_unsupported_impact() -> None:
+    request = _request()
+    tools = _read_evidence()
+    issue = _issue()
+    issue.impact = "Every downstream consumer receives a corrupt result."
+    issue.impact_evidence = [
+        issue.contract_evidence[0].model_copy(
+            update={"statement": "The helper returns the affected result."}
+        )
+    ]
+    candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(deep=True)
+    revised.impact = ""
+    revised.impact_evidence = []
+    batch = _accepted(bound[0].candidate_id)
+    batch.results[0].revised_issue = revised
+
+    result = validate_verifications(bound, batch, request, candidate_context=context)
+
+    assert result.results[0].status == "accepted"
+    assert result.results[0].revised_issue is not None
+    assert result.results[0].revised_issue.impact == ""
+    assert result.results[0].revised_issue.impact_evidence == []
+
+
+def test_revised_primary_location_outside_received_context_is_rejected() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(
+        deep=True,
+        update={
+            "location": "missing.py:99",
+            "primary_anchor": SourceAnchor(file="missing.py", line=99),
+        },
+    )
+    batch = _accepted(bound[0].candidate_id)
+    batch.results[0].revised_issue = revised
+
+    result, stats = validate_verifications_with_stats(
+        bound, batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "finding_primary_location_invalid"
+        and item.file == "missing.py"
+        and item.line == 99
+        and item.revised_issue
+        for item in stats.rejection_details
+    )
+
+
+def test_revised_related_location_in_received_tool_context_is_accepted() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(deep=True)
+    revised.related_locations = [
+        RelatedLocation(
+            file="helper.py",
+            line=5,
+            role="contract",
+            description="The retained helper establishes the consumer contract.",
+        )
+    ]
+    batch = _accepted(bound[0].candidate_id)
+    batch.results[0].revised_issue = revised
+
+    result = validate_verifications(bound, batch, request, candidate_context=context)
+
+    assert result.results[0].status == "accepted"
+
+
+def test_revised_related_location_outside_received_context_is_rejected() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(deep=True)
+    revised.related_locations = [
+        RelatedLocation(file="missing.py", line=99, description="Invented location.")
+    ]
+    batch = _accepted(bound[0].candidate_id)
+    batch.results[0].revised_issue = revised
+
+    result, stats = validate_verifications_with_stats(
+        bound, batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "evidence_context_missing"
+        and item.evidence_role == "related"
+        and item.file == "missing.py"
+        and item.line == 99
+        and item.revised_issue
+        for item in stats.rejection_details
+    )
+
+
+def test_downgraded_revision_cannot_introduce_unseen_location() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(
+        deep=True,
+        update={
+            "severity": Severity.INFO,
+            "location": "missing.py:99",
+            "primary_anchor": SourceAnchor(file="missing.py", line=99),
+        },
+    )
+    batch = FindingVerificationBatch(
+        results=[
+            FindingVerification(
+                candidate_id=bound[0].candidate_id,
+                status="downgraded",
+                reason_codes=["severity_overstated"],
+                rationale="The verifier moved this advisory to an unseen file.",
+                revised_issue=revised,
+            )
+        ]
+    )
+
+    result, stats = validate_verifications_with_stats(
+        bound, batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "finding_primary_location_invalid" and item.revised_issue
+        for item in stats.rejection_details
+    )
+
+
+def test_downgraded_revision_with_only_received_locations_is_accepted() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(
+        deep=True,
+        update={"severity": Severity.INFO},
+    )
+    batch = FindingVerificationBatch(
+        results=[
+            FindingVerification(
+                candidate_id=bound[0].candidate_id,
+                status="downgraded",
+                reason_codes=["severity_overstated"],
+                rationale="The received code supports only an advisory.",
+                revised_issue=revised,
+            )
+        ]
+    )
+
+    result = validate_verifications(bound, batch, request, candidate_context=context)
+
+    assert result.results[0].status == "downgraded"
+    assert result.results[0].revised_issue is not None
+    assert result.results[0].revised_issue.contract_evidence[0].retrieval_source == (
+        "read_file"
+    )
+
+
+def test_downgraded_verdict_cannot_return_unseen_verified_evidence() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(
+        deep=True,
+        update={"severity": Severity.INFO},
+    )
+    batch = FindingVerificationBatch(
+        results=[
+            FindingVerification(
+                candidate_id=bound[0].candidate_id,
+                status="downgraded",
+                reason_codes=["severity_overstated"],
+                rationale="The verifier cited an unseen location while downgrading.",
+                verified_evidence=[{"file": "missing.py", "line": 99}],
+                revised_issue=revised,
+            )
+        ]
+    )
+
+    result, stats = validate_verifications_with_stats(
+        bound, batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "evidence_context_missing"
+        and item.evidence_role == "verifier"
+        and item.file == "missing.py"
+        and item.line == 99
+        for item in stats.rejection_details
+    )
+
+
+def test_needs_evidence_verdict_cannot_return_unseen_location() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    batch = FindingVerificationBatch(
+        results=[
+            FindingVerification(
+                candidate_id=bound[0].candidate_id,
+                status="needs_evidence",
+                reason_codes=["cross_file_context_missing"],
+                rationale="The verifier requested evidence from an unseen location.",
+                verified_evidence=[{"file": "missing.py", "line": 99}],
+            )
+        ]
+    )
+
+    result, stats = validate_verifications_with_stats(
+        bound, batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "evidence_context_missing"
+        and item.evidence_role == "verifier"
+        and item.file == "missing.py"
+        and item.line == 99
+        for item in stats.rejection_details
+    )
+
+
+def test_needs_evidence_without_code_locations_remains_repairable() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    batch = FindingVerificationBatch(
+        results=[
+            FindingVerification(
+                candidate_id=bound[0].candidate_id,
+                status="needs_evidence",
+                reason_codes=["cross_file_context_missing"],
+                rationale="More retained caller context is required.",
+            )
+        ]
+    )
+
+    result = validate_verifications(bound, batch, request, candidate_context=context)
+
+    assert result.results[0].status == "needs_evidence"
+
+
+def test_revised_structured_finding_cannot_downgrade_schema() -> None:
+    request = _request()
+    tools = _read_evidence()
+    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
+    bound = bind_candidate_evidence(candidates, request, tools)
+    context = build_candidate_verifier_context(bound, request, tools)
+    revised = bound[0].issue.model_copy(
+        deep=True,
+        update={"schema_version": "1.0"},
+    )
+    batch = _accepted(bound[0].candidate_id)
+    batch.results[0].revised_issue = revised
+
+    result, stats = validate_verifications_with_stats(
+        bound, batch, request, candidate_context=context
+    )
+
+    assert result.results[0].status == "rejected"
+    assert any(
+        item.rule == "revised_schema_invalid" and item.revised_issue
         for item in stats.rejection_details
     )
