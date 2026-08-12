@@ -215,7 +215,7 @@ as `get_changed_context` / `find_symbol_context` over large preloaded prompts.
 | 记录内容 | 工具调用序列、关键中间结果、耗时、token 用量 |
 | 输入快照 | 是否落盘脱敏后的 prompt/输出以便复盘（路径与保留策略） |
 | `RunSummary` | Runtime summary in `src/analyzer/run_summary.py`; includes event-log status, model/token, tool counts, budget/stop state, submit validation errors, and publish status |
-| Finding verification | `FindingCandidate` 使用稳定 digest id；风险 finding 的 verifier verdict、reason code 和 evidence repair round 写入 event log |
+| Finding verification | `FindingCandidate` 使用稳定 digest id；风险 finding 的 verifier verdict、reason code 和 evidence repair round 写入 event log。确定性拒绝另写入 `deterministic_rejection_details`，逐条记录 candidate/finding、evidence role/index、retrieval source、文件/行号、失败字段、具体规则及是否为 revised finding |
 | Review Workflow | required/completed/missing step、reprompt count 和 enforcement mode 写入 `workflow_summary` |
 | Worker recovery | `review_runs` 保存 lease/heartbeat/attempt；`run_checkpoints` 保存步骤 attempt 和 artifact 路径 |
 | `RunArtifactSummary` | Artifact-facing CLI/API summary for response JSON, publish result JSON, event log, and related paths |

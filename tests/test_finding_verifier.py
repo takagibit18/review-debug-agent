@@ -7,6 +7,8 @@ import importlib
 import json
 from pathlib import Path
 
+import pytest
+
 from src.analyzer.finding_schema import EvidenceProvenance, RepairIntent, SourceAnchor
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.context_state import ContextState
@@ -538,6 +540,36 @@ def test_orchestrator_strictly_validates_injected_verifier(
     )
 
     assert response.report.issues == []
+    log_path = tmp_path / ".mergewarden" / "logs" / f"{response.run_id}.jsonl"
+    events = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    verification = next(
+        event
+        for event in events
+        if event["event_type"] == "finding_verification_completed"
+    )
+    assert verification["payload"]["deterministic_rejection_details"] == [
+        {
+            "candidate_id": verification["payload"]["deterministic_rejection_details"][
+                0
+            ]["candidate_id"],
+            "finding_id": "F-"
+            + verification["payload"]["deterministic_rejection_details"][0][
+                "candidate_id"
+            ][:12].upper(),
+            "rule": "evidence_context_missing",
+            "evidence_role": "verifier",
+            "evidence_index": 0,
+            "retrieval_source": "",
+            "file": "pkg/service.py",
+            "line": 11,
+            "end_line": None,
+            "field": "verified_evidence",
+            "revised_issue": False,
+            "message": "The cited verifier evidence was not retained in candidate context.",
+        }
+    ]
 
 
 def test_finding_verifier_parses_forced_structured_tool_result() -> None:
@@ -910,12 +942,241 @@ def test_validate_verification_rejects_unretained_or_unanchored_context() -> Non
     ]
 
     unretained = module.validate_verifications([candidate], batch, changed_request)
-    unanchored = module.validate_verifications(
+    unanchored, unanchored_stats = module.validate_verifications_with_stats(
         [candidate], batch, unanchored_request, candidate_context=context
     )
 
     assert unretained.results[0].reason_codes == ["deterministic_evidence_invalid"]
     assert unanchored.results[0].reason_codes == ["deterministic_evidence_invalid"]
+    assert any(
+        item.rule == "finding_primary_location_invalid"
+        and item.file == "pkg/service.py"
+        and item.line == 12
+        for item in unanchored_stats.rejection_details
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate_issue", "context", "expected_rule", "expected_field"),
+    [
+        (
+            lambda issue: setattr(issue.cause_evidence[0], "line", None),
+            {"diff_hunks": []},
+            "evidence_location_missing",
+            "file/line",
+        ),
+        (
+            lambda issue: setattr(issue.cause_evidence[0], "line", 30),
+            {"diff_hunks": []},
+            "diff_evidence_context_missing",
+            "retrieval_source/file/line",
+        ),
+        (
+            lambda issue: (
+                setattr(issue.cause_evidence[0], "retrieval_source", "read_file"),
+                setattr(issue.cause_evidence[0], "line", 30),
+            ),
+            {"file_windows": []},
+            "tool_evidence_context_missing",
+            "retrieval_source/file/line",
+        ),
+        (
+            lambda issue: setattr(issue.cause_evidence[0], "candidate_id", ""),
+            {"diff_hunks": []},
+            "evidence_binding_missing",
+            "candidate_id",
+        ),
+    ],
+)
+def test_deterministic_rejection_details_name_failed_evidence_rule(
+    mutate_issue,
+    context,
+    expected_rule: str,
+    expected_field: str,
+) -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    mutate_issue(issue)
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    candidate_context = {
+        "candidate_id": candidate.candidate_id,
+        "context_mode": "graph_hybrid",
+        "evidence_policy": {
+            "require_manifest": False,
+            "allow_diff_evidence": True,
+            "allow_tool_evidence": True,
+            "allow_manifest_evidence": True,
+            "require_context_hash_for_manifest": True,
+        },
+        **context,
+    }
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The finding is supported.",
+                verified_evidence=["pkg/service.py:12"],
+            )
+        ]
+    )
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+
+    result, stats = module.validate_verifications_with_stats(
+        [candidate], batch, request, candidate_context=[candidate_context]
+    )
+
+    assert result.results[0].status == "rejected"
+    detail = next(
+        item for item in stats.rejection_details if item.rule == expected_rule
+    )
+    assert detail.candidate_id == candidate.candidate_id
+    assert detail.finding_id == issue.finding_id
+    assert detail.evidence_role == "cause"
+    assert detail.evidence_index == 0
+    assert detail.file == "pkg/service.py"
+    assert detail.field == expected_field
+
+
+def test_deterministic_rejection_details_distinguish_manifest_id_and_hash() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    from src.analyzer.finding_schema import context_hash
+
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+
+    def rejection_rules(issue: ReviewIssue, context: dict[str, object]) -> set[str]:
+        candidate = module.build_candidates(
+            ReviewReport(summary="review", issues=[issue]), iteration=0
+        )[0]
+        batch = schemas.FindingVerificationBatch(
+            results=[
+                schemas.FindingVerification(
+                    candidate_id=candidate.candidate_id,
+                    status="accepted",
+                    reason_codes=["verified"],
+                    rationale="The finding is supported.",
+                    verified_evidence=["pkg/service.py:12"],
+                )
+            ]
+        )
+        _, stats = module.validate_verifications_with_stats(
+            [candidate],
+            batch,
+            request,
+            candidate_context=[{"candidate_id": candidate.candidate_id, **context}],
+        )
+        return {item.rule for item in stats.rejection_details}
+
+    id_issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    id_issue.context_manifest_id = "C-expected"
+    for evidence in id_issue.all_evidence():
+        evidence.context_manifest_id = "C-other"
+        evidence.context_hash = context_hash("12: return cache[key]")
+    id_rules = rejection_rules(
+        id_issue,
+        {
+            "context_manifest_id": "C-expected",
+            "included_spans": [],
+            "context_mode": "graph_hybrid",
+        },
+    )
+
+    hash_issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    hash_issue.context_manifest_id = "C-expected"
+    for evidence in hash_issue.all_evidence():
+        evidence.context_manifest_id = "C-expected"
+        evidence.context_hash = context_hash("wrong content")
+    hash_rules = rejection_rules(
+        hash_issue,
+        {
+            "context_manifest_id": "C-expected",
+            "included_spans": [
+                {
+                    "file": "pkg/service.py",
+                    "start_line": 12,
+                    "end_line": 12,
+                    "context_hash": context_hash("12: return cache[key]"),
+                }
+            ],
+            "context_mode": "graph_hybrid",
+        },
+    )
+
+    assert "manifest_id_mismatch" in id_rules
+    assert "manifest_hash_mismatch" in hash_rules
+
+
+def test_revised_finding_failure_is_marked_after_full_revalidation() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    revised = candidate.issue.model_copy(deep=True)
+    revised.cause_evidence[0].line = 30
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The narrower issue is supported.",
+                verified_evidence=["pkg/service.py:12"],
+                revised_issue=revised,
+            )
+        ]
+    )
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+
+    result, stats = module.validate_verifications_with_stats(
+        [candidate],
+        batch,
+        request,
+        candidate_context=[
+            {
+                "candidate_id": candidate.candidate_id,
+                "context_mode": "graph_hybrid",
+                "diff_hunks": [],
+            }
+        ],
+    )
+
+    assert result.results[0].status == "rejected"
+    assert {item.rule for item in stats.rejection_details} >= {
+        "diff_evidence_context_missing",
+        "revised_evidence_invalid",
+    }
+    assert all(item.revised_issue for item in stats.rejection_details)
 
 
 def test_finding_verifier_injects_candidate_scoped_tool_evidence() -> None:

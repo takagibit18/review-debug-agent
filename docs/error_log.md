@@ -4,6 +4,9 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-08-12 | Fix 1 Git staging | `git add` 无法创建 `.git/index.lock` | workspace 可写项目文件，但 Git 元数据在当前 managed sandbox 中只读 | 不绕过 Git 锁；按授权流程提升权限，仅暂存本提交明确列出的 8 个文件 |
+| 2026-08-12 | Fix 1 Eval result audit | 首个 PowerShell 摘要误读不存在的顶层 `results`，后续压缩版 `foreach` 末尾直接接管道又触发 `EmptyPipeElement` | Core report 的逐 run 数据位于 `runs`，且 PowerShell 单行循环不能以空管道边界拼接输出 | 按实际 schema 改读 `runs[].result/quality`，先累积 `$rows` 再单独格式化；未修改机器报告或实验指标 |
+| 2026-08-12 | Deterministic rejection diagnostics typing | 定向 `mypy` 报告 evidence detail 的 `**dict` 参数类型过宽，并暴露 `candidate_kind` 被推断为普通 `str` | 异构诊断字段放在未声明的字典中会丢失关键字参数类型；候选类型局部变量此前依赖运行时字符串赋值推断 | 用类型明确的局部构造函数生成 detail，并把候选类型标注为 `FindingCandidateKind | None`；随后重新运行 Ruff、mypy 与相关测试 |
 | 2026-08-11 | Git staging | `git add` 无法创建 `.git/index.lock`；提升权限请求又因审批额度上限被拒绝 | workspace 允许修改项目文件，但 Git 元数据写入需要额外审批；当前审批服务返回 usage limit | 未绕过权限、未重复提升；保留已验证工作树，待额度/审批恢复后原样暂存并提交 |
 | 2026-08-11 | Touched-file format gate | Ruff lint 通过，但 `context_priority.py` 的 format-check 要求重排 1 个文件 | 类型变量改名后触发了 formatter 的局部换行规则 | 仅格式化该触及文件；随后 Ruff lint 与 format-check 均通过 |
 | 2026-08-11 | Graph manifest reconstruction typing | `mypy src` 报告 `Any | None` 不能赋给同函数内已推断为 `str` 的 `path` | 文件路径循环与 manifest path 重用了同名局部变量，触发 mypy 的函数级变量类型冲突 | 将后者改名为 `manifest_path`；`mypy src` 随后通过 75 个源文件 |

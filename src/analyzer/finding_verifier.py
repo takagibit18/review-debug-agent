@@ -6,10 +6,13 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from src.analyzer.context_state import ContextState
 from src.analyzer.diff_lines import changed_new_lines_by_file
+from src.analyzer.evidence_policy import evidence_policy_for_mode
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import (
     ReviewIssue,
@@ -20,10 +23,12 @@ from src.analyzer.output_formatter import (
 from src.analyzer.review_policy import evaluate_issue_filter
 from src.analyzer.schemas import (
     FindingCandidate,
+    FindingCandidateKind,
     FindingVerificationBatch,
     ReviewRequest,
 )
 from src.analyzer.verifier_context import (
+    _location_overlaps_record,
     build_candidate_verifier_context,
     location_in_candidate_context,
     provenance_in_candidate_context,
@@ -103,6 +108,46 @@ class DeterministicValidationStats:
     checked_count: int = 0
     passed_count: int = 0
     rejected_count: int = 0
+    rejection_details: tuple[DeterministicRejectionDetail, ...] = ()
+
+
+DeterministicRejectionRule = Literal[
+    "candidate_binding_missing",
+    "finding_primary_location_invalid",
+    "finding_not_actionable_risk",
+    "verifier_revision_required",
+    "verified_evidence_missing",
+    "evidence_location_missing",
+    "evidence_context_missing",
+    "diff_evidence_context_missing",
+    "tool_evidence_context_missing",
+    "manifest_id_mismatch",
+    "manifest_hash_mismatch",
+    "evidence_binding_missing",
+    "structured_finding_incomplete",
+    "required_evidence_missing",
+    "graph_evidence_invalid",
+    "revised_evidence_invalid",
+    "downgrade_invalid",
+    "deterministic_validation_failed",
+]
+
+
+class DeterministicRejectionDetail(BaseModel):
+    """One exact fail-closed rule tied to a finding or evidence item."""
+
+    candidate_id: str
+    finding_id: str = ""
+    rule: DeterministicRejectionRule
+    evidence_role: str = "finding"
+    evidence_index: int | None = Field(default=None, ge=0)
+    retrieval_source: str = ""
+    file: str = ""
+    line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
+    field: str = ""
+    revised_issue: bool = False
+    message: str
 
 
 class FindingVerifier:
@@ -232,9 +277,11 @@ def validate_verifications_with_stats(
     checked_count = 0
     passed_count = 0
     rejected_count = 0
+    rejection_details: list[DeterministicRejectionDetail] = []
     for verdict in batch.results:
         candidate = by_id.get(verdict.candidate_id)
         valid = candidate is not None
+        verdict_rejections: list[DeterministicRejectionDetail] = []
         if verdict.status == "accepted":
             checked_count += 1
             effective_issue = (
@@ -289,6 +336,16 @@ def validate_verifications_with_stats(
                     context,
                     changed,
                 )
+            verdict_rejections = _accepted_verdict_rejections(
+                verdict_candidate_id=verdict.candidate_id,
+                candidate=candidate,
+                effective_issue=effective_issue,
+                context=context,
+                changed=changed,
+                requires_revision=requires_revision,
+                revised_issue=verdict.revised_issue is not None,
+                verified_evidence=verdict.verified_evidence,
+            )
             if valid:
                 passed_count += 1
             else:
@@ -299,13 +356,53 @@ def validate_verifications_with_stats(
                 and verdict.revised_issue is not None
                 and verdict.revised_issue.severity in {Severity.INFO, Severity.STYLE}
             )
+            if not valid:
+                verdict_rejections = [
+                    _rejection_detail(
+                        verdict.candidate_id,
+                        candidate.issue if candidate is not None else None,
+                        "downgrade_invalid",
+                        field="revised_issue.severity",
+                        revised_issue=verdict.revised_issue is not None,
+                        message=(
+                            "A downgraded verdict must bind to an existing candidate "
+                            "and provide an info/style revised issue."
+                        ),
+                    )
+                ]
+        elif not valid:
+            verdict_rejections = [
+                _rejection_detail(
+                    verdict.candidate_id,
+                    None,
+                    "candidate_binding_missing",
+                    field="candidate_id",
+                    message="The verifier verdict candidate_id does not match a finding.",
+                )
+            ]
         if not valid:
+            if not verdict_rejections:
+                verdict_rejections = [
+                    _rejection_detail(
+                        verdict.candidate_id,
+                        candidate.issue if candidate is not None else None,
+                        "deterministic_validation_failed",
+                        message=(
+                            "Deterministic validation failed without a more specific "
+                            "diagnostic; fail closed."
+                        ),
+                    )
+                ]
+            rejection_details.extend(verdict_rejections)
+            rule_summary = ", ".join(
+                dict.fromkeys(item.rule for item in verdict_rejections)
+            )
             results.append(
                 FindingVerification(
                     candidate_id=verdict.candidate_id,
                     status="rejected",
                     reason_codes=["deterministic_evidence_invalid"],
-                    rationale="Deterministic evidence or downgrade validation failed.",
+                    rationale=f"Deterministic validation failed: {rule_summary}.",
                 )
             )
         else:
@@ -316,7 +413,540 @@ def validate_verifications_with_stats(
             checked_count=checked_count,
             passed_count=passed_count,
             rejected_count=rejected_count,
+            rejection_details=tuple(rejection_details),
         ),
+    )
+
+
+def _accepted_verdict_rejections(
+    *,
+    verdict_candidate_id: str,
+    candidate: FindingCandidate | None,
+    effective_issue: ReviewIssue | None,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+    requires_revision: bool,
+    revised_issue: bool,
+    verified_evidence: list[str],
+) -> list[DeterministicRejectionDetail]:
+    """Explain every failed rule without changing the fail-closed decision."""
+
+    if candidate is None or effective_issue is None:
+        return [
+            _rejection_detail(
+                verdict_candidate_id,
+                effective_issue,
+                "candidate_binding_missing",
+                field="candidate_id",
+                revised_issue=revised_issue,
+                message="The accepted verdict candidate_id does not match a finding.",
+            )
+        ]
+
+    details: list[DeterministicRejectionDetail] = []
+    parsed_location = normalize_location(effective_issue.location)
+    if not _location_intersects_changed_lines(parsed_location, changed):
+        details.append(
+            _rejection_detail(
+                verdict_candidate_id,
+                effective_issue,
+                "finding_primary_location_invalid",
+                file=parsed_location.path or "",
+                line=parsed_location.line,
+                end_line=parsed_location.end_line,
+                field="location",
+                revised_issue=revised_issue,
+                message="The finding primary location does not intersect a changed line.",
+            )
+        )
+    if (
+        effective_issue.severity not in RISK_SEVERITIES
+        or not evaluate_issue_filter(effective_issue).passed
+    ):
+        details.append(
+            _rejection_detail(
+                verdict_candidate_id,
+                effective_issue,
+                "finding_not_actionable_risk",
+                field="severity/evidence/confidence",
+                revised_issue=revised_issue,
+                message="The accepted issue does not pass the existing risk policy.",
+            )
+        )
+    if requires_revision and not revised_issue:
+        details.append(
+            _rejection_detail(
+                verdict_candidate_id,
+                effective_issue,
+                "verifier_revision_required",
+                field="revised_issue",
+                message="This candidate kind requires a verifier-authored revised issue.",
+            )
+        )
+
+    if not verified_evidence:
+        details.append(
+            _rejection_detail(
+                verdict_candidate_id,
+                effective_issue,
+                "verified_evidence_missing",
+                evidence_role="verifier",
+                field="verified_evidence",
+                revised_issue=revised_issue,
+                message="The accepted verdict did not identify any verified code location.",
+            )
+        )
+    for index, raw_location in enumerate(verified_evidence):
+        location = normalize_location(raw_location)
+        if not location.valid or location.line is None:
+            details.append(
+                _rejection_detail(
+                    verdict_candidate_id,
+                    effective_issue,
+                    "evidence_location_missing",
+                    evidence_role="verifier",
+                    evidence_index=index,
+                    field="verified_evidence",
+                    revised_issue=revised_issue,
+                    message=(
+                        "The verifier evidence entry does not contain a valid code "
+                        f"location: {raw_location!r}."
+                    ),
+                )
+            )
+            continue
+        if not (
+            _location_intersects_changed_lines(location, changed)
+            or location_in_candidate_context(context, location)
+        ):
+            details.append(
+                _rejection_detail(
+                    verdict_candidate_id,
+                    effective_issue,
+                    "evidence_context_missing",
+                    evidence_role="verifier",
+                    evidence_index=index,
+                    file=location.path or "",
+                    line=location.line,
+                    end_line=location.end_line,
+                    field="verified_evidence",
+                    revised_issue=revised_issue,
+                    message="The cited verifier evidence was not retained in candidate context.",
+                )
+            )
+
+    if effective_issue.is_structured_hypothesis:
+        details.extend(
+            _structured_candidate_evidence_rejections(
+                candidate.model_copy(update={"issue": effective_issue}),
+                context,
+                changed,
+                revised_issue=revised_issue,
+            )
+        )
+    if revised_issue and details:
+        details.append(
+            _rejection_detail(
+                verdict_candidate_id,
+                effective_issue,
+                "revised_evidence_invalid",
+                field="revised_issue",
+                revised_issue=True,
+                message="The verifier-revised finding did not pass deterministic revalidation.",
+            )
+        )
+    return details
+
+
+def _structured_candidate_evidence_rejections(
+    candidate: FindingCandidate,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+    *,
+    revised_issue: bool,
+) -> list[DeterministicRejectionDetail]:
+    """Return field- and evidence-level failures for a schema-v2 finding."""
+
+    issue = candidate.issue
+    details: list[DeterministicRejectionDetail] = []
+    anchor = issue.primary_anchor
+    if anchor is None or anchor.line not in changed.get(anchor.file, set()):
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "finding_primary_location_invalid",
+                file=anchor.file if anchor is not None else "",
+                line=anchor.line if anchor is not None else None,
+                end_line=anchor.end_line if anchor is not None else None,
+                field="primary_anchor",
+                revised_issue=revised_issue,
+                message="The structured primary anchor is absent or not a changed line.",
+            )
+        )
+    parsed_location = normalize_location(issue.location)
+    if (
+        anchor is None
+        or not parsed_location.valid
+        or parsed_location.path != anchor.file
+        or parsed_location.line is None
+        or not (
+            parsed_location.line
+            <= anchor.line
+            <= (parsed_location.end_line or parsed_location.line)
+        )
+    ):
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "finding_primary_location_invalid",
+                file=parsed_location.path or "",
+                line=parsed_location.line,
+                end_line=parsed_location.end_line,
+                field="location/primary_anchor",
+                revised_issue=revised_issue,
+                message="The legacy location and structured primary anchor do not agree.",
+            )
+        )
+
+    required_fields = {
+        "observed_behavior": issue.observed_behavior,
+        "causal_mechanism": issue.causal_mechanism,
+        "violated_invariant": issue.violated_invariant,
+        "repair_intent.action": issue.repair_intent.action,
+        "repair_intent.boundary": issue.repair_intent.boundary,
+    }
+    missing_fields = [
+        name for name, value in required_fields.items() if not value.strip()
+    ]
+    if not issue.repair_intent.targets:
+        missing_fields.append("repair_intent.targets")
+    if missing_fields:
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "structured_finding_incomplete",
+                field=",".join(missing_fields),
+                revised_issue=revised_issue,
+                message="Required structured finding fields are empty.",
+            )
+        )
+
+    required_roles: list[str] = []
+    if not issue.cause_evidence:
+        required_roles.append("cause")
+    if not issue.contract_evidence:
+        required_roles.append("contract")
+    if issue.trigger.strip() and not issue.trigger_evidence:
+        required_roles.append("trigger")
+    if issue.impact.strip() and not issue.impact_evidence:
+        required_roles.append("impact")
+    for role in required_roles:
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "required_evidence_missing",
+                evidence_role=role,
+                field=f"{role}_evidence",
+                revised_issue=revised_issue,
+                message=f"The structured {role} claim has no evidence entry.",
+            )
+        )
+
+    evidence_by_role = (
+        ("cause", issue.cause_evidence),
+        ("contract", issue.contract_evidence),
+        ("trigger", issue.trigger_evidence),
+        ("impact", issue.impact_evidence),
+    )
+    if not issue.all_evidence():
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "evidence_binding_missing",
+                field="all_evidence",
+                revised_issue=revised_issue,
+                message="The finding has no structured evidence bound to it.",
+            )
+        )
+    for role, evidence_items in evidence_by_role:
+        for index, evidence in enumerate(evidence_items):
+            details.extend(
+                _evidence_rejections(
+                    candidate,
+                    issue,
+                    context,
+                    evidence,
+                    evidence_role=role,
+                    evidence_index=index,
+                    revised_issue=revised_issue,
+                )
+            )
+    return details
+
+
+def _evidence_rejections(
+    candidate: FindingCandidate,
+    issue: ReviewIssue,
+    context: dict[str, Any] | None,
+    evidence: Any,
+    *,
+    evidence_role: str,
+    evidence_index: int,
+    revised_issue: bool,
+) -> list[DeterministicRejectionDetail]:
+    """Diagnose one structured evidence item against the retained context."""
+
+    candidate_id = str(getattr(evidence, "candidate_id", ""))
+    retrieval_source = str(getattr(evidence, "retrieval_source", "")).strip()
+    file = str(getattr(evidence, "file", ""))
+    line = getattr(evidence, "line", None)
+    end_line = getattr(evidence, "end_line", None)
+    statement = str(getattr(evidence, "statement", ""))
+    evidence_manifest = str(getattr(evidence, "context_manifest_id", ""))
+    digest = str(getattr(evidence, "context_hash", ""))
+
+    def detail(
+        rule: DeterministicRejectionRule,
+        *,
+        field: str,
+        message: str,
+    ) -> DeterministicRejectionDetail:
+        return _rejection_detail(
+            candidate.candidate_id,
+            issue,
+            rule,
+            evidence_role=evidence_role,
+            evidence_index=evidence_index,
+            retrieval_source=retrieval_source,
+            file=file,
+            line=line,
+            end_line=end_line,
+            field=field,
+            revised_issue=revised_issue,
+            message=message,
+        )
+
+    details: list[DeterministicRejectionDetail] = []
+    if not candidate_id:
+        details.append(
+            detail(
+                "evidence_binding_missing",
+                field="candidate_id",
+                message="The evidence item is not bound to a finding candidate.",
+            )
+        )
+    if not file or line is None:
+        details.append(
+            detail(
+                "evidence_location_missing",
+                field="file/line",
+                message="The evidence item does not identify a code location.",
+            )
+        )
+    if not retrieval_source:
+        details.append(
+            detail(
+                "evidence_context_missing",
+                field="retrieval_source",
+                message="The evidence item does not declare a retrieval source.",
+            )
+        )
+    if not statement.strip():
+        details.append(
+            detail(
+                "evidence_binding_missing",
+                field="statement",
+                message="The evidence item has no statement tying code to the finding.",
+            )
+        )
+    if issue.context_manifest_id:
+        if evidence_manifest != issue.context_manifest_id:
+            details.append(
+                detail(
+                    "manifest_id_mismatch",
+                    field="context_manifest_id",
+                    message=(
+                        "The evidence manifest id does not match the finding manifest id."
+                    ),
+                )
+            )
+    elif evidence_manifest:
+        details.append(
+            detail(
+                "manifest_id_mismatch",
+                field="context_manifest_id",
+                message="Evidence declares a manifest that the finding does not bind.",
+            )
+        )
+
+    if (
+        candidate_id
+        and file
+        and line is not None
+        and retrieval_source
+        and not (
+            issue.context_manifest_id and evidence_manifest != issue.context_manifest_id
+        )
+        and not (not issue.context_manifest_id and evidence_manifest)
+    ):
+        provenance_rule = _provenance_rejection_rule(context, evidence)
+        if provenance_rule is not None:
+            rule, field, message = provenance_rule
+            details.append(
+                detail(
+                    rule,
+                    field=field,
+                    message=message,
+                )
+            )
+    if evidence_manifest and not digest:
+        # This is already rejected by provenance validation, but naming the exact
+        # missing field is more useful than a generic context miss.
+        if not any(item.rule == "manifest_hash_mismatch" for item in details):
+            details.append(
+                detail(
+                    "manifest_hash_mismatch",
+                    field="context_hash",
+                    message="Manifest evidence is missing its required context hash.",
+                )
+            )
+    return details
+
+
+def _provenance_rejection_rule(
+    context: dict[str, Any] | None,
+    evidence: Any,
+) -> tuple[DeterministicRejectionRule, str, str] | None:
+    """Return the precise reason for the existing provenance predicate failure."""
+
+    if provenance_in_candidate_context(context, evidence):
+        return None
+    if context is None:
+        return (
+            "evidence_context_missing",
+            "candidate_context",
+            "No retained candidate context exists for this evidence item.",
+        )
+    mode = str(context.get("context_mode", "graph_hybrid"))
+    policy = evidence_policy_for_mode(
+        "agent_search" if mode == "agent_search" else "graph_hybrid"
+    )
+    policy_raw = context.get("evidence_policy", {})
+    if isinstance(policy_raw, dict) and policy_raw:
+        try:
+            policy = policy.model_validate(policy_raw)
+        except Exception:  # noqa: BLE001
+            pass
+    manifest_id = str(context.get("context_manifest_id", ""))
+    evidence_manifest = str(getattr(evidence, "context_manifest_id", ""))
+    file = str(getattr(evidence, "file", "")).replace("\\", "/")
+    line = int(getattr(evidence, "line", 0) or 0)
+    end_line = int(getattr(evidence, "end_line", 0) or line)
+    digest = str(getattr(evidence, "context_hash", ""))
+    retrieval_source = str(getattr(evidence, "retrieval_source", "")).strip().lower()
+    if evidence_manifest:
+        if (
+            not policy.allow_manifest_evidence
+            or not manifest_id
+            or evidence_manifest != manifest_id
+        ):
+            return (
+                "manifest_id_mismatch",
+                "context_manifest_id",
+                "Manifest evidence does not match an allowed retained manifest.",
+            )
+        spans = context.get("included_spans")
+        overlapping_spans = [
+            span
+            for span in spans or []
+            if isinstance(span, dict)
+            and _location_overlaps_record(file, line, end_line, span)
+        ]
+        if not digest or (
+            overlapping_spans
+            and all(
+                str(span.get("context_hash", "")) != digest
+                for span in overlapping_spans
+            )
+        ):
+            return (
+                "manifest_hash_mismatch",
+                "context_hash",
+                "Manifest evidence hash does not match the retained code span.",
+            )
+        if not overlapping_spans:
+            return (
+                "evidence_context_missing",
+                "file/line",
+                "The manifest evidence location is not present in retained manifest spans.",
+            )
+        if getattr(evidence, "edge_kind", ""):
+            return (
+                "graph_evidence_invalid",
+                "edge_kind/edge_confidence/resolver/evidence_eligibility",
+                "Graph evidence does not satisfy the retained strong-edge contract.",
+            )
+        return None
+    if policy.require_manifest:
+        return (
+            "manifest_id_mismatch",
+            "context_manifest_id",
+            "The active evidence policy requires a manifest binding.",
+        )
+    if getattr(evidence, "edge_kind", ""):
+        return (
+            "graph_evidence_invalid",
+            "edge_kind",
+            "Graph edge evidence cannot be used without manifest provenance.",
+        )
+    if retrieval_source in {"git_diff", "diff", "review_diff", "changed_hunk"}:
+        return (
+            "diff_evidence_context_missing",
+            "retrieval_source/file/line",
+            "Evidence claims diff provenance but its location is not in retained diff context.",
+        )
+    return (
+        "tool_evidence_context_missing",
+        "retrieval_source/file/line",
+        "Evidence claims file/tool provenance without a matching successful retained read.",
+    )
+
+
+def _rejection_detail(
+    candidate_id: str,
+    issue: ReviewIssue | None,
+    rule: DeterministicRejectionRule,
+    *,
+    evidence_role: str = "finding",
+    evidence_index: int | None = None,
+    retrieval_source: str = "",
+    file: str = "",
+    line: int | None = None,
+    end_line: int | None = None,
+    field: str = "",
+    revised_issue: bool = False,
+    message: str,
+) -> DeterministicRejectionDetail:
+    """Construct a stable, event-log-safe deterministic rejection record."""
+
+    return DeterministicRejectionDetail(
+        candidate_id=candidate_id,
+        finding_id=issue.finding_id if issue is not None else "",
+        rule=rule,
+        evidence_role=evidence_role,
+        evidence_index=evidence_index,
+        retrieval_source=retrieval_source,
+        file=file,
+        line=line,
+        end_line=end_line,
+        field=field,
+        revised_issue=revised_issue,
+        message=message,
     )
 
 
@@ -452,7 +1082,7 @@ def build_candidates(
     seen: set[str] = set()
     changed = changed_new_lines_by_file(request.diff_text or "") if request else {}
     for source_issue_index, issue in enumerate(report.issues):
-        candidate_kind = ""
+        candidate_kind: FindingCandidateKind | None = None
         decision = evaluate_issue_filter(issue)
         if issue.severity in RISK_SEVERITIES:
             if not include_boundary or decision.passed:
@@ -471,7 +1101,7 @@ def build_candidates(
             and _describes_current_functional_risk(issue)
         ):
             candidate_kind = "severity_calibration"
-        if not candidate_kind:
+        if candidate_kind is None:
             continue
         candidate_id = _candidate_id(issue)
         if candidate_id in seen:
@@ -580,9 +1210,7 @@ def apply_verifications(
                 )
         return copied
     verdicts = {item.candidate_id: item for item in batch.results}
-    candidates_by_id = {
-        item.candidate_id: item for item in candidates or []
-    }
+    candidates_by_id = {item.candidate_id: item for item in candidates or []}
     output: list[ReviewIssue] = []
     seen_candidate_ids: set[str] = set()
     for issue in report.issues:
@@ -590,12 +1218,8 @@ def apply_verifications(
         candidate = candidates_by_id.get(candidate_id)
         if candidate is not None:
             seen_candidate_ids.add(candidate_id)
-        if (
-            issue.severity not in RISK_SEVERITIES
-            and (
-                candidate is None
-                or candidate.candidate_kind != "severity_calibration"
-            )
+        if issue.severity not in RISK_SEVERITIES and (
+            candidate is None or candidate.candidate_kind != "severity_calibration"
         ):
             output.append(issue)
             continue
@@ -607,9 +1231,7 @@ def apply_verifications(
                 and verdict.revised_issue is not None
                 and verdict.revised_issue.severity in RISK_SEVERITIES
             ):
-                output.append(
-                    _bind_verified_issue(verdict.revised_issue, candidate_id)
-                )
+                output.append(_bind_verified_issue(verdict.revised_issue, candidate_id))
             else:
                 output.append(issue)
             continue

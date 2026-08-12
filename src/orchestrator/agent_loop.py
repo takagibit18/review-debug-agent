@@ -356,9 +356,7 @@ class AgentOrchestrator:
                 "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "risk_candidate_count": self._risk_candidate_count,
-                "filter_rescue_candidate_count": (
-                    self._filter_rescue_candidate_count
-                ),
+                "filter_rescue_candidate_count": (self._filter_rescue_candidate_count),
                 "severity_calibration_candidate_count": (
                     self._severity_calibration_candidate_count
                 ),
@@ -524,6 +522,10 @@ class AgentOrchestrator:
                 rejected_count=(
                     validation_stats.rejected_count + repaired_stats.rejected_count
                 ),
+                rejection_details=(
+                    *validation_stats.rejection_details,
+                    *repaired_stats.rejection_details,
+                ),
             )
             self._record_event(
                 EventType.FINDING_EVIDENCE_REPAIR_COMPLETED,
@@ -565,9 +567,7 @@ class AgentOrchestrator:
                 "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "risk_candidate_count": self._risk_candidate_count,
-                "filter_rescue_candidate_count": (
-                    self._filter_rescue_candidate_count
-                ),
+                "filter_rescue_candidate_count": (self._filter_rescue_candidate_count),
                 "severity_calibration_candidate_count": (
                     self._severity_calibration_candidate_count
                 ),
@@ -590,6 +590,10 @@ class AgentOrchestrator:
                 "deterministic_evidence_checked_count": validation_stats.checked_count,
                 "deterministic_evidence_passed_count": validation_stats.passed_count,
                 "deterministic_evidence_rejected_count": validation_stats.rejected_count,
+                "deterministic_rejection_details": [
+                    item.model_dump(mode="json")
+                    for item in validation_stats.rejection_details
+                ],
                 "semantic_rejected_count": self._semantic_rejected_count,
                 "deterministic_rejected_count": self._deterministic_rejected_count,
                 "mode": self._finding_verifier_mode,
@@ -2307,13 +2311,11 @@ class AgentOrchestrator:
             "no_finding_run_count": int(self._submitted_issue_count == 0),
             "non_risk_not_routed_count": max(
                 0,
-                self._non_risk_issue_count
-                - self._severity_calibration_candidate_count,
+                self._non_risk_issue_count - self._severity_calibration_candidate_count,
             ),
             "pre_verifier_rejected_count": max(
                 0,
-                self._policy_rejected_issue_count
-                - self._filter_rescue_candidate_count,
+                self._policy_rejected_issue_count - self._filter_rescue_candidate_count,
             ),
             "risk_candidate_count": self._risk_candidate_count,
             "filter_rescue_candidate_count": self._filter_rescue_candidate_count,

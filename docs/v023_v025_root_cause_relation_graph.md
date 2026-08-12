@@ -327,7 +327,7 @@ LSP 不是硬依赖。所有 enrichment 必须记录 resolver、confidence、fal
 
 ## 可观测性
 
-JSONL event log 记录 index build/reuse/rebuild、anchor/node/edge 数、Planner 选择与裁剪、Manifest token cost、单 finding verdict、block、merge proposal、counterfactual、归并验证/rejection/fallback 和阶段耗时。事件只记录路径、ID、计数、hash、原因与受限摘要，不记录模型密钥或整仓源码。
+JSONL event log 记录 index build/reuse/rebuild、anchor/node/edge 数、Planner 选择与裁剪、Manifest token cost、单 finding verdict、block、merge proposal、counterfactual、归并验证/rejection/fallback 和阶段耗时。`finding_verification_completed.deterministic_rejection_details` 对每个失败的 finding/evidence 记录 candidate/finding ID、evidence role/index、retrieval source、文件/行号、失败字段、具体 fail-closed 规则以及是否来自 verifier revised finding；不再只保留聚合的 `deterministic_evidence_invalid`。事件只记录路径、ID、计数、hash、原因与受限摘要，不记录模型密钥或整仓源码。
 
 Eval process metrics 增加 root-cause coverage、over/under-merge、repair-unit accuracy、evidence completeness、finding inflation ratio、graph/context 规模、discarded paths、unused context、edge confidence contribution、build/incremental latency、cache hit rate、block 数和平均 block size。
 
