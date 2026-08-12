@@ -40,6 +40,14 @@ def test_validate_review_draft_uses_current_filter_thresholds(
                     "evidence": "+    return 'new'",
                     "suggestion": "Restore old behavior.",
                     "confidence": 0.84,
+                    "cause_evidence": [
+                        {
+                            "retrieval_source": "git_diff",
+                            "file": "src/app.py",
+                            "line": 2,
+                            "statement": "The return value changed here.",
+                        }
+                    ],
                 },
                 {
                     "severity": "warning",
@@ -47,6 +55,14 @@ def test_validate_review_draft_uses_current_filter_thresholds(
                     "evidence": "+    return 'new'",
                     "suggestion": "This user-visible behavior change can break callers.",
                     "confidence": 0.75,
+                    "cause_evidence": [
+                        {
+                            "retrieval_source": "git_diff",
+                            "file": "src/app.py",
+                            "line": 2,
+                            "statement": "The return value changed here.",
+                        }
+                    ],
                 },
             ],
         )
@@ -68,7 +84,7 @@ def test_validate_review_draft_uses_current_filter_thresholds(
     assert result["effective_issue_count"] == 1
 
 
-def test_validate_review_draft_normalizes_location_and_checks_changed_line(
+def test_validate_review_draft_separates_display_location_from_causal_anchor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -84,6 +100,14 @@ def test_validate_review_draft_normalizes_location_and_checks_changed_line(
                     "evidence": "+    return 'new'",
                     "suggestion": "Check behavior.",
                     "confidence": 0.9,
+                    "cause_evidence": [
+                        {
+                            "retrieval_source": "git_diff",
+                            "file": "src/app.py",
+                            "line": 2,
+                            "statement": "The changed return causes the issue.",
+                        }
+                    ],
                 }
             ],
         )
@@ -93,7 +117,38 @@ def test_validate_review_draft_normalizes_location_and_checks_changed_line(
     assert issue["normalized_location"] == "src/app.py:1"
     assert issue["location_valid"] is True
     assert issue["location_on_changed_line"] is False
-    assert "move location to a changed line" in issue["repair_hints"]
+    assert issue["pr_causal_anchor_on_changed_line"] is True
+    assert issue["passes_current_filter"] is True
+    assert not any("move location" in hint for hint in issue["repair_hints"])
+
+
+def test_validate_review_draft_requires_changed_cause_evidence_for_risk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    tool = ValidateReviewDraftTool(_context(tmp_path))
+
+    result = asyncio.run(
+        tool.execute(
+            summary="One warning.",
+            issues=[
+                {
+                    "severity": "warning",
+                    "location": "src/app.py:2",
+                    "evidence": "+    return 'new'",
+                    "suggestion": "Preserve caller behavior.",
+                    "confidence": 0.9,
+                }
+            ],
+        )
+    )
+
+    issue = result["issue_results"][0]
+    assert issue["location_on_changed_line"] is True
+    assert issue["pr_causal_anchor_on_changed_line"] is False
+    assert issue["passes_current_filter"] is False
+    assert "pr_causal_anchor_missing" in issue["fail_reasons"]
+    assert any("cause_evidence" in hint for hint in issue["repair_hints"])
 
 
 def test_validate_review_draft_warns_when_summary_mentions_regression_without_surviving_issue(

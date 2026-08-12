@@ -64,7 +64,13 @@ class ReviewIssue(BaseModel):
         default="",
         description="Assigned only after root-cause cluster construction.",
     )
-    primary_anchor: SourceAnchor | None = None
+    primary_anchor: SourceAnchor | None = Field(
+        default=None,
+        description=(
+            "Primary display anchor for the issue; PR causality is established "
+            "separately by cause_evidence on changed code."
+        ),
+    )
     related_locations: list[RelatedLocation] = Field(default_factory=list)
     observed_behavior: str = ""
     causal_mechanism: str = ""

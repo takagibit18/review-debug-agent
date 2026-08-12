@@ -123,6 +123,8 @@ def test_verifier_guidance_prefers_narrow_revision_over_wholesale_rejection() ->
     assert "pre-change fallback or compatibility" in prompt
     assert "wrapper unwrapping" in prompt
     assert "never raise confidence merely" in prompt
+    assert "primary_anchor identify where the problem is best displayed" in prompt
+    assert "cause_evidence location must intersect a real changed line" in prompt
 
 
 def test_orchestrator_accepts_revised_boundary_calibration_and_rescue(
@@ -1860,6 +1862,33 @@ def test_high_confidence_changed_line_concrete_risk_promotes_info() -> None:
 
     assert reviewed.report.issues[0].severity == Severity.WARNING
     assert reviewed.high_confidence_info_count == 1
+    assert reviewed.reviewed_count == 1
+    assert reviewed.promoted_count == 1
+
+
+def test_severity_review_uses_structured_cause_anchor_for_unchanged_display() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    issue = _structured_boundary_issue(Severity.INFO, confidence=0.9)
+    issue.location = "pkg/consumer.py:8"
+    issue.primary_anchor = SourceAnchor(file="pkg/consumer.py", line=8)
+    report = ReviewReport(summary="review", issues=[issue])
+
+    reviewed = module.review_candidate_severities(
+        report,
+        ReviewRequest(
+            repo_path=".",
+            diff_mode=True,
+            diff_text=(
+                "diff --git a/pkg/service.py b/pkg/service.py\n"
+                "--- a/pkg/service.py\n"
+                "+++ b/pkg/service.py\n"
+                "@@ -11,0 +12,1 @@\n"
+                "+return cache[key]\n"
+            ),
+        ),
+    )
+
+    assert reviewed.report.issues[0].severity == Severity.WARNING
     assert reviewed.reviewed_count == 1
     assert reviewed.promoted_count == 1
 

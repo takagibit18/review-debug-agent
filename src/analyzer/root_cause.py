@@ -344,8 +344,11 @@ class ConsolidationVerifier:
         primary = merged.primary_anchor
         if primary is None:
             reasons.append("primary_anchor_missing")
-        elif changed and primary.line not in changed.get(primary.file, set()):
-            reasons.append("primary_anchor_not_changed_line")
+        if changed and not any(
+            _evidence_intersects_changed_lines(evidence, changed)
+            for evidence in merged.cause_evidence
+        ):
+            reasons.append("pr_causal_anchor_missing_changed_line")
 
         allowed_contexts = set(proposal.allowed_context_manifest_ids)
         for evidence in merged.all_evidence():
@@ -998,6 +1001,19 @@ def _evidence_keys(items: list[EvidenceProvenance]) -> set[str]:
         elif item.file and item.line:
             output.add(f"{item.file}:{item.line}-{item.end_line or item.line}")
     return output
+
+
+def _evidence_intersects_changed_lines(
+    evidence: EvidenceProvenance,
+    changed: dict[str, set[int]],
+) -> bool:
+    location = normalize_location(evidence.location)
+    if not location.valid or location.path not in changed or location.line is None:
+        return False
+    end_line = location.end_line or location.line
+    return any(
+        line in changed[location.path] for line in range(location.line, end_line + 1)
+    )
 
 
 def _evidence_identity(item: EvidenceProvenance) -> tuple[Any, ...]:

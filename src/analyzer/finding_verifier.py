@@ -47,8 +47,10 @@ _COMMON_VERIFIER_SYSTEM_PROMPT = """You are an independent semantic verifier for
 Treat every candidate as untrusted. Verify that the cited code exists in the supplied diff,
 that observed_behavior and causal_mechanism follow from role-specific provenance, that the
 violated invariant has contract evidence, that trigger/impact do not exceed context actually
-received, that the PR introduced the behavior, and that repair_intent is actionable. A primary
-anchor must hit a changed line.
+received, that the PR introduced the behavior, and that repair_intent is actionable. The issue
+location and primary_anchor identify where the problem is best displayed and may be unchanged;
+at least one trusted cause_evidence location must intersect a real changed line to establish PR
+causality.
 Graph CALLS/REFERENCES/READS_FIELD/WRITES_FIELD edges establish only their named structural
 relation; they do not prove argument identity, runtime object identity, write-to-read flow, or
 path execution. Exploratory or low-confidence graph edges cannot alone support acceptance.
@@ -123,6 +125,7 @@ class DeterministicValidationStats:
 DeterministicRejectionRule = Literal[
     "candidate_binding_missing",
     "finding_primary_location_invalid",
+    "pr_causal_anchor_missing",
     "finding_not_actionable_risk",
     "verifier_revision_required",
     "verified_evidence_missing",
@@ -323,6 +326,21 @@ def validate_verifications_with_stats(
             candidate_location = normalize_location(
                 effective_issue.location if effective_issue is not None else ""
             )
+            display_location_valid = bool(
+                effective_issue is not None
+                and (
+                    _structured_display_location_valid(
+                        effective_issue,
+                        context,
+                        changed,
+                    )
+                    if effective_issue.is_structured_hypothesis
+                    else _location_intersects_changed_lines(
+                        candidate_location,
+                        changed,
+                    )
+                )
+            )
             locations = [
                 _parse_verified_evidence_location(value)
                 for value in verdict.verified_evidence
@@ -333,7 +351,7 @@ def validate_verifications_with_stats(
                 and effective_issue.severity in RISK_SEVERITIES
                 and evaluate_issue_filter(effective_issue).passed
                 and (not requires_revision or verdict.revised_issue is not None)
-                and _location_intersects_changed_lines(candidate_location, changed)
+                and display_location_valid
                 and bool(locations)
                 and all(
                     item is not None and item.valid and item.line is not None
@@ -471,7 +489,10 @@ def _accepted_verdict_rejections(
 
     details: list[DeterministicRejectionDetail] = []
     parsed_location = normalize_location(effective_issue.location)
-    if not _location_intersects_changed_lines(parsed_location, changed):
+    if (
+        not effective_issue.is_structured_hypothesis
+        and not _location_intersects_changed_lines(parsed_location, changed)
+    ):
         details.append(
             _rejection_detail(
                 verdict_candidate_id,
@@ -606,7 +627,7 @@ def _structured_candidate_evidence_rejections(
     issue = candidate.issue
     details: list[DeterministicRejectionDetail] = []
     anchor = issue.primary_anchor
-    if anchor is None or anchor.line not in changed.get(anchor.file, set()):
+    if anchor is None:
         details.append(
             _rejection_detail(
                 candidate.candidate_id,
@@ -617,7 +638,7 @@ def _structured_candidate_evidence_rejections(
                 end_line=anchor.end_line if anchor is not None else None,
                 field="primary_anchor",
                 revised_issue=revised_issue,
-                message="The structured primary anchor is absent or not a changed line.",
+                message="The structured finding has no primary display anchor.",
             )
         )
     parsed_location = normalize_location(issue.location)
@@ -643,6 +664,22 @@ def _structured_candidate_evidence_rejections(
                 field="location/primary_anchor",
                 revised_issue=revised_issue,
                 message="The legacy location and structured primary anchor do not agree.",
+            )
+        )
+    elif not _structured_display_location_valid(issue, context, changed):
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "finding_primary_location_invalid",
+                file=parsed_location.path or "",
+                line=parsed_location.line,
+                end_line=parsed_location.end_line,
+                field="location/primary_anchor",
+                revised_issue=revised_issue,
+                message=(
+                    "The issue display location was not retained in candidate context."
+                ),
             )
         )
 
@@ -689,6 +726,19 @@ def _structured_candidate_evidence_rejections(
                 field=f"{role}_evidence",
                 revised_issue=revised_issue,
                 message=f"The structured {role} claim has no evidence entry.",
+            )
+        )
+
+    if issue.cause_evidence and not _has_changed_cause_evidence(issue, changed):
+        details.append(
+            _rejection_detail(
+                candidate.candidate_id,
+                issue,
+                "pr_causal_anchor_missing",
+                evidence_role="cause",
+                field="cause_evidence",
+                revised_issue=revised_issue,
+                message=("No cause evidence intersects a line changed by this PR."),
             )
         )
 
@@ -976,7 +1026,12 @@ def review_candidate_severities(
             continue
         high_confidence_info_count += 1
         location = normalize_location(issue.location)
-        if not _location_intersects_changed_lines(location, changed):
+        causal_anchor_changed = (
+            _has_changed_cause_evidence(issue, changed)
+            if issue.is_structured_hypothesis
+            else _location_intersects_changed_lines(location, changed)
+        )
+        if not causal_anchor_changed:
             issues.append(issue)
             continue
         reviewed_count += 1
@@ -1007,6 +1062,44 @@ def _location_intersects_changed_lines(
     )
 
 
+def _structured_display_location_valid(
+    issue: ReviewIssue,
+    context: dict[str, Any] | None,
+    changed: dict[str, set[int]],
+) -> bool:
+    """Validate a display anchor independently from its changed-code cause anchor."""
+
+    anchor = issue.primary_anchor
+    location = normalize_location(issue.location)
+    if (
+        anchor is None
+        or not location.valid
+        or location.path != anchor.file
+        or location.line is None
+        or not (location.line <= anchor.line <= (location.end_line or location.line))
+    ):
+        return False
+    return _location_intersects_changed_lines(
+        location,
+        changed,
+    ) or location_in_candidate_context(context, location)
+
+
+def _has_changed_cause_evidence(
+    issue: ReviewIssue,
+    changed: dict[str, set[int]],
+) -> bool:
+    """Return whether role-specific cause evidence anchors the finding to the PR."""
+
+    return any(
+        _location_intersects_changed_lines(
+            normalize_location(evidence.location),
+            changed,
+        )
+        for evidence in issue.cause_evidence
+    )
+
+
 def _structured_candidate_evidence_valid(
     candidate: FindingCandidate,
     context: dict[str, Any] | None,
@@ -1015,20 +1108,7 @@ def _structured_candidate_evidence_valid(
     """Fail closed when a schema-v2 hypothesis is not bound to sent context."""
 
     issue = candidate.issue
-    anchor = issue.primary_anchor
-    if anchor is None or anchor.line not in changed.get(anchor.file, set()):
-        return False
-    parsed_location = normalize_location(issue.location)
-    if (
-        not parsed_location.valid
-        or parsed_location.path != anchor.file
-        or parsed_location.line is None
-        or not (
-            parsed_location.line
-            <= anchor.line
-            <= (parsed_location.end_line or parsed_location.line)
-        )
-    ):
+    if not _structured_display_location_valid(issue, context, changed):
         return False
     if (
         not all(
@@ -1044,7 +1124,11 @@ def _structured_candidate_evidence_valid(
         or not issue.repair_intent.targets
     ):
         return False
-    if not issue.cause_evidence or not issue.contract_evidence:
+    if (
+        not issue.cause_evidence
+        or not issue.contract_evidence
+        or not _has_changed_cause_evidence(issue, changed)
+    ):
         return False
     if issue.trigger.strip() and not issue.trigger_evidence:
         return False
@@ -1136,11 +1220,16 @@ def _boundary_issue_eligible(
         issue.evidence
     ):
         return False
-    location = normalize_location(issue.location)
-    if not _location_intersects_changed_lines(location, changed):
-        return False
     anchor = issue.primary_anchor
-    if anchor is None or anchor.line not in changed.get(anchor.file, set()):
+    location = normalize_location(issue.location)
+    if (
+        anchor is None
+        or not location.valid
+        or location.path != anchor.file
+        or location.line is None
+        or not (location.line <= anchor.line <= (location.end_line or location.line))
+        or not _has_changed_cause_evidence(issue, changed)
+    ):
         return False
     if (
         not all(

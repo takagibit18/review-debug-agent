@@ -108,7 +108,11 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                     },
                                     "location": {
                                         "type": "string",
-                                        "description": "Canonical location: path[:line[-end_line]]",
+                                        "description": (
+                                            "Canonical display location: "
+                                            "path[:line[-end_line]]. It may be unchanged; "
+                                            "cause_evidence owns PR causality."
+                                        ),
                                         "pattern": r"^[^:\s][^:]*(:\d+(-\d+)?)?$",
                                     },
                                     "evidence": {"type": "string"},
@@ -130,7 +134,14 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                         "type": "string",
                                         "description": "Reviewer-local id such as F-01. Do not emit root_cause_id.",
                                     },
-                                    "primary_anchor": anchor_schema,
+                                    "primary_anchor": {
+                                        **anchor_schema,
+                                        "description": (
+                                            "Primary display anchor matching location; it need "
+                                            "not be changed when changed cause_evidence proves "
+                                            "PR causality."
+                                        ),
+                                    },
                                     "related_locations": {
                                         "type": "array",
                                         "items": {
@@ -171,6 +182,10 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                     "cause_evidence": {
                                         "type": "array",
                                         "items": evidence_schema,
+                                        "description": (
+                                            "Causal evidence. Warning/critical findings require "
+                                            "at least one entry on a real changed line."
+                                        ),
                                     },
                                     "contract_evidence": {
                                         "type": "array",

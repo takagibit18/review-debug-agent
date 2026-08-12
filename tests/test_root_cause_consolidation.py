@@ -7,6 +7,7 @@ import pytest
 import src.analyzer.root_cause as root_cause_module
 from src.analyzer.finding_schema import (
     EvidenceProvenance,
+    RelatedLocation,
     RepairIntent,
     SourceAnchor,
     context_hash,
@@ -422,3 +423,57 @@ def test_finding_causality_graph_records_hard_criteria_and_absorbed_role() -> No
     assert CausalityRelation.VIOLATES_SAME_INVARIANT in kinds
     assert CausalityRelation.SAME_REPAIR_UNIT in kinds
     assert CausalityRelation.IMPACT_OF in kinds
+
+
+def test_consolidation_uses_changed_cause_evidence_not_display_anchor() -> None:
+    common = dict(
+        mechanism="Changed dispatch sends a value rejected by the consumer",
+        invariant="The dispatched value must satisfy the consumer contract",
+        action="Restore the dispatched value contract",
+        targets=["dispatch", "consume"],
+        boundary="caller/consumer boundary",
+    )
+    first = _finding("F-A", file="service.py", line=10, **common)
+    second = _finding("F-B", file="service.py", line=20, **common)
+    consolidated = RootCauseConsolidator().consolidate(
+        ReviewReport(issues=[first, second])
+    )
+    proposal = consolidated.proposals[0]
+    merged = consolidated.report.issues[0].model_copy(deep=True)
+    original_primary = merged.primary_anchor
+    assert original_primary is not None
+    merged.related_locations.append(
+        RelatedLocation(
+            file=original_primary.file,
+            line=original_primary.line,
+            end_line=original_primary.end_line,
+            symbol_id=original_primary.symbol_id,
+        )
+    )
+    merged.primary_anchor = SourceAnchor(file="consumer.py", line=8)
+    merged.location = "consumer.py:8"
+    changed_cause_diff = (
+        "diff --git a/service.py b/service.py\n"
+        "--- a/service.py\n"
+        "+++ b/service.py\n"
+        "@@ -9,0 +10,1 @@\n"
+        "+dispatch_changed_value()\n"
+    )
+
+    accepted = ConsolidationVerifier().verify(
+        proposal,
+        [first, second],
+        merged,
+        diff_text=changed_cause_diff,
+    )
+    rejected = ConsolidationVerifier().verify(
+        proposal,
+        [first, second],
+        merged,
+        diff_text=changed_cause_diff.replace("+10,1", "+30,1"),
+    )
+
+    assert accepted.accepted is True
+    assert "primary_anchor_not_changed_line" not in accepted.reasons
+    assert rejected.accepted is False
+    assert "pr_causal_anchor_missing_changed_line" in rejected.reasons
