@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelConfig(BaseModel):
@@ -70,3 +70,43 @@ class ModelResponse(BaseModel):
         default="",
         description="Raw reasoning/thinking content (e.g. DeepSeek thinking mode)",
     )
+
+
+class DraftFindingInput(BaseModel):
+    """Weak model-controlled hypothesis schema for review work in progress."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    file: str = Field(..., min_length=1, description="Repository-relative suspect file")
+    claim: str = Field(..., min_length=1, description="Minimal suspected behavior")
+    line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional suspect line",
+    )
+    symbol: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional suspect symbol",
+    )
+
+
+class DraftFinding(BaseModel):
+    """Runtime-bound durable review hypothesis."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    id: str = Field(..., min_length=1, description="Runtime-generated draft id")
+    source_response_id: str = Field(
+        ...,
+        min_length=1,
+        description="Journal id of the originating model response",
+    )
+    file: str = Field(..., min_length=1, description="Repository-relative suspect file")
+    line: int | None = Field(default=None, ge=1, description="Optional suspect line")
+    symbol: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional suspect symbol",
+    )
+    claim: str = Field(..., min_length=1, description="Minimal suspected behavior")

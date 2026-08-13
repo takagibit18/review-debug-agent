@@ -49,8 +49,26 @@ from src.analyzer.verifier_context import (
 from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError, ModelTimeoutError
+from src.models.schemas import DraftFindingInput, ModelResponse
+from src.orchestrator.draft_findings import (
+    DraftFindingStore,
+    extract_visible_draft_finding,
+)
+from src.orchestrator.run_journal import (
+    LengthRecoveryJournalPayload,
+    ModelResponseJournalPayload,
+    PendingRunJournalEntry,
+    RunJournal,
+    RunJournalError,
+    ToolResultJournalPayload,
+    redact_sensitive_values,
+)
 from src.orchestrator.review_workflow import ReviewWorkflowTracker
-from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
+from src.orchestrator.tool_schemas import (
+    build_draft_finding_tool_schema,
+    build_submit_tool_schemas,
+    build_tool_schemas,
+)
 from src.tools import create_default_registry
 from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
@@ -93,6 +111,8 @@ class AgentOrchestrator:
         )
         self._run_id = ""
         self._event_log: EventLog | None = None
+        self._run_journal: RunJournal | None = None
+        self._draft_finding_store = DraftFindingStore()
         self._last_plan: AnalysisPlan | None = None
         self._tool_feedback: list[dict[str, Any]] = []
         self._feedback_digest_index: dict[str, dict[str, Any]] = {}
@@ -115,6 +135,11 @@ class AgentOrchestrator:
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
+        self._length_recovery_required = False
+        self._length_recovery_attempted = 0
+        self._length_recovery_succeeded = 0
+        self._length_recovery_failed = 0
+        self._length_recovery_source_response_ids: list[str] = []
         self._final_submit_evidence_included_count = 0
         self._final_submit_evidence_token_count = 0
         self._final_submit_evidence_truncated_count = 0
@@ -172,6 +197,10 @@ class AgentOrchestrator:
         self._reviewer_latency_seconds = 0.0
         self._verifier_latency_seconds = 0.0
         self._consolidation_latency_seconds = 0.0
+        self._model_response_journal_writes = 0
+        self._tool_result_journal_writes = 0
+        self._draft_findings_created = 0
+        self._draft_findings_from_visible_content = 0
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
             max_chars=self._settings.agent_trace_max_chars,
@@ -1158,26 +1187,31 @@ class AgentOrchestrator:
         request: ReviewRequest,
         response: ReviewResponse | DebugResponse | None,
     ) -> ReviewResponse | DebugResponse:
-        """If loop exited without a draft_review and budget is not hard-capped, issue one
-        finalize-only analyze call and re-format."""
+        """Finalize normal runs or recover a truncated review submission."""
         assert response is not None
         if self._permission_mode == "plan":
-            return response
-        skip_reason = self._finalize_skip_reason()
-        if skip_reason:
-            self._record_finalize_skipped(skip_reason)
             return response
         if not isinstance(response, ReviewResponse):
             return response
         plan = self._last_plan
-        if plan is None or self._has_review_business_output(plan.draft_review):
+        if plan is None:
+            return response
+        if self._has_review_business_output(plan.draft_review):
+            return response
+        if self._length_recovery_required:
+            return await self._recover_review_after_length(state, request, response)
+        skip_reason = self._finalize_skip_reason()
+        if skip_reason:
+            self._record_finalize_skipped(skip_reason)
             return response
         finalize_plan = await self.analyze(
             state, request, tool_specs=[], force_submit=True
         )
         self._last_plan = finalize_plan
         self._observe_incomplete_plan(finalize_plan, state)
-        response = self.format_result(state, tool_results=[])
+        formatted = self.format_result(state, tool_results=[])
+        assert isinstance(formatted, ReviewResponse)
+        response = formatted
         self._record_event(
             EventType.DECISION,
             "finalize",
@@ -1187,6 +1221,85 @@ class AgentOrchestrator:
                 "finalize_submit_seen": finalize_plan.draft_review is not None,
                 "budget_state": self._budget_state,
                 "prior_length_finish_seen": self._model_length_finish_seen,
+                "final_submit_evidence_included_count": (
+                    finalize_plan.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    finalize_plan.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    finalize_plan.final_submit_evidence_truncated_count
+                ),
+            },
+        )
+        return response
+
+    async def _recover_review_after_length(
+        self,
+        state: ContextState,
+        request: ReviewRequest,
+        response: ReviewResponse,
+    ) -> ReviewResponse:
+        """Run one bounded submit-only recovery after a truncated response."""
+
+        if self._length_recovery_attempted:
+            return response
+        self._length_recovery_attempted = 1
+        self._record_length_recovery_transition("attempted")
+        blocker = self._length_recovery_block_reason()
+        if blocker:
+            self._mark_length_recovery_failed(state, blocker)
+            self._record_event(
+                EventType.DECISION,
+                "finalize",
+                {
+                    "iteration": self._iteration,
+                    "finalize_attempt": False,
+                    "finalize_submit_seen": False,
+                    "length_recovery": True,
+                    "length_recovery_status": "failed",
+                    "skip_reason": blocker,
+                    "budget_state": self._budget_state,
+                },
+            )
+            return response
+
+        finalize_plan = await self.analyze(
+            state,
+            request,
+            tool_specs=[],
+            force_submit=True,
+        )
+        self._last_plan = finalize_plan
+        self._observe_incomplete_plan(finalize_plan, state)
+        formatted = self.format_result(state, tool_results=[])
+        assert isinstance(formatted, ReviewResponse)
+        response = formatted
+        recovered = self._has_review_business_output(finalize_plan.draft_review)
+        if recovered:
+            self._length_recovery_succeeded = 1
+            self._record_length_recovery_transition(
+                "succeeded",
+                submit_response_id=finalize_plan.source_response_id,
+            )
+        else:
+            reason = (
+                finalize_plan.incomplete_reason
+                or "finalize_only_recovery_produced_no_valid_submit_review"
+            )
+            self._mark_length_recovery_failed(state, reason)
+        self._record_event(
+            EventType.DECISION,
+            "finalize",
+            {
+                "iteration": self._iteration,
+                "finalize_attempt": True,
+                "finalize_submit_seen": finalize_plan.draft_review is not None,
+                "length_recovery": True,
+                "length_recovery_status": "succeeded" if recovered else "failed",
+                "budget_state": self._budget_state,
+                "prior_length_finish_seen": True,
+                "draft_finding_count": len(self._draft_finding_store),
                 "final_submit_evidence_included_count": (
                     finalize_plan.final_submit_evidence_included_count
                 ),
@@ -1330,6 +1443,11 @@ class AgentOrchestrator:
                     serialized_tools = build_submit_tool_schemas()
                 else:
                     serialized_tools = build_tool_schemas(tool_specs)
+                    if (
+                        isinstance(request, ReviewRequest)
+                        and self._permission_mode != "plan"
+                    ):
+                        serialized_tools.append(build_draft_finding_tool_schema())
                     if not defer_review_submit:
                         serialized_tools += build_submit_tool_schemas()
                 result, total_tokens, reasoning_content = await engine.analyze(
@@ -1343,6 +1461,7 @@ class AgentOrchestrator:
                     file_contents=file_contents,
                     tool_feedback=self._tool_feedback,
                     feedback_digest_index=self._feedback_digest_index,
+                    draft_findings=self._draft_finding_store.all(),
                     prompt_input_token_budget=self._settings.prompt_input_token_budget,
                     iteration=self._iteration,
                     force_submit=force_submit,
@@ -1351,6 +1470,7 @@ class AgentOrchestrator:
                 )
                 self._latest_tokens = total_tokens
                 self._last_reasoning_content = reasoning_content
+                self._persist_draft_finding_calls(result)
                 if result.draft_review is not None:
                     self._submit_review_seen_any = True
                 if result.draft_debug is not None:
@@ -1372,6 +1492,26 @@ class AgentOrchestrator:
                         "iteration": self._iteration,
                         "error_type": exc.__class__.__name__,
                         "code": exc.code or "",
+                        "message": str(exc),
+                    },
+                )
+                result = self._fallback_plan(request)
+                self._latest_tokens = 0
+            except RunJournalError as exc:
+                self._model_incomplete_seen = True
+                state.errors.append(
+                    ErrorDetail(
+                        file=str(self._run_journal.path) if self._run_journal else "",
+                        message=f"Run journal persistence failed: {exc}",
+                        category="runtime",
+                    )
+                )
+                self._record_event(
+                    EventType.ERROR,
+                    "analyze",
+                    {
+                        "iteration": self._iteration,
+                        "error_type": exc.__class__.__name__,
                         "message": str(exc),
                     },
                 )
@@ -1475,6 +1615,7 @@ class AgentOrchestrator:
                     ErrorDetail(file="", message=err, category="runtime")
                 )
                 results.append(ToolResult(ok=False, error=err, data=structured))
+                self._journal_tool_result(plan, raw_call, results[-1])
                 executed_feedback.append(
                     {
                         "tool_call": raw_call,
@@ -1494,6 +1635,7 @@ class AgentOrchestrator:
                         ErrorDetail(file="", message=err, category="security")
                     )
                     results.append(ToolResult(ok=False, error=err))
+                    self._journal_tool_result(plan, raw_call, results[-1])
                     self._record_event(
                         EventType.ERROR,
                         "execute_tools",
@@ -1513,7 +1655,13 @@ class AgentOrchestrator:
                     index += 1
                     continue
 
-                result, error_detail, elapsed_ms = await self._execute_one_tool(
+                (
+                    result,
+                    error_detail,
+                    elapsed_ms,
+                ) = await self._execute_one_tool_and_journal(
+                    plan=plan,
+                    raw_call=raw_call,
                     tool_name=tool_name,
                     tool=tool,
                     args=args,
@@ -1558,7 +1706,13 @@ class AgentOrchestrator:
                 continue
 
             if not tool.is_concurrency_safe():
-                result, error_detail, elapsed_ms = await self._execute_one_tool(
+                (
+                    result,
+                    error_detail,
+                    elapsed_ms,
+                ) = await self._execute_one_tool_and_journal(
+                    plan=plan,
+                    raw_call=raw_call,
                     tool_name=tool_name,
                     tool=tool,
                     args=args,
@@ -1627,12 +1781,14 @@ class AgentOrchestrator:
 
             batch_results = await asyncio.gather(
                 *[
-                    self._execute_one_tool(
+                    self._execute_one_tool_and_journal(
+                        plan=plan,
+                        raw_call=batch_raw,
                         tool_name=batch_name,
                         tool=batch_tool,
                         args=batch_args,
                     )
-                    for (_, batch_name, batch_tool, batch_args) in batch_calls
+                    for (batch_raw, batch_name, batch_tool, batch_args) in batch_calls
                 ]
             )
             for (batch_raw, batch_name, _, _), (
@@ -1845,7 +2001,18 @@ class AgentOrchestrator:
             run_id=self._run_id,
             log_dir=configured_log_dir,
         )
+        self._run_journal = RunJournal(
+            run_id=self._run_id,
+            path=(
+                self._workspace_root
+                / ".mergewarden"
+                / "runs"
+                / self._run_id
+                / "journal.jsonl"
+            ),
+        )
         self._last_plan = None
+        self._draft_finding_store = DraftFindingStore()
         self._tool_feedback = []
         self._feedback_digest_index = {}
         self._tool_dedup_cache = {}
@@ -1866,6 +2033,11 @@ class AgentOrchestrator:
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
+        self._length_recovery_required = False
+        self._length_recovery_attempted = 0
+        self._length_recovery_succeeded = 0
+        self._length_recovery_failed = 0
+        self._length_recovery_source_response_ids = []
         self._final_submit_evidence_included_count = 0
         self._final_submit_evidence_token_count = 0
         self._final_submit_evidence_truncated_count = 0
@@ -1902,6 +2074,10 @@ class AgentOrchestrator:
         self._reviewer_latency_seconds = 0.0
         self._verifier_latency_seconds = 0.0
         self._consolidation_latency_seconds = 0.0
+        self._model_response_journal_writes = 0
+        self._tool_result_journal_writes = 0
+        self._draft_findings_created = 0
+        self._draft_findings_from_visible_content = 0
         self._record_event(
             EventType.PHASE_START,
             "prepare",
@@ -2056,6 +2232,17 @@ class AgentOrchestrator:
             return "run_timeout"
         return ""
 
+    def _length_recovery_block_reason(self) -> str:
+        """Return a hard runtime reason that prevents a recovery model call."""
+
+        if self._model_timeout_seen:
+            return "model_timeout"
+        if self._budget_state == "hard_capped":
+            return "budget_hard_capped"
+        if self._run_timeout_exceeded():
+            return "run_timeout"
+        return ""
+
     @staticmethod
     def _has_review_business_output(report: ReviewReport | None) -> bool:
         if report is None:
@@ -2074,6 +2261,62 @@ class AgentOrchestrator:
                 "run_timed_out": self._run_timeout_exceeded(),
                 "elapsed_ms": int(self._run_elapsed_seconds() * 1000),
             },
+        )
+
+    def _record_length_recovery_transition(
+        self,
+        status: Literal["required", "attempted", "succeeded", "failed"],
+        *,
+        reason: str = "",
+        submit_response_id: str = "",
+    ) -> None:
+        """Persist and observe one length-recovery state transition."""
+
+        draft_ids = [draft.id for draft in self._draft_finding_store.all()]
+        payload = LengthRecoveryJournalPayload(
+            status=status,
+            source_response_ids=list(self._length_recovery_source_response_ids),
+            draft_finding_ids=draft_ids,
+            submit_response_id=submit_response_id,
+            reason=reason,
+        )
+        if self._run_journal is not None:
+            self._run_journal.append(
+                PendingRunJournalEntry(
+                    type="length_recovery",
+                    payload=payload.model_dump(mode="json"),
+                )
+            )
+        self._record_event(
+            EventType.DECISION,
+            "length_recovery",
+            {
+                "iteration": self._iteration,
+                **payload.model_dump(mode="json"),
+                "transient_reasoning_present": bool(self._last_reasoning_content),
+            },
+        )
+
+    def _mark_length_recovery_failed(
+        self,
+        state: ContextState,
+        reason: str,
+    ) -> None:
+        """Mark recovery terminally failed and expose a blocking runtime error."""
+
+        if self._length_recovery_failed:
+            return
+        self._length_recovery_failed = 1
+        self._record_length_recovery_transition("failed", reason=reason)
+        state.errors.append(
+            ErrorDetail(
+                file="",
+                message=(
+                    "Model response incomplete: finish_reason=length recovery failed "
+                    f"without a valid submit_review ({reason})."
+                ),
+                category="runtime",
+            )
         )
 
     def _observe_incomplete_plan(
@@ -2095,15 +2338,46 @@ class AgentOrchestrator:
             self._final_submit_evidence_truncated_count,
             plan.final_submit_evidence_truncated_count,
         )
-        reason = str(getattr(plan, "incomplete_reason", "") or "").strip()
-        if not reason or self._model_incomplete_seen:
+        reason = str(plan.incomplete_reason or "").strip()
+        if not plan.recovery_required or not reason:
             return
+        if not self._is_review_mode(state):
+            if self._model_incomplete_seen:
+                return
+            self._model_incomplete_seen = True
+            message = (
+                "Model response incomplete: finish_reason=length produced no valid "
+                f"submit_debug ({reason})."
+            )
+            state.errors.append(
+                ErrorDetail(file="", message=message, category="runtime")
+            )
+            self._record_event(
+                EventType.ERROR,
+                "analyze",
+                {
+                    "iteration": self._iteration,
+                    "reason": reason,
+                    "message": message,
+                },
+            )
+            return
+        if (
+            plan.source_response_id
+            and plan.source_response_id not in self._length_recovery_source_response_ids
+        ):
+            self._length_recovery_source_response_ids.append(plan.source_response_id)
+        first_incomplete = not self._model_incomplete_seen
         self._model_incomplete_seen = True
+        if not self._length_recovery_required:
+            self._length_recovery_required = True
+            self._record_length_recovery_transition("required", reason=reason)
+        if not first_incomplete:
+            return
         message = (
-            "Model response incomplete: finish_reason=length produced no draft "
-            f"or tool calls ({reason})."
+            "Model response incomplete: finish_reason=length produced no valid "
+            f"submit_review; finalize-only recovery is required ({reason})."
         )
-        state.errors.append(ErrorDetail(file="", message=message, category="runtime"))
         self._record_event(
             EventType.ERROR,
             "analyze",
@@ -2276,6 +2550,25 @@ class AgentOrchestrator:
                     int((perf_counter() - started) * 1000),
                 )
 
+    async def _execute_one_tool_and_journal(
+        self,
+        *,
+        plan: AnalysisPlan,
+        raw_call: dict[str, Any],
+        tool_name: str,
+        tool: BaseTool,
+        args: dict[str, Any],
+    ) -> tuple[ToolResult, ErrorDetail | None, int]:
+        """Execute one model-requested tool and persist its result immediately."""
+
+        result, error_detail, elapsed_ms = await self._execute_one_tool(
+            tool_name=tool_name,
+            tool=tool,
+            args=args,
+        )
+        self._journal_tool_result(plan, raw_call, result)
+        return result, error_detail, elapsed_ms
+
     def _build_tool_call_event_payload(
         self,
         *,
@@ -2309,6 +2602,18 @@ class AgentOrchestrator:
             "model": self._settings.model_name,
             "review_iterations": self._iteration + 1,
             "tool_call_count": self._tool_call_count,
+            "model_response_journal_writes": self._model_response_journal_writes,
+            "tool_result_journal_writes": self._tool_result_journal_writes,
+            "draft_findings_created": self._draft_findings_created,
+            "draft_findings_from_visible_content": (
+                self._draft_findings_from_visible_content
+            ),
+            "length_recoveries_attempted": self._length_recovery_attempted,
+            "length_recoveries_succeeded": self._length_recovery_succeeded,
+            "length_recoveries_failed": self._length_recovery_failed,
+            "submit_review_seen_any": self._submit_review_seen_any,
+            "budget_exhausted": self._budget_exhausted,
+            "budget_state": self._budget_state,
             "grep_calls": self._tool_name_counts.get("grep_files", 0),
             "read_file_calls": self._tool_name_counts.get("read_file", 0),
             "symbol_lookup_calls": sum(
@@ -2534,6 +2839,7 @@ class AgentOrchestrator:
                 self._model_client,
                 trace_recorder=self._trace_recorder,
                 trace_event_writer=self._record_event,
+                model_response_writer=self._journal_model_response,
             )
         try:
             self._model_client = ModelClient(temperature=self._temperature)
@@ -2541,9 +2847,172 @@ class AgentOrchestrator:
                 self._model_client,
                 trace_recorder=self._trace_recorder,
                 trace_event_writer=self._record_event,
+                model_response_writer=self._journal_model_response,
             )
         except Exception:  # noqa: BLE001
             return None
+
+    def _journal_model_response(
+        self,
+        response: ModelResponse,
+        iteration: int,
+    ) -> str:
+        """Persist visible provider output before any response parsing occurs."""
+
+        if self._run_journal is None:
+            return ""
+        payload = ModelResponseJournalPayload(
+            iteration=iteration,
+            model=response.model,
+            finish_reason=response.finish_reason,
+            content=response.content,
+            tool_calls=response.tool_calls,
+            usage=response.usage,
+        )
+        entry = self._run_journal.append(
+            PendingRunJournalEntry(
+                type="model_response",
+                payload=payload.model_dump(mode="json"),
+            )
+        )
+        self._model_response_journal_writes += 1
+        return entry.id
+
+    def _persist_draft_finding_calls(self, plan: AnalysisPlan) -> None:
+        """Journal runtime-bound drafts before making them available in memory."""
+
+        for draft_input in plan.draft_finding_calls:
+            self._persist_one_draft_finding(
+                draft_input,
+                source_response_id=(
+                    plan.draft_finding_source_response_id or plan.source_response_id
+                ),
+                origin="pseudo_tool",
+            )
+        if (
+            not plan.recovery_required
+            or len(self._draft_finding_store) > 0
+            or not plan.source_response_id
+        ):
+            return
+        visible_content = self._journaled_model_response_content(
+            plan.source_response_id
+        )
+        extracted = extract_visible_draft_finding(visible_content)
+        if extracted is None:
+            return
+        self._persist_one_draft_finding(
+            extracted,
+            source_response_id=plan.source_response_id,
+            origin="visible_content_recovery",
+        )
+        self._draft_findings_from_visible_content += 1
+
+    def _persist_one_draft_finding(
+        self,
+        draft_input: DraftFindingInput,
+        *,
+        source_response_id: str,
+        origin: str,
+    ) -> None:
+        """Persist one trusted draft, then expose it through the in-memory store."""
+
+        if self._run_journal is None:
+            raise RunJournalError(
+                "Draft finding cannot be persisted without a run journal"
+            )
+        if not source_response_id:
+            raise RunJournalError(
+                "Draft finding cannot be bound without a source model-response id"
+            )
+        draft = self._draft_finding_store.bind(
+            draft_input,
+            source_response_id=source_response_id,
+        )
+        self._run_journal.append(
+            PendingRunJournalEntry(
+                type="draft_finding",
+                payload=draft.model_dump(mode="json"),
+            )
+        )
+        self._draft_finding_store.add(draft)
+        self._draft_findings_created += 1
+        self._record_event(
+            EventType.DECISION,
+            "draft_finding",
+            {
+                "iteration": self._iteration,
+                "draft_id": draft.id,
+                "source_response_id": draft.source_response_id,
+                "file": draft.file,
+                "line": draft.line,
+                "symbol": draft.symbol,
+                "origin": origin,
+            },
+        )
+
+    def _journaled_model_response_content(self, response_id: str) -> str:
+        """Read visible content for one response from the durable journal."""
+
+        if self._run_journal is None:
+            return ""
+        for entry in reversed(self._run_journal.replay()):
+            if entry.id == response_id and entry.type == "model_response":
+                return str(entry.payload.get("content", ""))
+        return ""
+
+    def _journal_tool_result(
+        self,
+        plan: AnalysisPlan,
+        raw_call: dict[str, Any],
+        result: ToolResult,
+    ) -> None:
+        """Persist a full structured ToolResult bound to its source response."""
+
+        if self._run_journal is None or not plan.source_response_id:
+            return
+        function_block = raw_call.get("function") if isinstance(raw_call, dict) else {}
+        if not isinstance(function_block, dict):
+            function_block = {}
+        tool_name = str(function_block.get("name", "")).strip() or "unknown"
+        raw_arguments = function_block.get("arguments", {})
+        if isinstance(raw_arguments, str):
+            try:
+                parsed_arguments = _json.loads(raw_arguments, strict=False)
+            except (TypeError, ValueError):
+                parsed_arguments = {"raw": raw_arguments}
+        else:
+            parsed_arguments = raw_arguments
+        if not isinstance(parsed_arguments, dict):
+            parsed_arguments = {"value": parsed_arguments}
+        redacted_arguments = redact_sensitive_values(parsed_arguments)
+        redacted_result = redact_sensitive_values(result.model_dump(mode="json"))
+        call_id = str(raw_call.get("id", "")).strip()
+        if not call_id:
+            signature = _json.dumps(
+                function_block,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+            )
+            call_id = (
+                f"runtime_{plan.source_response_id}_"
+                f"{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:12]}"
+            )
+        payload = ToolResultJournalPayload(
+            source_response_id=plan.source_response_id,
+            tool_call_id=call_id,
+            tool=tool_name,
+            arguments=redacted_arguments,
+            result=redacted_result,
+        )
+        self._run_journal.append(
+            PendingRunJournalEntry(
+                type="tool_result",
+                payload=payload.model_dump(mode="json"),
+            )
+        )
+        self._tool_result_journal_writes += 1
 
     @staticmethod
     def _parse_tool_call(raw_call: dict[str, Any]) -> dict[str, Any]:

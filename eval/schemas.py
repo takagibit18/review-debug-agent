@@ -298,6 +298,11 @@ class ReviewProcessMetrics(BaseModel):
     model: str = ""
     review_iterations: int = Field(default=0, ge=0)
     tool_call_count: int = Field(default=0, ge=0)
+    model_response_journal_writes: int = Field(default=0, ge=0)
+    draft_findings_created: int = Field(default=0, ge=0)
+    length_recoveries_attempted: int = Field(default=0, ge=0)
+    length_recoveries_succeeded: int = Field(default=0, ge=0)
+    length_recoveries_failed: int = Field(default=0, ge=0)
     grep_calls: int = Field(default=0, ge=0)
     read_file_calls: int = Field(default=0, ge=0)
     symbol_lookup_calls: int = Field(default=0, ge=0)

@@ -1,7 +1,11 @@
 """Tests for orchestrator-owned tool schema conversion."""
 
 from src.tools import create_default_registry
-from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
+from src.orchestrator.tool_schemas import (
+    build_draft_finding_tool_schema,
+    build_submit_tool_schemas,
+    build_tool_schemas,
+)
 from src.tools.base import ToolSafety, ToolSpec
 
 
@@ -24,6 +28,27 @@ def test_build_submit_tool_schemas_contains_expected_submit_tools() -> None:
     assert names == {"submit_review", "submit_debug"}
 
 
+def test_draft_finding_schema_is_minimal_and_runtime_provenance_is_absent() -> None:
+    schema = build_draft_finding_tool_schema()["function"]
+    parameters = schema["parameters"]
+
+    assert schema["name"] == "record_draft_finding"
+    assert parameters["required"] == ["file", "claim"]
+    assert parameters["additionalProperties"] is False
+    assert set(parameters["properties"]) == {"file", "claim", "line", "symbol"}
+    forbidden = {
+        "id",
+        "draft_id",
+        "source_response_id",
+        "severity",
+        "confidence",
+        "root_cause",
+        "impact",
+        "candidate_id",
+    }
+    assert forbidden.isdisjoint(parameters["properties"])
+
+
 def test_submit_review_schema_requires_explicit_issues_array() -> None:
     schemas = build_submit_tool_schemas()
     review_schema = next(
@@ -32,11 +57,14 @@ def test_submit_review_schema_requires_explicit_issues_array() -> None:
     parameters = review_schema["function"]["parameters"]
 
     assert parameters["required"] == ["summary", "issues"]
-    assert "summary must not mention" in parameters["properties"]["summary"]["description"]
+    assert (
+        "summary must not mention" in parameters["properties"]["summary"]["description"]
+    )
     assert "Use [] only when" in parameters["properties"]["issues"]["description"]
     issue_schema = parameters["properties"]["issues"]["items"]
     assert (
-        "concrete changed-code bugs" in issue_schema["properties"]["confidence"]["description"]
+        "concrete changed-code bugs"
+        in issue_schema["properties"]["confidence"]["description"]
     )
 
 
@@ -52,7 +80,9 @@ def test_build_tool_schemas_from_default_registry_is_complete() -> None:
         assert schema["function"]["parameters"]["type"] == "object"
 
 
-def test_build_tool_schemas_include_review_context_tools_when_registered(tmp_path) -> None:
+def test_build_tool_schemas_include_review_context_tools_when_registered(
+    tmp_path,
+) -> None:
     from src.tools.review_context import ReviewToolContext
 
     context = ReviewToolContext.from_diff(
@@ -64,9 +94,20 @@ def test_build_tool_schemas_include_review_context_tools_when_registered(tmp_pat
         "-old\n"
         "+new\n",
     )
-    schemas = build_tool_schemas(create_default_registry(review_context=context).list_specs())
+    schemas = build_tool_schemas(
+        create_default_registry(review_context=context).list_specs()
+    )
 
     by_name = {schema["function"]["name"]: schema for schema in schemas}
 
-    assert {"get_changed_context", "find_symbol_context", "validate_review_draft"}.issubset(by_name)
-    assert by_name["get_changed_context"]["function"]["parameters"]["properties"]["radius"]["maximum"] == 200
+    assert {
+        "get_changed_context",
+        "find_symbol_context",
+        "validate_review_draft",
+    }.issubset(by_name)
+    assert (
+        by_name["get_changed_context"]["function"]["parameters"]["properties"][
+            "radius"
+        ]["maximum"]
+        == 200
+    )

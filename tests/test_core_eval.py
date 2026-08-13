@@ -366,6 +366,37 @@ def test_report_prioritizes_missing_candidate_completions_over_quality_filters()
     assert "review quality A/B 暂不可比较" in markdown
 
 
+def test_report_identifies_blank_submit_as_completion_failure() -> None:
+    config = load_core_config(CONFIG_PATH)
+    candidate_spec = config.fixtures[0]
+    baseline = next(item for item in config.variants if item.label == "baseline")
+    mergewarden = next(item for item in config.variants if item.label == "mergewarden")
+    blank_submit = assess_run(
+        candidate_spec,
+        baseline,
+        _result(
+            schema_valid=False,
+            error="Empty review output: no summary or issues.",
+            raw_output={"run_id": "run", "report": {"summary": "", "issues": []}},
+        ),
+        attempt=1,
+    )
+    valid = assess_run(
+        candidate_spec,
+        mergewarden,
+        _result(raw_output=_raw()),
+        attempt=1,
+    )
+
+    markdown = render_core_report(
+        build_core_report_from_runs(config, [blank_submit, valid])
+    )
+
+    assert 'blank `summary=""` + `issues=[]`' in markdown
+    assert "明确性校验/恢复边界" in markdown
+    assert "不是 workspace、hard cap 或 semantic judge" in markdown
+
+
 def test_core_report_aggregates_candidate_funnel_by_variant() -> None:
     config = load_core_config(CONFIG_PATH)
     candidate_spec = config.fixtures[0]
@@ -415,6 +446,56 @@ def test_core_report_aggregates_candidate_funnel_by_variant() -> None:
     assert "| Calibration / rescue routed | 0 | 1 |" in markdown
     assert "| Final risk findings | 0 | 1 |" in markdown
     assert "Risk reached final output" in markdown
+
+
+def test_core_report_aggregates_persistence_and_recovery_facts_by_variant() -> None:
+    config = load_core_config(CONFIG_PATH)
+    candidate_spec = config.fixtures[0]
+    baseline = next(item for item in config.variants if item.label == "baseline")
+    mergewarden = next(item for item in config.variants if item.label == "mergewarden")
+    baseline_result = _result(raw_output=_raw()).model_copy(
+        update={
+            "process_metrics": ReviewProcessMetrics(
+                model_response_journal_writes=2,
+                draft_findings_created=1,
+                length_recoveries_attempted=1,
+                length_recoveries_succeeded=1,
+            )
+        }
+    )
+    mergewarden_result = _result(raw_output=_raw()).model_copy(
+        update={
+            "process_metrics": ReviewProcessMetrics(
+                model_response_journal_writes=4,
+                draft_findings_created=2,
+                length_recoveries_attempted=2,
+                length_recoveries_succeeded=1,
+                length_recoveries_failed=1,
+            )
+        }
+    )
+
+    markdown = render_core_report(
+        build_core_report_from_runs(
+            config,
+            [
+                assess_run(candidate_spec, baseline, baseline_result, attempt=1),
+                assess_run(
+                    candidate_spec,
+                    mergewarden,
+                    mergewarden_result,
+                    attempt=1,
+                ),
+            ],
+        )
+    )
+
+    assert "## Agent Persistence and Recovery" in markdown
+    assert "| Model-response journal writes | 2 | 4 |" in markdown
+    assert "| Draft findings created | 1 | 2 |" in markdown
+    assert "| Length recoveries attempted | 1 | 2 |" in markdown
+    assert "| Length recoveries succeeded | 1 | 1 |" in markdown
+    assert "| Length recoveries failed | 0 | 1 |" in markdown
 
 
 def test_core_report_deserializes_legacy_payload_without_funnel_fields() -> None:

@@ -29,6 +29,11 @@ class RunSummary(BaseModel):
     placeholder_summary: bool = False
     issues_count: int = 0
     tool_call_count: int = 0
+    model_response_journal_writes: int = 0
+    draft_findings_created: int = 0
+    length_recoveries_attempted: int = 0
+    length_recoveries_succeeded: int = 0
+    length_recoveries_failed: int = 0
     model_names: list[str] = Field(default_factory=list)
     total_tokens: int = 0
     publish_status: PublishStatus = "not_requested"
@@ -200,6 +205,26 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         reason = str(payload.get("reason", "") or "").strip()
         if reason and reason not in summary.finish_reasons:
             summary.finish_reasons.append(reason)
+
+    if event_type == "phase_end" and phase == "review_complete":
+        summary.submit_review_seen = summary.submit_review_seen or bool(
+            payload.get("submit_review_seen_any")
+        )
+        summary.model_response_journal_writes = int(
+            payload.get("model_response_journal_writes", 0) or 0
+        )
+        summary.draft_findings_created = int(
+            payload.get("draft_findings_created", 0) or 0
+        )
+        summary.length_recoveries_attempted = int(
+            payload.get("length_recoveries_attempted", 0) or 0
+        )
+        summary.length_recoveries_succeeded = int(
+            payload.get("length_recoveries_succeeded", 0) or 0
+        )
+        summary.length_recoveries_failed = int(
+            payload.get("length_recoveries_failed", 0) or 0
+        )
 
     if event_type == "finding_candidates_built":
         summary.finding_verifier_mode = str(payload.get("mode", "off") or "off")

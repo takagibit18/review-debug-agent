@@ -25,6 +25,47 @@ def build_tool_schemas(specs: list[ToolSpec]) -> list[dict[str, Any]]:
     return schemas
 
 
+def build_draft_finding_tool_schema() -> dict[str, Any]:
+    """Return the review-only pseudo-tool for a minimal durable hypothesis."""
+
+    return {
+        "type": "function",
+        "function": {
+            "name": "record_draft_finding",
+            "description": (
+                "Durably record a minimal review hypothesis as soon as it becomes "
+                "concrete. This is working state, not a final finding; continue "
+                "gathering evidence and eventually call submit_review."
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Repository-relative suspect file.",
+                    },
+                    "claim": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Minimal suspected behavior, without severity or attribution.",
+                    },
+                    "line": {
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                    },
+                    "symbol": {
+                        "type": ["string", "null"],
+                        "minLength": 1,
+                    },
+                },
+                "required": ["file", "claim"],
+            },
+        },
+    }
+
+
 def build_submit_tool_schemas() -> list[dict[str, Any]]:
     """Pseudo-tools used for structured final output submission."""
     anchor_schema: dict[str, Any] = {
