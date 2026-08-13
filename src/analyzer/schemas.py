@@ -173,6 +173,10 @@ class AnalysisPlan(BaseModel):
         default="",
         description="Durable run-journal id of the model response behind this plan",
     )
+    draft_finding_source_response_id: str = Field(
+        default="",
+        description="Trusted originating response id for draft-finding pseudo-calls",
+    )
     needs_tools: bool = Field(
         default=False,
         description="Whether tool execution is required in this iteration",
@@ -196,6 +200,10 @@ class AnalysisPlan(BaseModel):
     incomplete_reason: str = Field(
         default="",
         description="Reason the model response was unusable for a trusted final result.",
+    )
+    recovery_required: bool = Field(
+        default=False,
+        description="Whether a truncated response without valid submit needs recovery",
     )
     model_finish_reason: str = Field(
         default="",

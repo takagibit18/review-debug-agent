@@ -589,15 +589,100 @@ def test_analyze_marks_length_finish_without_output_incomplete(monkeypatch) -> N
         )
     )
 
-    assert plan.incomplete_reason == "model_finish_reason_length_no_output"
+    assert plan.incomplete_reason == "model_finish_reason_length_no_submit"
+    assert plan.recovery_required is True
     incomplete_events = [
         payload
         for event_type, phase, payload in events
         if event_type == EventType.ERROR
         and phase == "analyze"
-        and payload.get("reason") == "model_finish_reason_length_no_output"
+        and payload.get("reason") == "model_finish_reason_length_no_submit"
     ]
     assert incomplete_events
+
+
+def test_analyze_marks_length_blank_review_submit_incomplete(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+
+    async def _length_blank_submit(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+        client.calls.append(messages)
+        client.configs.append(config)
+        client.tools.append(tools)
+        return ModelResponse(
+            tool_calls=[
+                {
+                    "id": "blank-submit",
+                    "function": {
+                        "name": "submit_review",
+                        "arguments": '{"summary":"","issues":[]}',
+                    },
+                }
+            ],
+            usage=TokenUsage(total_tokens=4096),
+            model="deepseek-v4-pro",
+            finish_reason="length",
+        )
+
+    client.chat = _length_blank_submit  # type: ignore[method-assign]
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, _, _ = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+        )
+    )
+
+    assert plan.draft_review is not None
+    assert plan.draft_review.summary == ""
+    assert plan.draft_review.issues == []
+    assert plan.incomplete_reason == "model_finish_reason_length_no_submit"
+    assert plan.recovery_required is True
+
+
+def test_analyze_accepts_length_explicit_empty_review_submit(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+
+    async def _length_explicit_submit(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+        client.calls.append(messages)
+        client.configs.append(config)
+        client.tools.append(tools)
+        return ModelResponse(
+            tool_calls=[
+                {
+                    "id": "explicit-empty-submit",
+                    "function": {
+                        "name": "submit_review",
+                        "arguments": (
+                            '{"summary":"No supported issues found.","issues":[]}'
+                        ),
+                    },
+                }
+            ],
+            usage=TokenUsage(total_tokens=4096),
+            model="deepseek-v4-pro",
+            finish_reason="length",
+        )
+
+    client.chat = _length_explicit_submit  # type: ignore[method-assign]
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, _, _ = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+        )
+    )
+
+    assert plan.draft_review is not None
+    assert plan.draft_review.summary == "No supported issues found."
+    assert plan.draft_review.issues == []
+    assert plan.incomplete_reason == ""
+    assert plan.recovery_required is False
 
 
 def test_regular_review_disables_deepseek_thinking(monkeypatch) -> None:
@@ -819,7 +904,8 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
         )
     )
     assert first_plan.model_finish_reason == "length"
-    assert first_plan.incomplete_reason == ""
+    assert first_plan.incomplete_reason == "model_finish_reason_length_no_submit"
+    assert first_plan.recovery_required is True
     assert len(first_plan.tool_calls) == 1
 
     feedback = [
@@ -847,9 +933,7 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
             state=ContextState(goal="Run structured code review"),
             request=request,
             tool_specs=[],
-            tool_schemas=[
-                {"type": "function", "function": {"name": "submit_review"}}
-            ],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
             tool_feedback=feedback,
             iteration=1,
             force_submit=True,

@@ -1006,6 +1006,14 @@ def render_core_report(report: CoreEvalReport) -> str:
     mergewarden = by_label["mergewarden"]
     successful_setups = sum(item.workspace_setup_success for item in report.runs)
     completion_failures = sum(not item.valid_completion for item in report.runs)
+
+    def _process_total(label: str, field: str) -> int:
+        return sum(
+            int(getattr(item.result.process_metrics, field, 0) or 0)
+            for item in report.runs
+            if item.variant_label == label
+        )
+
     lines = [
         "# MergeWarden Core Eval v1",
         "",
@@ -1078,6 +1086,38 @@ def render_core_report(report: CoreEvalReport) -> str:
             "| Validator failures | "
             f"{baseline.reliability.validator_failures} | "
             f"{mergewarden.reliability.validator_failures} |"
+        ),
+        "",
+        "## Agent Persistence and Recovery",
+        "",
+        "Counts cover all measured attempts, including invalid completions.",
+        "",
+        "| Runtime fact | Baseline | MergeWarden |",
+        "|---|---:|---:|",
+        (
+            "| Model-response journal writes | "
+            f"{_process_total('baseline', 'model_response_journal_writes')} | "
+            f"{_process_total('mergewarden', 'model_response_journal_writes')} |"
+        ),
+        (
+            "| Draft findings created | "
+            f"{_process_total('baseline', 'draft_findings_created')} | "
+            f"{_process_total('mergewarden', 'draft_findings_created')} |"
+        ),
+        (
+            "| Length recoveries attempted | "
+            f"{_process_total('baseline', 'length_recoveries_attempted')} | "
+            f"{_process_total('mergewarden', 'length_recoveries_attempted')} |"
+        ),
+        (
+            "| Length recoveries succeeded | "
+            f"{_process_total('baseline', 'length_recoveries_succeeded')} | "
+            f"{_process_total('mergewarden', 'length_recoveries_succeeded')} |"
+        ),
+        (
+            "| Length recoveries failed | "
+            f"{_process_total('baseline', 'length_recoveries_failed')} | "
+            f"{_process_total('mergewarden', 'length_recoveries_failed')} |"
         ),
         "",
         "## Candidate Finding Funnel",
@@ -1233,12 +1273,27 @@ def _main_failure_mode(report: CoreEvalReport) -> str:
     if missing_cells:
         incomplete = [item for item in candidate_attempts if not item.valid_completion]
         no_submit = sum(not item.result.submit_review_seen_any for item in incomplete)
+        blank_submits = sum(
+            item.result.submit_review_seen_any
+            and item.result.error == "Empty review output: no summary or issues."
+            for item in incomplete
+        )
         hard_capped = sum(
             "budget_hard_capped" in item.result.finish_reasons for item in incomplete
         )
         missing_summary = "、".join(
             f"{label} {count} 个" for label, count in missing_by_label.items() if count
         )
+        if blank_submits:
+            return (
+                f"{len(incomplete)}/{len(candidate_attempts)} 个 candidate attempts 未合法完成，"
+                f"其中 {no_submit} 个没有 submit_review，{blank_submits} 个虽调用 submit_review "
+                '但得到 blank `summary=""` + `issues=[]`，'
+                f"{hard_capped} 个在 hard token cap 后结束；{missing_summary} candidate "
+                "fixtures 缺少 valid completion。当前实测瓶颈是 blank submit 的"
+                "明确性校验/恢复边界，而不是 workspace、hard cap 或 semantic judge；"
+                "review quality A/B 暂不可比较。"
+            )
         return (
             f"{len(incomplete)}/{len(candidate_attempts)} 个 candidate attempts 未合法完成，"
             f"其中 {no_submit} 个没有 submit_review，{hard_capped} 个在 hard token cap 后结束；"

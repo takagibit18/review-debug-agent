@@ -133,6 +133,72 @@ def test_inference_rejects_model_controlled_draft_provenance() -> None:
     assert meta["draft_finding_validation_errors"]
 
 
+def test_validation_repair_keeps_draft_bound_to_original_response() -> None:
+    class _DraftThenRepairClient:
+        def __init__(self) -> None:
+            self.default_config = ModelConfig(model="fake-model")
+            self.calls = 0
+
+        async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(
+                    tool_calls=[
+                        {
+                            "function": {
+                                "name": "record_draft_finding",
+                                "arguments": json.dumps(
+                                    {
+                                        "file": "src/example.py",
+                                        "claim": "Comparison may use the wrong peer.",
+                                    }
+                                ),
+                            }
+                        },
+                        {
+                            "function": {
+                                "name": "submit_review",
+                                "arguments": '{"summary":"missing issues"}',
+                            }
+                        },
+                    ],
+                    finish_reason="tool_calls",
+                    model="fake-model",
+                )
+            return ModelResponse(
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "submit_review",
+                            "arguments": '{"summary":"repaired","issues":[]}',
+                        }
+                    }
+                ],
+                finish_reason="tool_calls",
+                model="fake-model",
+            )
+
+    response_ids = iter(["rje_original", "rje_repair"])
+    engine = InferenceEngine(
+        _DraftThenRepairClient(),  # type: ignore[arg-type]
+        model_response_writer=lambda response, iteration: next(response_ids),
+    )
+
+    plan, _, _ = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+        )
+    )
+
+    assert plan.source_response_id == "rje_repair"
+    assert plan.draft_finding_source_response_id == "rje_original"
+    assert len(plan.draft_finding_calls) == 1
+    assert plan.draft_review is not None
+
+
 def test_finalize_context_prioritizes_drafts_before_evidence_and_legacy_concerns() -> (
     None
 ):

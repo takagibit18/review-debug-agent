@@ -215,6 +215,21 @@ def extract_review_process_metrics(
                 payload.get("review_iterations")
             )
             metrics.tool_call_count = _non_negative_int(payload.get("tool_call_count"))
+            metrics.model_response_journal_writes = _non_negative_int(
+                payload.get("model_response_journal_writes")
+            )
+            metrics.draft_findings_created = _non_negative_int(
+                payload.get("draft_findings_created")
+            )
+            metrics.length_recoveries_attempted = _non_negative_int(
+                payload.get("length_recoveries_attempted")
+            )
+            metrics.length_recoveries_succeeded = _non_negative_int(
+                payload.get("length_recoveries_succeeded")
+            )
+            metrics.length_recoveries_failed = _non_negative_int(
+                payload.get("length_recoveries_failed")
+            )
             metrics.grep_calls = _non_negative_int(payload.get("grep_calls"))
             metrics.read_file_calls = _non_negative_int(payload.get("read_file_calls"))
             metrics.symbol_lookup_calls = _non_negative_int(

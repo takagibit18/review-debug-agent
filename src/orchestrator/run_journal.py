@@ -20,7 +20,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from src.models.schemas import DraftFinding, TokenUsage
 
 RUN_JOURNAL_SCHEMA_VERSION: Literal["1.0"] = "1.0"
-RunJournalEntryType = Literal["model_response", "tool_result", "draft_finding"]
+RunJournalEntryType = Literal[
+    "model_response",
+    "tool_result",
+    "draft_finding",
+    "length_recovery",
+]
+LengthRecoveryStatus = Literal["required", "attempted", "succeeded", "failed"]
 
 _SENSITIVE_KEYWORDS = (
     "api_key",
@@ -85,6 +91,18 @@ class ToolResultJournalPayload(BaseModel):
         default_factory=dict,
         description="Structured ToolResult envelope",
     )
+
+
+class LengthRecoveryJournalPayload(BaseModel):
+    """Durable state transition for recovery after output truncation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: LengthRecoveryStatus
+    source_response_ids: list[str] = Field(default_factory=list)
+    draft_finding_ids: list[str] = Field(default_factory=list)
+    submit_response_id: str = ""
+    reason: str = ""
 
 
 class PendingRunJournalEntry(BaseModel):
@@ -250,13 +268,20 @@ class RunJournal:
         entry_type: RunJournalEntryType,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        model: ModelResponseJournalPayload | ToolResultJournalPayload | DraftFinding
+        model: (
+            ModelResponseJournalPayload
+            | ToolResultJournalPayload
+            | DraftFinding
+            | LengthRecoveryJournalPayload
+        )
         if entry_type == "model_response":
             model = ModelResponseJournalPayload.model_validate(payload)
         elif entry_type == "tool_result":
             model = ToolResultJournalPayload.model_validate(payload)
-        else:
+        elif entry_type == "draft_finding":
             model = DraftFinding.model_validate(payload)
+        else:
+            model = LengthRecoveryJournalPayload.model_validate(payload)
         return model.model_dump(mode="json")
 
 

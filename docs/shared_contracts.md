@@ -218,7 +218,7 @@ as `get_changed_context` / `find_symbol_context` over large preloaded prompts.
 | Finding verification | `FindingCandidate` 使用稳定 digest id；风险 finding 的 verifier verdict、reason code 和 evidence repair round 写入 event log。确定性拒绝另写入 `deterministic_rejection_details`，逐条记录 candidate/finding、evidence role/index、retrieval source、文件/行号、失败字段、具体规则及是否为 revised finding |
 | Review Workflow | required/completed/missing step、reprompt count 和 enforcement mode 写入 `workflow_summary` |
 | Worker recovery | `review_runs` 保存 lease/heartbeat/attempt；`run_checkpoints` 保存步骤 attempt 和 artifact 路径 |
-| Agent run journal | `.mergewarden/runs/<run_id>/journal.jsonl` 保存 append-only、可恢复的模型响应与结构化工具结果；它与 EventLog 的 observability 职责严格分离 |
+| Agent run journal | `.mergewarden/runs/<run_id>/journal.jsonl` 保存 append-only、可恢复的 `model_response`、`tool_result`、`draft_finding` 与 `length_recovery` 事实；它与 EventLog 的 observability 职责严格分离 |
 | `RunArtifactSummary` | Artifact-facing CLI/API summary for response JSON, publish result JSON, event log, and related paths |
 
 具体字段若在代码中以 `RunContext` 等模型出现，应在该类型旁或本文档交叉引用。
@@ -238,6 +238,15 @@ Review 正常分析阶段可额外暴露编排层伪工具 `record_draft_finding
 `source_response_id` 由 runtime 绑定。该对象只表示待验证假设，不包含 severity、
 confidence、root cause、impact、evidence/verifier/candidate 字段，也不能绕过
 `submit_review` 或后续 verifier 合同。
+
+Review 中 `finish_reason="length"` 且无合法 `submit_review` 的模型调用属于 incomplete，
+不得解释为合法空 review。runtime 必须标记 `recovery_required`，并至多发起一次只暴露
+`submit_review` 的 finalize recovery；其输入只来自已持久化 draft、已保留工具证据和
+兼容 concern 摘要，不再探索。合法 submit（包括带非空 summary 的明确 `issues=[]`）
+可结束恢复；blank `summary=""` + `issues=[]` 不是明确空 review。否则必须记录 failed
+recovery 并让本次 completion 保持 invalid/incomplete。Journal 仅保存
+visible `content`，不保存 `reasoning_content` 或 CoT；进程内只允许记录隐藏推理是否
+出现这一布尔遥测事实。
 
 避免仅在一侧仓库私密修改导致线上与本地行为分叉。
 

@@ -134,6 +134,18 @@ hypotheses, not final findings: finalize receives them ahead of retained tool
 evidence and legacy concern snippets, but `submit_review` and all downstream
 policy/verifier gates remain authoritative.
 
+当 review 模型返回 `finish_reason="length"` 且没有合法 `submit_review` 时，
+该调用被标记为 incomplete，并进入一次受限的 submit-only recovery。恢复上下文按
+`DraftFinding`、已保留工具证据、兼容 concern 摘要的顺序构造；恢复请求不暴露
+普通 read/search 工具，并强制以 `submit_review` 形成结构化结果。若已有持久化的
+visible `content` 明确包含仓库路径与问题描述，runtime 只做保守的最小 draft 提取；
+隐藏 `reasoning_content` 不写入 Journal。恢复过程以 `length_recovery` 事实记录
+`required -> attempted -> succeeded|failed`。只有收到合法且明确的空 review submit
+时才能接受 `issues=[]`，且该空 review 必须带有非空 summary；blank
+`summary=""` + `issues=[]` 会继续恢复或显式失败。无合法 submit、hard cap 或 timeout
+都会留下显式 incomplete 错误，不能静默成功。EventLog 与 Eval 汇总另外暴露 journal write、draft 创建及恢复
+尝试/成功/失败计数，但仍不承担恢复存储职责。
+
 ### v0.2.0 Finding Verification and Workflow Gate
 
 Review output now passes through two explicit gates after the normal five-phase loop:

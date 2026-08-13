@@ -280,6 +280,8 @@ class InferenceEngine:
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=submit_only
         )
+        if plan.draft_finding_calls:
+            plan.draft_finding_source_response_id = response_id
         parse_meta["tool_choice"] = self._trace_tool_choice(config)
         parse_meta["thinking_disabled"] = self._is_thinking_disabled(config)
         if (
@@ -306,6 +308,9 @@ class InferenceEngine:
             repair_response.usage.completion_tokens += initial_usage.completion_tokens
             if repair_plan.draft_review is not None:
                 repair_plan.draft_finding_calls = plan.draft_finding_calls
+                repair_plan.draft_finding_source_response_id = (
+                    plan.draft_finding_source_response_id
+                )
                 plan = repair_plan
                 response = repair_response
                 parse_meta = repair_meta
@@ -322,11 +327,12 @@ class InferenceEngine:
                 if parsed:
                     fallback_parse_valid = True
                     parsed.draft_finding_calls = plan.draft_finding_calls
+                    parsed.draft_finding_source_response_id = (
+                        plan.draft_finding_source_response_id
+                    )
                     plan = parsed
         plan.source_response_id = response_id
-        incomplete_reason = self._length_incomplete_reason(
-            response, plan, fallback_parse_valid
-        )
+        incomplete_reason = self._length_incomplete_reason(response, plan)
         plan.model_finish_reason = response.finish_reason
         if submit_only:
             plan.final_submit_evidence_included_count = int(
@@ -340,6 +346,7 @@ class InferenceEngine:
             )
         if incomplete_reason:
             plan.incomplete_reason = incomplete_reason
+            plan.recovery_required = True
             parse_meta["incomplete_reason"] = incomplete_reason
             self._record_incomplete_response(
                 response, iteration, config, incomplete_reason
@@ -1215,6 +1222,7 @@ class InferenceEngine:
                 "fallback_json_found": fallback_json_found,
                 "fallback_parse_valid": fallback_parse_valid,
                 "incomplete_reason": parse_meta.get("incomplete_reason", ""),
+                "recovery_required": plan.recovery_required,
                 "model_finish_reason": plan.model_finish_reason,
                 "final_submit_evidence_included_count": (
                     plan.final_submit_evidence_included_count
@@ -1297,18 +1305,16 @@ class InferenceEngine:
     def _length_incomplete_reason(
         response: ModelResponse,
         plan: AnalysisPlan,
-        fallback_parse_valid: bool,
     ) -> str:
         if response.finish_reason != "length":
             return ""
-        if (
-            plan.draft_review is not None
-            or plan.draft_debug is not None
-            or plan.tool_calls
-            or fallback_parse_valid
+        if plan.draft_review is not None and (
+            plan.draft_review.summary.strip() or plan.draft_review.issues
         ):
             return ""
-        return "model_finish_reason_length_no_output"
+        if plan.draft_debug is not None:
+            return ""
+        return "model_finish_reason_length_no_submit"
 
     def _record_incomplete_response(
         self,
