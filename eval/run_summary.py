@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from eval.schemas import EvalReport, ReviewProcessMetrics
+from src.analyzer.finding_funnel import FindingFunnel
 from src.analyzer.run_summary import RunSummary, summarize_event_log
 
 
@@ -55,7 +56,9 @@ def extract_review_process_metrics(
             return metrics
         payload = event.get("payload", {}) or {}
         event_type = str(event.get("event_type", ""))
-        if event_type == "finding_candidates_built":
+        if event_type == "finding_funnel_completed":
+            metrics.finding_funnel = FindingFunnel.model_validate(payload)
+        elif event_type == "finding_candidates_built":
             metrics.model_raw_issue_count = _non_negative_int(
                 payload.get("model_raw_issue_count")
             )

@@ -21,6 +21,22 @@ from src.models.schemas import Message
 if TYPE_CHECKING:
     from src.models.client import ModelClient
 
+REVIEW_SEVERITY_CALIBRATION_GUIDANCE = (
+    "Severity measures the impact of the behavior; confidence measures how certain the "
+    "evidence makes you. Do not downgrade a current correctness, compatibility, or "
+    "user-visible regression to info merely because its trigger or affected population is "
+    "narrow. Do not inflate confidence merely to cross a policy threshold. "
+    "Independently compare the pre-change fallback and compatibility contract against the "
+    "new behavior. Author tests and PR intent demonstrate intended behavior, but do not "
+    "prove that existing callers retain their prior contract. "
+    "Before calling a concern future-only, trace the operands currently compared, wrapper "
+    "unwrapping, and keying/grouping call paths, then look for a concrete current counterexample. "
+    "Examples: removing a compatibility fallback or comparing a wrapped value directly to "
+    "its wrapper can be a warning when current callers get an incorrect result; a pure "
+    "optimization with unchanged results is info; a vague risk that depends only on a future "
+    "caller or hypothetical extension is not a risk finding. "
+)
+
 SYSTEM_PROMPT_REVIEW = (
     "You are a senior code reviewer. Analyze the provided diff/files and return structured, "
     "actionable findings. The final answer must be submitted via the submit_review tool. "
@@ -31,8 +47,11 @@ SYSTEM_PROMPT_REVIEW = (
     "trigger, impact, cause_evidence, contract_evidence, trigger_evidence, impact_evidence, and "
     "context_manifest_id. Never invent or emit root_cause_id; only the later consolidator assigns it. "
     "Location must be canonical: path[:line[-end_line]], using repo-relative forward-slash paths. "
-    "Do not use free-form natural language for location. "
-    "Evidence must cite the concrete changed diff lines or hunk that support the claim. "
+    "Do not use free-form natural language for location. Location and primary_anchor identify the "
+    "clearest display site and may point to unchanged code when that is where the symptom occurs; "
+    "they must agree. At least one cause_evidence entry for every warning or critical finding must "
+    "cite a concrete changed diff line or range and explain how this PR introduces, triggers, or "
+    "changes the displayed problem. "
     "Concrete bugs, regressions, compatibility breaks, incorrect results, data loss, or "
     "user-visible behavior changes must use warning or critical, never info or style. "
     "The summary must not mention bugs, regressions, breaking changes, compatibility risks, "
@@ -58,7 +77,9 @@ SYSTEM_PROMPT_REVIEW = (
     "Do not promote consequences of a hypothetical fix into a separate issue; keep them "
     "inside the suggestion unless the current diff already creates that independent risk. "
     "Evidence may cite only code present in the supplied candidate_context_manifests or later successful "
-    "tool results. Copy the manifest id and exact context_hash into each evidence provenance entry. "
+    "tool results. For each role, identify the repository-relative file/span and state what that code "
+    "proves. Candidate identity, retrieval source, manifest id, and context hash are system-owned and "
+    "will be bound from the runtime context; do not invent provenance metadata. "
     "A graph edge is navigation context, not proof of runtime identity; exploratory/low-confidence edges "
     "cannot alone support a warning. When you need a changed hunk plus surrounding source, prefer get_changed_context. "
     "When you need symbol definitions, references, field initialization, or constructor "
@@ -67,13 +88,16 @@ SYSTEM_PROMPT_REVIEW = (
     "validate_review_draft on candidate findings; treat its result as policy feedback, "
     "not as a replacement for submit_review. "
     "When paths are uncertain, use list_dir first before glob/grep/read_file. "
-    "After any Directory/File not found error, validate parent directory first and avoid blind retries."
+    "After any Directory/File not found error, validate parent directory first and avoid blind retries. "
+    + REVIEW_SEVERITY_CALIBRATION_GUIDANCE
 )
 
 _MANIFEST_SCHEMA_REQUIREMENT = "and context_manifest_id. Never invent or emit root_cause_id; only the later consolidator assigns it. "
 _GRAPH_EVIDENCE_REQUIREMENT = (
     "Evidence may cite only code present in the supplied candidate_context_manifests or later successful "
-    "tool results. Copy the manifest id and exact context_hash into each evidence provenance entry. "
+    "tool results. For each role, identify the repository-relative file/span and state what that code "
+    "proves. Candidate identity, retrieval source, manifest id, and context hash are system-owned and "
+    "will be bound from the runtime context; do not invent provenance metadata. "
     "A graph edge is navigation context, not proof of runtime identity; exploratory/low-confidence edges "
     "cannot alone support a warning. "
 )
@@ -87,16 +111,19 @@ COMMON_REVIEW_PROMPT = SYSTEM_PROMPT_REVIEW.replace(
 AGENT_SEARCH_POLICY = (
     "Context policy: agent_search. No graph or candidate context manifest exists for this run. "
     "Evidence may come from the supplied diff or successful read-only tool calls. "
-    "For tool evidence, record its real retrieval source, repository-relative file, line/span, "
-    "and a concrete content summary; never invent graph provenance, context_manifest_id, or context_hash. "
-    "Leave manifest-only fields empty. If evidence is insufficient, continue a targeted read/grep/symbol "
+    "For each evidence role, record the repository-relative file, line/span, and a concrete statement. "
+    "The runtime binds candidate_id and retrieval_source; leave manifest-only fields empty and never "
+    "invent graph provenance, context_manifest_id, or context_hash. If evidence is insufficient, "
+    "continue a targeted read/grep/symbol "
     "search when a tool round remains, otherwise do not submit that finding. "
 )
 GRAPH_CONTEXT_POLICY = (
     "Context policy: graph_hybrid. Candidate context manifests are first-pass navigation context, not a "
     "complete world model. A graph edge indicates only its named structural relation and is not runtime fact. "
-    "When citing manifest evidence, use the real manifest id and exact context_hash. Successful read-only "
-    "tool results outside a manifest remain valid independent tool provenance. Low-confidence or exploratory "
+    "Cite the exact visible file/span and what it proves; the runtime binds its real diff, read, symbol, "
+    "or manifest provenance, including canonical context_manifest_id and context_hash. Successful "
+    "read-only tool results outside a "
+    "manifest remain valid independent tool provenance. Low-confidence or exploratory "
     "graph edges cannot alone support warning or critical findings. "
 )
 
@@ -135,7 +162,9 @@ USER_PREFIX_REVIEW = (
     "Use get_changed_context before broad reads when you need changed hunk context, "
     "find_symbol_context before blind grep when you need symbol relationships, and "
     "validate_review_draft before final warning/critical submit_review when another tool round is available. "
-    "Do not return plain-text-only final answers.\n"
+    "Do not return plain-text-only final answers. "
+    + REVIEW_SEVERITY_CALIBRATION_GUIDANCE
+    + "\n"
 )
 USER_PREFIX_DEBUG = (
     "Return tool calls if needed, then submit_debug with final JSON. "
@@ -164,7 +193,8 @@ FINALIZE_REVIEW_NOTICE = (
     "Do not promote a hypothetical fix side effect into its own warning unless the current diff "
     "already creates that separate risk. "
     "If uncertain, return whatever partial findings are supported by what was already read; "
-    "an empty issues list is acceptable with an honest summary."
+    "an empty issues list is acceptable with an honest summary. "
+    + REVIEW_SEVERITY_CALIBRATION_GUIDANCE
 )
 FINALIZE_DEBUG_NOTICE = (
     "FINAL CALL — this is your last opportunity to respond. You MUST call submit_debug "

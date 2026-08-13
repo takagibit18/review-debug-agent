@@ -17,17 +17,20 @@ from src.analyzer.context_mode import ReviewContextMode
 from src.analyzer.context_state import ContextState, DecisionStep, ErrorDetail
 from src.analyzer.context_strategy import ContextStrategy, build_context_strategy
 from src.analyzer.diff_lines import changed_new_lines_by_file
+from src.analyzer.evidence_binding import bind_candidate_evidence
 from src.analyzer.event_log import EventEntry, EventLog, EventType
 from src.analyzer.finding_verifier import (
     DeterministicValidationStats,
     FindingVerifier,
     apply_verifications,
     build_candidates,
+    narrowable_auxiliary_rejections,
     review_candidate_severities,
     validate_verifications_with_stats,
 )
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.review_policy import evaluate_issue_filter
 from src.analyzer.result_processor import ResultProcessor
 from src.analyzer.root_cause import RootCauseConsolidator
 from src.analyzer.schemas import (
@@ -111,6 +114,10 @@ class AgentOrchestrator:
         self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
+        self._model_length_finish_seen = False
+        self._final_submit_evidence_included_count = 0
+        self._final_submit_evidence_token_count = 0
+        self._final_submit_evidence_truncated_count = 0
         self._pre_budget_submit_attempted = False
         self._temperature = temperature
         self._review_max_iterations_override = review_max_iterations
@@ -136,7 +143,16 @@ class AgentOrchestrator:
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
+        self._submitted_issue_count = 0
+        self._policy_passed_issue_count = 0
+        self._policy_rejected_issue_count = 0
+        self._non_risk_issue_count = 0
         self._verifier_candidate_count = 0
+        self._risk_candidate_count = 0
+        self._filter_rescue_candidate_count = 0
+        self._severity_calibration_candidate_count = 0
+        self._semantic_rejected_count = 0
+        self._deterministic_rejected_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0
@@ -223,6 +239,7 @@ class AgentOrchestrator:
             0.0, verifier_total - self._consolidation_latency_seconds
         )
         response = self._finalize_review_workflow(response, state)
+        self._record_finding_funnel(response)
         self._record_review_telemetry(state)
         self._close_event_log()
         return response
@@ -260,16 +277,60 @@ class AgentOrchestrator:
         request: ReviewRequest,
         state: ContextState,
     ) -> ReviewResponse:
+        submitted_report = (
+            self._last_plan.draft_review
+            if self._last_plan is not None and self._last_plan.draft_review is not None
+            else response.report
+        )
+        filter_decisions = [
+            evaluate_issue_filter(issue) for issue in submitted_report.issues
+        ]
+        self._model_raw_issue_count = len(submitted_report.issues)
+        self._submitted_issue_count = self._model_raw_issue_count
+        self._policy_passed_issue_count = sum(
+            decision.passed for decision in filter_decisions
+        )
+        self._policy_rejected_issue_count = (
+            self._submitted_issue_count - self._policy_passed_issue_count
+        )
+        self._non_risk_issue_count = sum(
+            decision.severity.value not in {"critical", "warning"}
+            for decision in filter_decisions
+        )
+        for original_index, decision in enumerate(filter_decisions):
+            self._record_event(
+                EventType.FINDING_FILTER_DECISION,
+                "filter_findings",
+                decision.event_payload(original_index=original_index),
+            )
+
         severity_review = review_candidate_severities(response.report, request)
-        response.report = severity_review.report
         self._high_confidence_info_issue_count = (
             severity_review.high_confidence_info_count
         )
         self._severity_reviewed_count = severity_review.reviewed_count
-        self._severity_promoted_count = severity_review.promoted_count
-        candidates = build_candidates(response.report, iteration=self._iteration)
-        self._model_raw_issue_count = len(response.report.issues)
+        if self._finding_verifier_mode == "enforce":
+            self._severity_promoted_count = 0
+            candidates = build_candidates(
+                submitted_report,
+                iteration=self._iteration,
+                request=request,
+                include_boundary=True,
+            )
+        else:
+            response.report = severity_review.report
+            self._severity_promoted_count = severity_review.promoted_count
+            candidates = build_candidates(response.report, iteration=self._iteration)
         self._verifier_candidate_count = len(candidates)
+        self._risk_candidate_count = sum(
+            item.candidate_kind == "risk" for item in candidates
+        )
+        self._filter_rescue_candidate_count = sum(
+            item.candidate_kind == "filter_rescue" for item in candidates
+        )
+        self._severity_calibration_candidate_count = sum(
+            item.candidate_kind == "severity_calibration" for item in candidates
+        )
         evidence_bound_count = sum(
             1
             for item in candidates
@@ -291,7 +352,16 @@ class AgentOrchestrator:
             {
                 "candidate_count": len(candidates),
                 "model_raw_issue_count": self._model_raw_issue_count,
+                "submitted_issue_count": self._submitted_issue_count,
+                "policy_passed_issue_count": self._policy_passed_issue_count,
+                "policy_rejected_issue_count": self._policy_rejected_issue_count,
+                "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
+                "risk_candidate_count": self._risk_candidate_count,
+                "filter_rescue_candidate_count": (self._filter_rescue_candidate_count),
+                "severity_calibration_candidate_count": (
+                    self._severity_calibration_candidate_count
+                ),
                 "evidence_bound_count": evidence_bound_count,
                 "structured_hypothesis_count": structured_hypothesis_count,
                 "evidence_complete_count": evidence_complete_count,
@@ -322,6 +392,8 @@ class AgentOrchestrator:
         if verifier is None and self._model_client is not None:
             verifier = FindingVerifier(self._model_client)
         if verifier is None:
+            if self._finding_verifier_mode == "enforce":
+                self._semantic_rejected_count = len(candidates)
             self._record_event(
                 EventType.FINDING_VERIFICATION_FAILED,
                 "verify_findings",
@@ -332,10 +404,15 @@ class AgentOrchestrator:
                 },
             )
             if self._finding_verifier_mode == "enforce":
-                response.report = apply_verifications(
-                    response.report,
-                    FindingVerificationBatch(),
-                    mode="enforce",
+                response.report = self._result_processor.merge_review_reports(
+                    [
+                        apply_verifications(
+                            response.report,
+                            FindingVerificationBatch(),
+                            mode="enforce",
+                            candidates=candidates,
+                        )
+                    ]
                 )
             if self._workflow_enforcement != "off":
                 self._fail_workflow_step(
@@ -379,13 +456,50 @@ class AgentOrchestrator:
             for item in batch.results
             if item.status == "needs_evidence"
         }
-        if needs_evidence_ids and self._settings.verifier_max_repair_rounds > 0:
+        raw_accepted_ids = {
+            item.candidate_id for item in raw_batch.results if item.status == "accepted"
+        }
+        auxiliary_rejections = {
+            candidate_id: details
+            for candidate_id, details in narrowable_auxiliary_rejections(
+                validation_stats
+            ).items()
+            if candidate_id in raw_accepted_ids
+        }
+        auxiliary_narrowing_ids = set(auxiliary_rejections)
+        repair_candidate_ids = needs_evidence_ids | auxiliary_narrowing_ids
+        if repair_candidate_ids and self._settings.verifier_max_repair_rounds > 0:
             repair_candidates = [
-                item for item in candidates if item.candidate_id in needs_evidence_ids
+                item for item in candidates if item.candidate_id in repair_candidate_ids
             ]
-            state.constraints.append(
-                "verifier_needs_evidence:" + ",".join(sorted(needs_evidence_ids))
-            )
+            if needs_evidence_ids:
+                state.constraints.append(
+                    "verifier_needs_evidence:" + ",".join(sorted(needs_evidence_ids))
+                )
+            for candidate_id in sorted(auxiliary_narrowing_ids):
+                details = auxiliary_rejections[candidate_id]
+                state.constraints.append(
+                    "verifier_auxiliary_narrowing:"
+                    + _json.dumps(
+                        {
+                            "candidate_id": candidate_id,
+                            "failed_evidence": [
+                                {
+                                    "role": item.evidence_role,
+                                    "index": item.evidence_index,
+                                    "rule": item.rule,
+                                    "file": item.file,
+                                    "line": item.line,
+                                    "end_line": item.end_line,
+                                    "field": item.field,
+                                }
+                                for item in details
+                            ],
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
             try:
                 returned_repaired = await self._call_finding_verifier(
                     verifier,
@@ -424,7 +538,7 @@ class AgentOrchestrator:
             batch = FindingVerificationBatch(
                 results=[
                     repaired_by_id.get(item.candidate_id, item)
-                    if item.candidate_id in needs_evidence_ids
+                    if item.candidate_id in repair_candidate_ids
                     else item
                     for item in batch.results
                 ]
@@ -432,7 +546,7 @@ class AgentOrchestrator:
             raw_batch = FindingVerificationBatch(
                 results=[
                     raw_repaired_by_id.get(item.candidate_id, item)
-                    if item.candidate_id in needs_evidence_ids
+                    if item.candidate_id in repair_candidate_ids
                     else item
                     for item in raw_batch.results
                 ]
@@ -447,6 +561,10 @@ class AgentOrchestrator:
                 rejected_count=(
                     validation_stats.rejected_count + repaired_stats.rejected_count
                 ),
+                rejection_details=(
+                    *validation_stats.rejection_details,
+                    *repaired_stats.rejection_details,
+                ),
             )
             self._record_event(
                 EventType.FINDING_EVIDENCE_REPAIR_COMPLETED,
@@ -454,6 +572,8 @@ class AgentOrchestrator:
                 {
                     "round": 1,
                     "candidate_count": len(repair_candidates),
+                    "needs_evidence_candidate_count": len(needs_evidence_ids),
+                    "auxiliary_narrowing_candidate_count": len(auxiliary_narrowing_ids),
                     "resolved_count": sum(
                         item.status in {"accepted", "rejected", "downgraded"}
                         for item in repaired.results
@@ -470,6 +590,8 @@ class AgentOrchestrator:
             item.status == "needs_evidence" for item in raw_batch.results
         )
         raw_downgraded = sum(item.status == "downgraded" for item in raw_batch.results)
+        self._semantic_rejected_count = max(0, len(candidates) - raw_accepted)
+        self._deterministic_rejected_count = validation_stats.rejected_count
         self._verifier_accepted_count = accepted
         self._verifier_rejected_count = rejected
         self._verifier_needs_evidence_count = needs_evidence
@@ -480,7 +602,16 @@ class AgentOrchestrator:
             {
                 "candidate_count": len(candidates),
                 "model_raw_issue_count": self._model_raw_issue_count,
+                "submitted_issue_count": self._submitted_issue_count,
+                "policy_passed_issue_count": self._policy_passed_issue_count,
+                "policy_rejected_issue_count": self._policy_rejected_issue_count,
+                "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
+                "risk_candidate_count": self._risk_candidate_count,
+                "filter_rescue_candidate_count": (self._filter_rescue_candidate_count),
+                "severity_calibration_candidate_count": (
+                    self._severity_calibration_candidate_count
+                ),
                 "accepted_count": accepted,
                 "verifier_accepted_count": accepted,
                 "rejected_count": rejected,
@@ -500,6 +631,12 @@ class AgentOrchestrator:
                 "deterministic_evidence_checked_count": validation_stats.checked_count,
                 "deterministic_evidence_passed_count": validation_stats.passed_count,
                 "deterministic_evidence_rejected_count": validation_stats.rejected_count,
+                "deterministic_rejection_details": [
+                    item.model_dump(mode="json")
+                    for item in validation_stats.rejection_details
+                ],
+                "semantic_rejected_count": self._semantic_rejected_count,
+                "deterministic_rejected_count": self._deterministic_rejected_count,
                 "mode": self._finding_verifier_mode,
                 "reason_codes": [
                     code for item in batch.results for code in item.reason_codes
@@ -518,10 +655,15 @@ class AgentOrchestrator:
                 self._fail_workflow_step(
                     "semantic_verify_findings", "missing_verifier_verdict"
                 )
-        response.report = apply_verifications(
-            response.report,
-            batch,
-            mode=self._finding_verifier_mode,
+        response.report = self._result_processor.merge_review_reports(
+            [
+                apply_verifications(
+                    response.report,
+                    batch,
+                    mode=self._finding_verifier_mode,
+                    candidates=candidates,
+                )
+            ]
         )
         response = self._consolidate_verified_findings(
             response,
@@ -805,6 +947,13 @@ class AgentOrchestrator:
                 verifier.last_post_validation_batch,
                 verifier.last_validation_stats,
             )
+        manifests = [dict(item) for item in state.candidate_context_manifests]
+        candidates[:] = bind_candidate_evidence(
+            candidates,
+            request,
+            list(self._verifier_tool_evidence),
+            context_manifests=manifests,
+        )
         post_batch, stats = validate_verifications_with_stats(
             candidates,
             returned_batch,
@@ -813,9 +962,7 @@ class AgentOrchestrator:
                 candidates,
                 request,
                 list(self._verifier_tool_evidence),
-                context_manifests=[
-                    dict(item) for item in state.candidate_context_manifests
-                ],
+                context_manifests=manifests,
                 context_mode=state.context_mode,
             ),
         )
@@ -873,6 +1020,10 @@ class AgentOrchestrator:
         summary.update(
             {
                 "model_raw_issue_count": self._model_raw_issue_count,
+                "submitted_issue_count": self._submitted_issue_count,
+                "policy_passed_issue_count": self._policy_passed_issue_count,
+                "policy_rejected_issue_count": self._policy_rejected_issue_count,
+                "non_risk_issue_count": self._non_risk_issue_count,
                 "verifier_candidate_count": self._verifier_candidate_count,
                 "verifier_accepted_count": self._verifier_accepted_count,
                 "verifier_rejected_count": self._verifier_rejected_count,
@@ -1035,6 +1186,16 @@ class AgentOrchestrator:
                 "finalize_attempt": True,
                 "finalize_submit_seen": finalize_plan.draft_review is not None,
                 "budget_state": self._budget_state,
+                "prior_length_finish_seen": self._model_length_finish_seen,
+                "final_submit_evidence_included_count": (
+                    finalize_plan.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    finalize_plan.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    finalize_plan.final_submit_evidence_truncated_count
+                ),
             },
         )
         return response
@@ -1071,6 +1232,16 @@ class AgentOrchestrator:
                 "finalize_attempt": True,
                 "finalize_submit_seen": finalize_plan.draft_debug is not None,
                 "budget_state": self._budget_state,
+                "prior_length_finish_seen": self._model_length_finish_seen,
+                "final_submit_evidence_included_count": (
+                    finalize_plan.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    finalize_plan.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    finalize_plan.final_submit_evidence_truncated_count
+                ),
             },
         )
         return response
@@ -1219,6 +1390,20 @@ class AgentOrchestrator:
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
                 "model_max_retries": self._settings.model_max_retries,
                 "force_submit": force_submit,
+                "model_finish_reason": result.model_finish_reason,
+                "model_length_finish_seen": (
+                    self._model_length_finish_seen
+                    or result.model_finish_reason == "length"
+                ),
+                "final_submit_evidence_included_count": (
+                    result.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    result.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    result.final_submit_evidence_truncated_count
+                ),
                 "budget_state": self._budget_state,
             },
         )
@@ -1680,11 +1865,24 @@ class AgentOrchestrator:
         self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
+        self._model_length_finish_seen = False
+        self._final_submit_evidence_included_count = 0
+        self._final_submit_evidence_token_count = 0
+        self._final_submit_evidence_truncated_count = 0
         self._pre_budget_submit_attempted = False
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
+        self._submitted_issue_count = 0
+        self._policy_passed_issue_count = 0
+        self._policy_rejected_issue_count = 0
+        self._non_risk_issue_count = 0
         self._verifier_candidate_count = 0
+        self._risk_candidate_count = 0
+        self._filter_rescue_candidate_count = 0
+        self._severity_calibration_candidate_count = 0
+        self._semantic_rejected_count = 0
+        self._deterministic_rejected_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
         self._verifier_needs_evidence_count = 0
@@ -1715,6 +1913,9 @@ class AgentOrchestrator:
                 "final_submit_reserve_tokens": self._settings.final_submit_reserve_tokens,
                 "final_submit_prompt_token_budget": (
                     self._settings.final_submit_prompt_token_budget
+                ),
+                "final_submit_feedback_token_budget": (
+                    self._settings.final_submit_feedback_token_budget
                 ),
                 "prompt_input_token_budget": self._settings.prompt_input_token_budget,
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
@@ -1811,8 +2012,12 @@ class AgentOrchestrator:
             "final_submit_prompt_token_budget": (
                 self._settings.final_submit_prompt_token_budget
             ),
+            "final_submit_feedback_token_budget": (
+                self._settings.final_submit_feedback_token_budget
+            ),
             "budget_state": self._budget_state,
             "has_tool_feedback": bool(self._tool_feedback),
+            "prior_length_finish_seen": self._model_length_finish_seen,
             "pre_budget_submit_ratio": self._settings.pre_budget_submit_token_ratio,
             "pre_budget_submit_threshold": min(
                 int(
@@ -1825,6 +2030,16 @@ class AgentOrchestrator:
         if plan is not None:
             payload["draft_present"] = (
                 plan.draft_review is not None or plan.draft_debug is not None
+            )
+            payload["model_finish_reason"] = plan.model_finish_reason
+            payload["final_submit_evidence_included_count"] = (
+                plan.final_submit_evidence_included_count
+            )
+            payload["final_submit_evidence_token_count"] = (
+                plan.final_submit_evidence_token_count
+            )
+            payload["final_submit_evidence_truncated_count"] = (
+                plan.final_submit_evidence_truncated_count
             )
         self._record_event(EventType.DECISION, "pre_budget_submit", payload)
 
@@ -1866,6 +2081,20 @@ class AgentOrchestrator:
         plan: AnalysisPlan,
         state: ContextState,
     ) -> None:
+        if plan.model_finish_reason == "length":
+            self._model_length_finish_seen = True
+        self._final_submit_evidence_included_count = max(
+            self._final_submit_evidence_included_count,
+            plan.final_submit_evidence_included_count,
+        )
+        self._final_submit_evidence_token_count = max(
+            self._final_submit_evidence_token_count,
+            plan.final_submit_evidence_token_count,
+        )
+        self._final_submit_evidence_truncated_count = max(
+            self._final_submit_evidence_truncated_count,
+            plan.final_submit_evidence_truncated_count,
+        )
         reason = str(getattr(plan, "incomplete_reason", "") or "").strip()
         if not reason or self._model_incomplete_seen:
             return
@@ -2115,6 +2344,45 @@ class AgentOrchestrator:
             "fallback_reason": graph.get("fallback_reason", ""),
         }
         self._record_event(EventType.PHASE_END, "review_complete", payload)
+
+    def _record_finding_funnel(self, response: ReviewResponse) -> None:
+        """Emit one mutually inspectable finding funnel after all output gates."""
+
+        calibration_rescue = (
+            self._filter_rescue_candidate_count
+            + self._severity_calibration_candidate_count
+        )
+        payload = {
+            "submitted_finding_count": self._submitted_issue_count,
+            "no_finding_run_count": int(self._submitted_issue_count == 0),
+            "non_risk_not_routed_count": max(
+                0,
+                self._non_risk_issue_count - self._severity_calibration_candidate_count,
+            ),
+            "pre_verifier_rejected_count": max(
+                0,
+                self._policy_rejected_issue_count - self._filter_rescue_candidate_count,
+            ),
+            "risk_candidate_count": self._risk_candidate_count,
+            "filter_rescue_candidate_count": self._filter_rescue_candidate_count,
+            "severity_calibration_candidate_count": (
+                self._severity_calibration_candidate_count
+            ),
+            "calibration_rescue_candidate_count": calibration_rescue,
+            "semantic_rejected_count": self._semantic_rejected_count,
+            "deterministic_rejected_count": self._deterministic_rejected_count,
+            "final_risk_finding_count": sum(
+                issue.severity.value in {"critical", "warning"}
+                for issue in response.report.issues
+            ),
+            "final_effective_issue_count": len(response.report.issues),
+            "mode": self._finding_verifier_mode,
+        }
+        self._record_event(
+            EventType.FINDING_FUNNEL_COMPLETED,
+            "finding_funnel",
+            payload,
+        )
 
     @staticmethod
     def _tool_error_hint(*, tool_name: str, message: str) -> dict[str, Any]:

@@ -113,6 +113,24 @@ def test_runtime_summary_collects_verifier_and_workflow_outcomes(
         },
         {
             "run_id": "run-v020",
+            "event_type": "finding_funnel_completed",
+            "phase": "finding_funnel",
+            "payload": {
+                "submitted_finding_count": 5,
+                "no_finding_run_count": 0,
+                "non_risk_not_routed_count": 1,
+                "pre_verifier_rejected_count": 1,
+                "risk_candidate_count": 1,
+                "filter_rescue_candidate_count": 1,
+                "severity_calibration_candidate_count": 1,
+                "calibration_rescue_candidate_count": 2,
+                "semantic_rejected_count": 1,
+                "deterministic_rejected_count": 1,
+                "final_risk_finding_count": 1,
+            },
+        },
+        {
+            "run_id": "run-v020",
             "event_type": "workflow_summary",
             "phase": "workflow",
             "payload": {
@@ -140,6 +158,12 @@ def test_runtime_summary_collects_verifier_and_workflow_outcomes(
     assert summary.deterministic_evidence_checked_count == 2
     assert summary.deterministic_evidence_passed_count == 1
     assert summary.deterministic_evidence_rejected_count == 1
+    assert summary.finding_funnel.submitted_finding_count == 5
+    assert summary.finding_funnel.non_risk_not_routed_count == 1
+    assert summary.finding_funnel.calibration_rescue_candidate_count == 2
+    assert summary.finding_funnel.semantic_rejected_count == 1
+    assert summary.finding_funnel.deterministic_rejected_count == 1
+    assert summary.finding_funnel.final_risk_finding_count == 1
     assert summary.workflow_enforcement == "enforce"
     assert summary.workflow_required_step_count == 5
     assert summary.workflow_completed_required_step_count == 4
@@ -176,3 +200,6 @@ def test_runtime_summary_backfills_raw_counts_for_legacy_events(tmp_path: Path) 
         "claim_not_supported": 1,
     }
     assert summary.deterministic_evidence_checked_count == 0
+    assert summary.finding_funnel.model_dump() == {
+        key: 0 for key in type(summary.finding_funnel).model_fields
+    }

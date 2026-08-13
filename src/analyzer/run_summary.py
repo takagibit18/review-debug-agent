@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.analyzer.finding_funnel import FindingFunnel
+
 EventLogStatus = Literal["ok", "missing", "parse_error"]
 PublishStatus = Literal["not_requested", "dry_run", "published", "failed"]
 
@@ -55,6 +57,7 @@ class RunSummary(BaseModel):
     workflow_filtered_issue_count: int = 0
     final_effective_issue_count: int = 0
     workflow_invalid: bool = False
+    finding_funnel: FindingFunnel = Field(default_factory=FindingFunnel)
 
 
 class RunArtifactSummary(BaseModel):
@@ -263,6 +266,9 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
                     summary.raw_finding_reason_codes[code] = (
                         summary.raw_finding_reason_codes.get(code, 0) + 1
                     )
+
+    if event_type == "finding_funnel_completed":
+        summary.finding_funnel = FindingFunnel.model_validate(payload)
 
     if event_type == "workflow_summary":
         summary.workflow_enforcement = str(payload.get("enforcement", "off") or "off")

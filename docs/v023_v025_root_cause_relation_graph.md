@@ -114,6 +114,12 @@ Finding Evidence Verifier 继续执行 v0.2.2 门控，并对 schema 2.0 增加�
 - 低置信度或 exploratory 图边不能单独支撑 accepted verdict；
 - candidate 未收到的新代码或机制会被 fail closed 拒绝。
 
+Verifier 的 bounded candidate context 不再只围绕 finding 主位置收集。它按 `主位置 → cause → contract → trigger → impact → related location` 的固定优先级遍历 finding 实际引用的位置，并分别保留覆盖这些位置的 diff hunk、成功工具读取 window、symbol context 和已选择 Manifest span/path。达到字符预算后只裁掉更低优先级位置，不把整文件塞入 verifier；不存在、未成功读取或已被预算裁掉的位置仍按 fail-closed 规则拒绝。
+
+Structured evidence 的来源标签和 candidate identity 由系统绑定，不再信任模型自报。candidate 构建后，系统把 canonical candidate ID 写回 issue 及全部 evidence；每条 evidence 再与实际 diff、成功工具结果和 Manifest span 对照。模型声明已被观察事实支持时保留；声明错误但只有一个可信来源覆盖该位置时归一化为该来源；没有来源或多个来源都可成立但无法唯一选择时不猜测，交给 deterministic gate fail closed。
+
+Graph-hybrid finding 可以逐条混用可信来源：例如 cause/contract 来自 Manifest、trigger 来自 diff、impact 来自成功 `read_file`。Manifest evidence 单独核验 id、span hash、位置以及 strong edge 合同；diff 与工具 evidence 分别核验 retained hunk 和具体成功工具来源，不再被 issue-level Manifest id 强制同源。semantic verifier 返回 revised finding 时，系统只用该 verifier 实际收到的 bounded context 重新绑定来源，然后重新执行完整确定性校验；新增的未见位置、错误 hash、缺失 read 和低可信 graph edge仍拒绝。
+
 只有 accepted 的 Warning/Critical hypothesis 才进入归并阶段。Info/Style 和被拒绝项不参与 merger。
 
 ### Blocking、Finding Causality Graph 与保守聚类
@@ -327,7 +333,7 @@ LSP 不是硬依赖。所有 enrichment 必须记录 resolver、confidence、fal
 
 ## 可观测性
 
-JSONL event log 记录 index build/reuse/rebuild、anchor/node/edge 数、Planner 选择与裁剪、Manifest token cost、单 finding verdict、block、merge proposal、counterfactual、归并验证/rejection/fallback 和阶段耗时。事件只记录路径、ID、计数、hash、原因与受限摘要，不记录模型密钥或整仓源码。
+JSONL event log 记录 index build/reuse/rebuild、anchor/node/edge 数、Planner 选择与裁剪、Manifest token cost、单 finding verdict、block、merge proposal、counterfactual、归并验证/rejection/fallback 和阶段耗时。`finding_verification_completed.deterministic_rejection_details` 对每个失败的 finding/evidence 记录 candidate/finding ID、evidence role/index、retrieval source、文件/行号、失败字段、具体 fail-closed 规则以及是否来自 verifier revised finding；不再只保留聚合的 `deterministic_evidence_invalid`。事件只记录路径、ID、计数、hash、原因与受限摘要，不记录模型密钥或整仓源码。
 
 Eval process metrics 增加 root-cause coverage、over/under-merge、repair-unit accuracy、evidence completeness、finding inflation ratio、graph/context 规模、discarded paths、unused context、edge confidence contribution、build/incremental latency、cache hit rate、block 数和平均 block size。
 

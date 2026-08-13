@@ -50,6 +50,7 @@ def test_workspace_eval_budget_defaults_are_bounded(monkeypatch) -> None:
     monkeypatch.delenv("TOKEN_HARD_BUDGET", raising=False)
     monkeypatch.delenv("FINAL_SUBMIT_RESERVE_TOKENS", raising=False)
     monkeypatch.delenv("FINAL_SUBMIT_PROMPT_TOKEN_BUDGET", raising=False)
+    monkeypatch.delenv("FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET", raising=False)
     monkeypatch.delenv("MODEL_MAX_TOKENS", raising=False)
     monkeypatch.delenv("MODEL_REQUEST_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("MODEL_MAX_RETRIES", raising=False)
@@ -64,6 +65,7 @@ def test_workspace_eval_budget_defaults_are_bounded(monkeypatch) -> None:
     assert settings.token_hard_budget == 36_000
     assert settings.final_submit_reserve_tokens == 12_000
     assert settings.final_submit_prompt_token_budget == 4_000
+    assert settings.final_submit_feedback_token_budget == 1_200
     assert settings.model_max_tokens == 2_048
     assert settings.model_request_timeout_seconds == 90.0
     assert settings.model_max_retries == 1
@@ -117,11 +119,13 @@ def test_final_submit_budgets_are_normalized_to_runtime_limits(monkeypatch) -> N
     monkeypatch.setenv("PROMPT_INPUT_TOKEN_BUDGET", "3000")
     monkeypatch.setenv("FINAL_SUBMIT_RESERVE_TOKENS", "12000")
     monkeypatch.setenv("FINAL_SUBMIT_PROMPT_TOKEN_BUDGET", "4000")
+    monkeypatch.setenv("FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET", "5000")
 
     settings = get_settings()
 
     assert settings.final_submit_reserve_tokens == 10_000
     assert settings.final_submit_prompt_token_budget == 3_000
+    assert settings.final_submit_feedback_token_budget == 2_999
 
 
 def test_github_advisory_publish_defaults_are_safe(monkeypatch) -> None:

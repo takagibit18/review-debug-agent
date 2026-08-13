@@ -749,6 +749,136 @@ def test_force_submit_review_uses_compact_reserved_prompt_budget(monkeypatch) ->
     assert "DIFF-MARKER" not in client.calls[-1][1].content
 
 
+def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    monkeypatch.setenv("FINAL_SUBMIT_PROMPT_TOKEN_BUDGET", "4000")
+    monkeypatch.setenv("FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET", "1200")
+    client = RecordingFakeModelClient()
+    call_count = 0
+
+    async def _sequenced_response(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        call_count += 1
+        client.calls.append(messages)
+        client.configs.append(config)
+        client.tools.append(tools)
+        if call_count == 1:
+            return ModelResponse(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "read-after-length",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"file_path":"pkg/wrapper.py"}',
+                        },
+                    }
+                ],
+                usage=TokenUsage(total_tokens=2048),
+                model="deepseek-v4-pro",
+                finish_reason="length",
+                reasoning_content=(
+                    "Compatibility regression: wrapper equality now compares the "
+                    "wrapped object against the wrapper instead of other.obj."
+                ),
+            )
+        return ModelResponse(
+            content="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_review",
+                        "arguments": '{"summary":"review","issues":[]}',
+                    }
+                }
+            ],
+            usage=TokenUsage(total_tokens=20),
+            model="deepseek-v4-pro",
+            finish_reason="tool_calls",
+        )
+
+    client.chat = _sequenced_response  # type: ignore[method-assign]
+    events: list[tuple[EventType, str, dict[str, Any]]] = []
+    engine = InferenceEngine(
+        model_client=client,  # type: ignore[arg-type]
+        trace_event_writer=lambda event_type, phase, payload: events.append(
+            (event_type, phase, payload)
+        ),
+    )
+    request = ReviewRequest(repo_path=".")
+    first_plan, _, reasoning = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=request,
+            tool_specs=[],
+            iteration=1,
+            near_last_iteration=False,
+        )
+    )
+    assert first_plan.model_finish_reason == "length"
+    assert first_plan.incomplete_reason == ""
+    assert len(first_plan.tool_calls) == 1
+
+    feedback = [
+        {
+            "iteration": 1,
+            "tool_call": first_plan.tool_calls[0],
+            "result": ToolResult(ok=True, data={"content": "duplicate"}),
+            "reasoning_content": reasoning,
+        },
+        {
+            "iteration": 1,
+            "tool_call": first_plan.tool_calls[0],
+            "result": ToolResult(
+                ok=True,
+                data={
+                    "file_path": "pkg/wrapper.py",
+                    "content": "EVIDENCE-MARKER: return self.obj == other",
+                },
+            ),
+            "reasoning_content": reasoning,
+        },
+    ]
+    final_plan, _, _ = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=request,
+            tool_specs=[],
+            tool_schemas=[
+                {"type": "function", "function": {"name": "submit_review"}}
+            ],
+            tool_feedback=feedback,
+            iteration=1,
+            force_submit=True,
+        )
+    )
+
+    final_digest = next(
+        message.content
+        for message in client.calls[-1]
+        if "final_submit_evidence_summary" in message.content
+    )
+    assert "EVIDENCE-MARKER" in final_digest
+    assert "Compatibility regression" in final_digest
+    assert final_digest.count("tool_evidence") == 1
+    assert final_plan.final_submit_evidence_included_count == 2
+    assert 0 < final_plan.final_submit_evidence_token_count <= 1200
+    telemetry = next(
+        payload
+        for event_type, phase, payload in reversed(events)
+        if event_type == EventType.CONTEXT_TELEMETRY
+        and phase == "analyze"
+        and payload["force_submit"] is True
+    )
+    assert telemetry["prompt_input_token_budget"] == 4000
+    assert telemetry["base_context_token_budget"] == 2800
+    assert telemetry["final_submit_feedback_token_budget"] == 1200
+    assert telemetry["final_submit_evidence"]["deduplicated_count"] == 2
+
+
 def test_force_submit_review_disables_qwen_dashscope_thinking(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     monkeypatch.setenv(

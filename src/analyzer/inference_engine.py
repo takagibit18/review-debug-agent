@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -38,6 +39,21 @@ from src.tools.base import ToolResult, ToolSpec
 logger = logging.getLogger(__name__)
 _SUBMIT_MAX_TOKENS = 2048
 _SYNTHETIC_CONTEXT_MAX_CHARS = 3600
+_FINAL_EVIDENCE_ENTRY_MAX_CHARS = 2400
+_FINAL_EVIDENCE_TOOL_NAMES = {
+    "changed_context",
+    "get_changed_context",
+    "read_file",
+    "symbol_context",
+    "find_symbol_context",
+}
+_PRIOR_ANALYSIS_CONCERN_PATTERN = re.compile(
+    r"\b("
+    r"bug|concern|regression|break(?:s|ing)?|compatibility|incorrect|error|"
+    r"fail(?:s|ure)?|exception|user-visible|fallback|wrapper|truncate(?:s|d|ion)?"
+    r")\b",
+    re.IGNORECASE,
+)
 _DSML_ISSUES_PARAMETER_PATTERN = re.compile(
     r"parameter\s+name\s*=\s*\\?[\"']issues\\?[\"']",
     re.IGNORECASE,
@@ -85,13 +101,23 @@ class InferenceEngine:
     ) -> tuple[AnalysisPlan, int, str]:
         file_contents = file_contents or {}
         settings = get_settings()
-        budget = (
+        submit_only = force_submit or near_last_iteration
+        requested_budget = (
             prompt_input_token_budget
             if prompt_input_token_budget is not None
             else settings.prompt_input_token_budget
         )
-        if force_submit or near_last_iteration:
-            budget = min(budget, settings.final_submit_prompt_token_budget)
+        total_prompt_budget = requested_budget
+        final_feedback_budget = 0
+        if submit_only:
+            total_prompt_budget = min(
+                requested_budget, settings.final_submit_prompt_token_budget
+            )
+            final_feedback_budget = min(
+                settings.final_submit_feedback_token_budget,
+                max(0, total_prompt_budget - 1),
+            )
+        budget = max(1, total_prompt_budget - final_feedback_budget)
         cb = ContextBuilder()
         context_telemetry: dict[str, Any] = {}
         if isinstance(request, ReviewRequest):
@@ -149,16 +175,30 @@ class InferenceEngine:
                     telemetry_sink=context_telemetry,
                 )
 
-        window_iterations = {
-            item.get("iteration")
-            for item in (tool_feedback or [])
-            if isinstance(item, dict)
-        }
-        folded = self._build_folded_feedback_summary(
-            feedback_digest_index or {}, window_iterations
+        final_evidence_telemetry = self._empty_final_evidence_telemetry(
+            final_feedback_budget
         )
-        if folded is not None:
-            messages.append(folded)
+        if submit_only:
+            final_evidence, final_evidence_telemetry = (
+                self._build_final_submit_evidence_summary(
+                    tool_feedback or [],
+                    feedback_digest_index or {},
+                    token_budget=final_feedback_budget,
+                )
+            )
+            if final_evidence is not None:
+                messages.append(final_evidence)
+        else:
+            window_iterations = {
+                item.get("iteration")
+                for item in (tool_feedback or [])
+                if isinstance(item, dict)
+            }
+            folded = self._build_folded_feedback_summary(
+                feedback_digest_index or {}, window_iterations
+            )
+            if folded is not None:
+                messages.append(folded)
         if defer_submit:
             messages.append(
                 Message(
@@ -171,12 +211,11 @@ class InferenceEngine:
                     ),
                 )
             )
-        if tool_feedback and not force_submit:
+        if tool_feedback and not submit_only:
             messages.extend(self._build_tool_feedback_messages(tool_feedback))
             failure_guidance = self._build_failure_guidance_message(tool_feedback)
             if failure_guidance is not None:
                 messages.append(failure_guidance)
-        submit_only = force_submit or near_last_iteration
         if submit_only:
             notice = (
                 FINALIZE_REVIEW_NOTICE
@@ -206,7 +245,10 @@ class InferenceEngine:
             messages=messages,
             tools=tools,
             iteration=iteration,
-            prompt_input_token_budget=budget,
+            prompt_input_token_budget=total_prompt_budget,
+            base_context_token_budget=budget,
+            final_submit_feedback_token_budget=final_feedback_budget,
+            final_evidence_telemetry=final_evidence_telemetry,
             force_submit=submit_only,
         )
         config = None
@@ -268,6 +310,17 @@ class InferenceEngine:
         incomplete_reason = self._length_incomplete_reason(
             response, plan, fallback_parse_valid
         )
+        plan.model_finish_reason = response.finish_reason
+        if submit_only:
+            plan.final_submit_evidence_included_count = int(
+                final_evidence_telemetry["included_count"]
+            )
+            plan.final_submit_evidence_token_count = int(
+                final_evidence_telemetry["estimated_tokens"]
+            )
+            plan.final_submit_evidence_truncated_count = int(
+                final_evidence_telemetry["truncated_count"]
+            )
         if incomplete_reason:
             plan.incomplete_reason = incomplete_reason
             parse_meta["incomplete_reason"] = incomplete_reason
@@ -733,6 +786,233 @@ class InferenceEngine:
         return compacted
 
     @staticmethod
+    def _empty_final_evidence_telemetry(token_budget: int) -> dict[str, int]:
+        return {
+            "token_budget": max(0, token_budget),
+            "available_tool_result_count": 0,
+            "included_tool_result_count": 0,
+            "available_concern_count": 0,
+            "included_concern_count": 0,
+            "included_count": 0,
+            "deduplicated_count": 0,
+            "truncated_count": 0,
+            "estimated_tokens": 0,
+        }
+
+    @classmethod
+    def _build_final_submit_evidence_summary(
+        cls,
+        tool_feedback: list[dict[str, Any]],
+        digest_index: dict[str, dict[str, Any]],
+        *,
+        token_budget: int,
+    ) -> tuple[Message | None, dict[str, int]]:
+        """Build a bounded, deduplicated evidence handoff for submit-only calls."""
+
+        telemetry = cls._empty_final_evidence_telemetry(token_budget)
+        candidates: list[tuple[str, str]] = []
+        seen_tools: set[str] = set()
+        seen_concerns: set[str] = set()
+
+        for item in reversed(tool_feedback):
+            if not isinstance(item, dict):
+                continue
+            tool_call = item.get("tool_call")
+            function_block = (
+                tool_call.get("function") if isinstance(tool_call, dict) else None
+            )
+            if isinstance(function_block, dict):
+                name = str(function_block.get("name", "")).strip()
+                result_payload = cls._tool_result_payload(item.get("result"))
+                if (
+                    name in _FINAL_EVIDENCE_TOOL_NAMES
+                    and result_payload.get("ok") is True
+                ):
+                    signature = cls._final_evidence_tool_signature(function_block)
+                    if signature in seen_tools:
+                        telemetry["deduplicated_count"] += 1
+                    else:
+                        seen_tools.add(signature)
+                        telemetry["available_tool_result_count"] += 1
+                        arguments = cls._json_preview(
+                            function_block.get("arguments", "{}"), 400
+                        )
+                        result = cls._json_preview(
+                            result_payload, _FINAL_EVIDENCE_ENTRY_MAX_CHARS
+                        )
+                        candidates.append(
+                            (
+                                "tool",
+                                f"- tool_evidence iter={item.get('iteration')} "
+                                f"name={name} args={arguments} result={result}",
+                            )
+                        )
+
+            for snippet in cls._prior_analysis_concern_snippets(
+                item.get("reasoning_content")
+            ):
+                normalized = " ".join(snippet.split()).lower()
+                if normalized in seen_concerns:
+                    telemetry["deduplicated_count"] += 1
+                    continue
+                seen_concerns.add(normalized)
+                telemetry["available_concern_count"] += 1
+                candidates.append(("concern", f"- prior_analysis_concern: {snippet}"))
+
+        folded = sorted(
+            digest_index.items(),
+            key=lambda item: (
+                int(item[1].get("iteration", 0) or 0),
+                str(item[1].get("name", "")),
+            ),
+            reverse=True,
+        )
+        for signature, record in folded:
+            name = str(record.get("name", "")).strip()
+            if name not in _FINAL_EVIDENCE_TOOL_NAMES or record.get("ok") is not True:
+                continue
+            if signature in seen_tools:
+                telemetry["deduplicated_count"] += 1
+                continue
+            seen_tools.add(signature)
+            telemetry["available_tool_result_count"] += 1
+            candidates.append(
+                (
+                    "tool",
+                    f"- tool_evidence iter={record.get('iteration')} name={name} "
+                    f"args={record.get('args_preview', '')} "
+                    f"result={record.get('result_preview', '')}",
+                )
+            )
+
+        if token_budget <= 0 or not candidates:
+            telemetry["truncated_count"] = len(candidates)
+            return None, telemetry
+
+        builder = ContextBuilder()
+        lines = [
+            "final_submit_evidence_summary:",
+            "Use this retained evidence and prior analysis when submitting the final "
+            "review. Do not discard a supported concern merely because the exploration "
+            "turn ended at the length limit.",
+        ]
+        if builder.estimate_tokens("\n".join(lines)) > token_budget:
+            telemetry["truncated_count"] = len(candidates)
+            return None, telemetry
+
+        full_included = 0
+        for kind, candidate in candidates:
+            proposed = "\n".join([*lines, candidate])
+            shortened = False
+            if builder.estimate_tokens(proposed) <= token_budget:
+                lines.append(candidate)
+                full_included += 1
+            else:
+                current_tokens = builder.estimate_tokens("\n".join(lines))
+                remaining = max(0, token_budget - current_tokens)
+                fitted = cls._truncate_text_to_tokens(candidate, remaining, builder)
+                if not fitted:
+                    break
+                lines.append(fitted)
+                shortened = True
+            telemetry["included_count"] += 1
+            telemetry[
+                "included_tool_result_count"
+                if kind == "tool"
+                else "included_concern_count"
+            ] += 1
+            if shortened:
+                break
+
+        telemetry["truncated_count"] = len(candidates) - full_included
+        content = "\n".join(lines)
+        telemetry["estimated_tokens"] = builder.estimate_tokens(content)
+        return Message(role="user", content=content), telemetry
+
+    @staticmethod
+    def _tool_result_payload(result: Any) -> dict[str, Any]:
+        if isinstance(result, ToolResult):
+            return result.model_dump()
+        if isinstance(result, dict):
+            return result
+        return {"ok": False, "error": "invalid_tool_result"}
+
+    @staticmethod
+    def _final_evidence_tool_signature(function_block: dict[str, Any]) -> str:
+        name = str(function_block.get("name", "")).strip()
+        arguments = function_block.get("arguments", "{}")
+        if isinstance(arguments, str):
+            try:
+                parsed = json.loads(arguments)
+            except Exception:  # noqa: BLE001
+                parsed = {"raw": arguments}
+        else:
+            parsed = arguments
+        serialized = json.dumps(
+            parsed, ensure_ascii=True, sort_keys=True, default=str
+        )
+        return f"{name}:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _json_preview(value: Any, max_chars: int) -> str:
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:  # noqa: BLE001
+                parsed = value
+        else:
+            parsed = value
+        try:
+            serialized = json.dumps(parsed, ensure_ascii=True, sort_keys=True, default=str)
+        except Exception:  # noqa: BLE001
+            serialized = str(parsed)
+        if len(serialized) <= max_chars:
+            return serialized
+        return serialized[: max(0, max_chars - 14)] + "...[truncated]"
+
+    @staticmethod
+    def _prior_analysis_concern_snippets(reasoning: Any) -> list[str]:
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return []
+        snippets: list[str] = []
+        for segment in re.split(r"(?<=[.!?])\s+|[\r\n]+", reasoning):
+            compact = " ".join(segment.split()).strip()
+            match = _PRIOR_ANALYSIS_CONCERN_PATTERN.search(compact)
+            if match is None or len(compact) < 20:
+                continue
+            if len(compact) > 900:
+                start = max(0, match.start() - 300)
+                compact = compact[start : start + 900]
+            snippets.append(compact)
+            if len(snippets) >= 4:
+                break
+        return snippets
+
+    @staticmethod
+    def _truncate_text_to_tokens(
+        text: str,
+        token_budget: int,
+        builder: ContextBuilder,
+    ) -> str:
+        if token_budget <= 0 or not text:
+            return ""
+        if builder.estimate_tokens(text) <= token_budget:
+            return text
+        low = 0
+        high = len(text)
+        suffix = "...[truncated]"
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = text[:middle].rstrip() + suffix
+            if builder.estimate_tokens(candidate) <= token_budget:
+                low = middle
+            else:
+                high = middle - 1
+        if low < 32:
+            return ""
+        return text[:low].rstrip() + suffix
+
+    @staticmethod
     def _build_folded_feedback_summary(
         digest_index: dict[str, dict[str, Any]],
         window_iterations: set[Any],
@@ -861,6 +1141,16 @@ class InferenceEngine:
                 "fallback_json_found": fallback_json_found,
                 "fallback_parse_valid": fallback_parse_valid,
                 "incomplete_reason": parse_meta.get("incomplete_reason", ""),
+                "model_finish_reason": plan.model_finish_reason,
+                "final_submit_evidence_included_count": (
+                    plan.final_submit_evidence_included_count
+                ),
+                "final_submit_evidence_token_count": (
+                    plan.final_submit_evidence_token_count
+                ),
+                "final_submit_evidence_truncated_count": (
+                    plan.final_submit_evidence_truncated_count
+                ),
                 "force_submit_discarded_count": parse_meta.get(
                     "force_submit_discarded_count", 0
                 ),
@@ -875,6 +1165,9 @@ class InferenceEngine:
         tools: list[dict[str, Any]],
         iteration: int,
         prompt_input_token_budget: int,
+        base_context_token_budget: int,
+        final_submit_feedback_token_budget: int,
+        final_evidence_telemetry: dict[str, int],
         force_submit: bool,
     ) -> None:
         if self._trace_event_writer is None:
@@ -890,10 +1183,15 @@ class InferenceEngine:
             {
                 "iteration": iteration,
                 "prompt_input_token_budget": prompt_input_token_budget,
+                "base_context_token_budget": base_context_token_budget,
+                "final_submit_feedback_token_budget": (
+                    final_submit_feedback_token_budget
+                ),
                 "estimated_message_tokens": message_tokens,
                 "estimated_tool_schema_tokens": tool_schema_tokens,
                 "estimated_prompt_tokens": message_tokens + tool_schema_tokens,
                 "force_submit": force_submit,
+                "final_submit_evidence": final_evidence_telemetry,
                 "tool_schema_count": len(tools),
                 **context_telemetry,
             },
