@@ -76,10 +76,12 @@ class InferenceEngine:
         trace_recorder: TraceRecorder | None = None,
         trace_event_writer: Callable[[EventType, str, dict[str, Any]], None]
         | None = None,
+        model_response_writer: Callable[[ModelResponse, int], str] | None = None,
     ) -> None:
         self._model_client = model_client
         self._trace_recorder = trace_recorder
         self._trace_event_writer = trace_event_writer
+        self._model_response_writer = model_response_writer
 
     async def analyze(
         self,
@@ -265,6 +267,7 @@ class InferenceEngine:
         response = await self._model_client.chat(
             messages=messages, config=config, tools=tools
         )
+        response_id = self._persist_model_response(response, iteration)
         self._record_length_finish(response, iteration, config)
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=submit_only
@@ -282,11 +285,13 @@ class InferenceEngine:
                 repair_plan,
                 repair_response,
                 repair_meta,
+                repair_response_id,
             ) = await self._retry_submit_review_validation_repair(
                 messages=messages,
                 request=request,
                 tool_schemas=tool_schemas or [],
                 validation_error=str(parse_meta["submit_review_validation_error"]),
+                iteration=iteration,
             )
             repair_response.usage.total_tokens += initial_usage.total_tokens
             repair_response.usage.prompt_tokens += initial_usage.prompt_tokens
@@ -295,6 +300,7 @@ class InferenceEngine:
                 plan = repair_plan
                 response = repair_response
                 parse_meta = repair_meta
+                response_id = repair_response_id
             else:
                 response.usage = repair_response.usage
         fallback_json_found = False
@@ -307,6 +313,7 @@ class InferenceEngine:
                 if parsed:
                     fallback_parse_valid = True
                     plan = parsed
+        plan.source_response_id = response_id
         incomplete_reason = self._length_incomplete_reason(
             response, plan, fallback_parse_valid
         )
@@ -344,7 +351,8 @@ class InferenceEngine:
         request: ReviewRequest,
         tool_schemas: list[dict[str, Any]],
         validation_error: str,
-    ) -> tuple[AnalysisPlan, ModelResponse, dict[str, Any]]:
+        iteration: int,
+    ) -> tuple[AnalysisPlan, ModelResponse, dict[str, Any], str]:
         repair_messages = [
             *messages,
             Message(
@@ -369,12 +377,20 @@ class InferenceEngine:
             config=config,
             tools=self._submit_only_tools(tool_schemas, request),
         )
+        response_id = self._persist_model_response(response, iteration)
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=True
         )
         parse_meta["tool_choice"] = self._trace_tool_choice(config)
         parse_meta["thinking_disabled"] = self._is_thinking_disabled(config)
-        return plan, response, parse_meta
+        return plan, response, parse_meta, response_id
+
+    def _persist_model_response(self, response: ModelResponse, iteration: int) -> str:
+        """Persist a provider response before parsing, fallback, or validation."""
+
+        if self._model_response_writer is None:
+            return ""
+        return self._model_response_writer(response, iteration)
 
     def _build_submit_config(
         self, request: ReviewRequest | DebugRequest
@@ -948,9 +964,7 @@ class InferenceEngine:
                 parsed = {"raw": arguments}
         else:
             parsed = arguments
-        serialized = json.dumps(
-            parsed, ensure_ascii=True, sort_keys=True, default=str
-        )
+        serialized = json.dumps(parsed, ensure_ascii=True, sort_keys=True, default=str)
         return f"{name}:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
 
     @staticmethod
@@ -963,7 +977,9 @@ class InferenceEngine:
         else:
             parsed = value
         try:
-            serialized = json.dumps(parsed, ensure_ascii=True, sort_keys=True, default=str)
+            serialized = json.dumps(
+                parsed, ensure_ascii=True, sort_keys=True, default=str
+            )
         except Exception:  # noqa: BLE001
             serialized = str(parsed)
         if len(serialized) <= max_chars:

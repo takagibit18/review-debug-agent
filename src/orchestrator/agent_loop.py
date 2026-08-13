@@ -49,6 +49,15 @@ from src.analyzer.verifier_context import (
 from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError, ModelTimeoutError
+from src.models.schemas import ModelResponse
+from src.orchestrator.run_journal import (
+    ModelResponseJournalPayload,
+    PendingRunJournalEntry,
+    RunJournal,
+    RunJournalError,
+    ToolResultJournalPayload,
+    redact_sensitive_values,
+)
 from src.orchestrator.review_workflow import ReviewWorkflowTracker
 from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
 from src.tools import create_default_registry
@@ -93,6 +102,7 @@ class AgentOrchestrator:
         )
         self._run_id = ""
         self._event_log: EventLog | None = None
+        self._run_journal: RunJournal | None = None
         self._last_plan: AnalysisPlan | None = None
         self._tool_feedback: list[dict[str, Any]] = []
         self._feedback_digest_index: dict[str, dict[str, Any]] = {}
@@ -172,6 +182,8 @@ class AgentOrchestrator:
         self._reviewer_latency_seconds = 0.0
         self._verifier_latency_seconds = 0.0
         self._consolidation_latency_seconds = 0.0
+        self._model_response_journal_writes = 0
+        self._tool_result_journal_writes = 0
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
             max_chars=self._settings.agent_trace_max_chars,
@@ -1377,6 +1389,26 @@ class AgentOrchestrator:
                 )
                 result = self._fallback_plan(request)
                 self._latest_tokens = 0
+            except RunJournalError as exc:
+                self._model_incomplete_seen = True
+                state.errors.append(
+                    ErrorDetail(
+                        file=str(self._run_journal.path) if self._run_journal else "",
+                        message=f"Run journal persistence failed: {exc}",
+                        category="runtime",
+                    )
+                )
+                self._record_event(
+                    EventType.ERROR,
+                    "analyze",
+                    {
+                        "iteration": self._iteration,
+                        "error_type": exc.__class__.__name__,
+                        "message": str(exc),
+                    },
+                )
+                result = self._fallback_plan(request)
+                self._latest_tokens = 0
 
         self._record_event(
             EventType.MODEL_CALL,
@@ -1475,6 +1507,7 @@ class AgentOrchestrator:
                     ErrorDetail(file="", message=err, category="runtime")
                 )
                 results.append(ToolResult(ok=False, error=err, data=structured))
+                self._journal_tool_result(plan, raw_call, results[-1])
                 executed_feedback.append(
                     {
                         "tool_call": raw_call,
@@ -1494,6 +1527,7 @@ class AgentOrchestrator:
                         ErrorDetail(file="", message=err, category="security")
                     )
                     results.append(ToolResult(ok=False, error=err))
+                    self._journal_tool_result(plan, raw_call, results[-1])
                     self._record_event(
                         EventType.ERROR,
                         "execute_tools",
@@ -1513,7 +1547,13 @@ class AgentOrchestrator:
                     index += 1
                     continue
 
-                result, error_detail, elapsed_ms = await self._execute_one_tool(
+                (
+                    result,
+                    error_detail,
+                    elapsed_ms,
+                ) = await self._execute_one_tool_and_journal(
+                    plan=plan,
+                    raw_call=raw_call,
                     tool_name=tool_name,
                     tool=tool,
                     args=args,
@@ -1558,7 +1598,13 @@ class AgentOrchestrator:
                 continue
 
             if not tool.is_concurrency_safe():
-                result, error_detail, elapsed_ms = await self._execute_one_tool(
+                (
+                    result,
+                    error_detail,
+                    elapsed_ms,
+                ) = await self._execute_one_tool_and_journal(
+                    plan=plan,
+                    raw_call=raw_call,
                     tool_name=tool_name,
                     tool=tool,
                     args=args,
@@ -1627,12 +1673,14 @@ class AgentOrchestrator:
 
             batch_results = await asyncio.gather(
                 *[
-                    self._execute_one_tool(
+                    self._execute_one_tool_and_journal(
+                        plan=plan,
+                        raw_call=batch_raw,
                         tool_name=batch_name,
                         tool=batch_tool,
                         args=batch_args,
                     )
-                    for (_, batch_name, batch_tool, batch_args) in batch_calls
+                    for (batch_raw, batch_name, batch_tool, batch_args) in batch_calls
                 ]
             )
             for (batch_raw, batch_name, _, _), (
@@ -1845,6 +1893,16 @@ class AgentOrchestrator:
             run_id=self._run_id,
             log_dir=configured_log_dir,
         )
+        self._run_journal = RunJournal(
+            run_id=self._run_id,
+            path=(
+                self._workspace_root
+                / ".mergewarden"
+                / "runs"
+                / self._run_id
+                / "journal.jsonl"
+            ),
+        )
         self._last_plan = None
         self._tool_feedback = []
         self._feedback_digest_index = {}
@@ -1902,6 +1960,8 @@ class AgentOrchestrator:
         self._reviewer_latency_seconds = 0.0
         self._verifier_latency_seconds = 0.0
         self._consolidation_latency_seconds = 0.0
+        self._model_response_journal_writes = 0
+        self._tool_result_journal_writes = 0
         self._record_event(
             EventType.PHASE_START,
             "prepare",
@@ -2276,6 +2336,25 @@ class AgentOrchestrator:
                     int((perf_counter() - started) * 1000),
                 )
 
+    async def _execute_one_tool_and_journal(
+        self,
+        *,
+        plan: AnalysisPlan,
+        raw_call: dict[str, Any],
+        tool_name: str,
+        tool: BaseTool,
+        args: dict[str, Any],
+    ) -> tuple[ToolResult, ErrorDetail | None, int]:
+        """Execute one model-requested tool and persist its result immediately."""
+
+        result, error_detail, elapsed_ms = await self._execute_one_tool(
+            tool_name=tool_name,
+            tool=tool,
+            args=args,
+        )
+        self._journal_tool_result(plan, raw_call, result)
+        return result, error_detail, elapsed_ms
+
     def _build_tool_call_event_payload(
         self,
         *,
@@ -2309,6 +2388,8 @@ class AgentOrchestrator:
             "model": self._settings.model_name,
             "review_iterations": self._iteration + 1,
             "tool_call_count": self._tool_call_count,
+            "model_response_journal_writes": self._model_response_journal_writes,
+            "tool_result_journal_writes": self._tool_result_journal_writes,
             "grep_calls": self._tool_name_counts.get("grep_files", 0),
             "read_file_calls": self._tool_name_counts.get("read_file", 0),
             "symbol_lookup_calls": sum(
@@ -2534,6 +2615,7 @@ class AgentOrchestrator:
                 self._model_client,
                 trace_recorder=self._trace_recorder,
                 trace_event_writer=self._record_event,
+                model_response_writer=self._journal_model_response,
             )
         try:
             self._model_client = ModelClient(temperature=self._temperature)
@@ -2541,9 +2623,89 @@ class AgentOrchestrator:
                 self._model_client,
                 trace_recorder=self._trace_recorder,
                 trace_event_writer=self._record_event,
+                model_response_writer=self._journal_model_response,
             )
         except Exception:  # noqa: BLE001
             return None
+
+    def _journal_model_response(
+        self,
+        response: ModelResponse,
+        iteration: int,
+    ) -> str:
+        """Persist visible provider output before any response parsing occurs."""
+
+        if self._run_journal is None:
+            return ""
+        payload = ModelResponseJournalPayload(
+            iteration=iteration,
+            model=response.model,
+            finish_reason=response.finish_reason,
+            content=response.content,
+            tool_calls=response.tool_calls,
+            usage=response.usage,
+        )
+        entry = self._run_journal.append(
+            PendingRunJournalEntry(
+                type="model_response",
+                payload=payload.model_dump(mode="json"),
+            )
+        )
+        self._model_response_journal_writes += 1
+        return entry.id
+
+    def _journal_tool_result(
+        self,
+        plan: AnalysisPlan,
+        raw_call: dict[str, Any],
+        result: ToolResult,
+    ) -> None:
+        """Persist a full structured ToolResult bound to its source response."""
+
+        if self._run_journal is None or not plan.source_response_id:
+            return
+        function_block = raw_call.get("function") if isinstance(raw_call, dict) else {}
+        if not isinstance(function_block, dict):
+            function_block = {}
+        tool_name = str(function_block.get("name", "")).strip() or "unknown"
+        raw_arguments = function_block.get("arguments", {})
+        if isinstance(raw_arguments, str):
+            try:
+                parsed_arguments = _json.loads(raw_arguments, strict=False)
+            except (TypeError, ValueError):
+                parsed_arguments = {"raw": raw_arguments}
+        else:
+            parsed_arguments = raw_arguments
+        if not isinstance(parsed_arguments, dict):
+            parsed_arguments = {"value": parsed_arguments}
+        redacted_arguments = redact_sensitive_values(parsed_arguments)
+        redacted_result = redact_sensitive_values(result.model_dump(mode="json"))
+        call_id = str(raw_call.get("id", "")).strip()
+        if not call_id:
+            signature = _json.dumps(
+                function_block,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+            )
+            call_id = (
+                f"runtime_{plan.source_response_id}_"
+                f"{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:12]}"
+            )
+        payload = ToolResultJournalPayload(
+            source_response_id=plan.source_response_id,
+            tool_call_id=call_id,
+            tool=tool_name,
+            arguments=redacted_arguments,
+            result=redacted_result,
+        )
+        self._run_journal.append(
+            PendingRunJournalEntry(
+                type="tool_result",
+                payload=payload.model_dump(mode="json"),
+            )
+        )
+        self._tool_result_journal_writes += 1
 
     @staticmethod
     def _parse_tool_call(raw_call: dict[str, Any]) -> dict[str, Any]:

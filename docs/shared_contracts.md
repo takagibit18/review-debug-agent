@@ -218,6 +218,7 @@ as `get_changed_context` / `find_symbol_context` over large preloaded prompts.
 | Finding verification | `FindingCandidate` 使用稳定 digest id；风险 finding 的 verifier verdict、reason code 和 evidence repair round 写入 event log。确定性拒绝另写入 `deterministic_rejection_details`，逐条记录 candidate/finding、evidence role/index、retrieval source、文件/行号、失败字段、具体规则及是否为 revised finding |
 | Review Workflow | required/completed/missing step、reprompt count 和 enforcement mode 写入 `workflow_summary` |
 | Worker recovery | `review_runs` 保存 lease/heartbeat/attempt；`run_checkpoints` 保存步骤 attempt 和 artifact 路径 |
+| Agent run journal | `.mergewarden/runs/<run_id>/journal.jsonl` 保存 append-only、可恢复的模型响应与结构化工具结果；它与 EventLog 的 observability 职责严格分离 |
 | `RunArtifactSummary` | Artifact-facing CLI/API summary for response JSON, publish result JSON, event log, and related paths |
 
 具体字段若在代码中以 `RunContext` 等模型出现，应在该类型旁或本文档交叉引用。

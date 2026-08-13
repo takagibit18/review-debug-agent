@@ -109,6 +109,21 @@ FastAPI, and eval wrappers. A summary includes event-log status, models, token
 counts, tool-call counts, budget state, stop reasons, submit validation errors,
 artifact paths, and GitHub publish status.
 
+### Durable Run Journal
+
+Recoverable run facts are stored separately from observability events at
+`.mergewarden/runs/<run_id>/journal.jsonl`. The journal is append-only and each
+versioned record contains `schema_version`, `id`, `seq`, `type`, `run_id`,
+`timestamp`, and a typed `payload`. Provider responses are written immediately
+after `ModelClient.chat()` returns and before tool-call parsing or validation;
+model records include visible `content`, tool calls, finish reason, model, and
+usage, but never `reasoning_content` or hidden chain-of-thought. Structured tool
+results are appended as soon as execution returns and are bound to the source
+model-response id. Every append uses write + flush + `fsync`; replay tolerates
+only a malformed final line as an interrupted append and treats earlier damage
+as corruption. `EventLog` remains the telemetry/eval source and is not used as
+recovery storage.
+
 ### v0.2.0 Finding Verification and Workflow Gate
 
 Review output now passes through two explicit gates after the normal five-phase loop:

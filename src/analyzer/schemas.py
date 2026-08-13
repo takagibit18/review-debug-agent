@@ -168,6 +168,10 @@ class DebugResponse(BaseModel):
 class AnalysisPlan(BaseModel):
     """Structured plan produced by the analyze phase."""
 
+    source_response_id: str = Field(
+        default="",
+        description="Durable run-journal id of the model response behind this plan",
+    )
     needs_tools: bool = Field(
         default=False,
         description="Whether tool execution is required in this iteration",
