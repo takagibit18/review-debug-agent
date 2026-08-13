@@ -17,10 +17,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from src.models.schemas import TokenUsage
+from src.models.schemas import DraftFinding, TokenUsage
 
 RUN_JOURNAL_SCHEMA_VERSION: Literal["1.0"] = "1.0"
-RunJournalEntryType = Literal["model_response", "tool_result"]
+RunJournalEntryType = Literal["model_response", "tool_result", "draft_finding"]
 
 _SENSITIVE_KEYWORDS = (
     "api_key",
@@ -250,11 +250,13 @@ class RunJournal:
         entry_type: RunJournalEntryType,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        model: ModelResponseJournalPayload | ToolResultJournalPayload
+        model: ModelResponseJournalPayload | ToolResultJournalPayload | DraftFinding
         if entry_type == "model_response":
             model = ModelResponseJournalPayload.model_validate(payload)
-        else:
+        elif entry_type == "tool_result":
             model = ToolResultJournalPayload.model_validate(payload)
+        else:
+            model = DraftFinding.model_validate(payload)
         return model.model_dump(mode="json")
 
 

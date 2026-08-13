@@ -11,6 +11,7 @@ from src.analyzer.context_state import ContextState
 from src.analyzer.finding_schema import normalize_repo_path
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport
+from src.models.schemas import DraftFindingInput
 
 
 class ReviewRequest(BaseModel):
@@ -179,6 +180,10 @@ class AnalysisPlan(BaseModel):
     tool_calls: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Raw tool-call payloads parsed from model output",
+    )
+    draft_finding_calls: list[DraftFindingInput] = Field(
+        default_factory=list,
+        description="Validated minimal draft-finding pseudo-tool inputs",
     )
     draft_review: ReviewReport | None = Field(
         default=None,

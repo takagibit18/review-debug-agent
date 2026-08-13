@@ -50,6 +50,7 @@ from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.exceptions import ModelClientError, ModelTimeoutError
 from src.models.schemas import ModelResponse
+from src.orchestrator.draft_findings import DraftFindingStore
 from src.orchestrator.run_journal import (
     ModelResponseJournalPayload,
     PendingRunJournalEntry,
@@ -59,7 +60,11 @@ from src.orchestrator.run_journal import (
     redact_sensitive_values,
 )
 from src.orchestrator.review_workflow import ReviewWorkflowTracker
-from src.orchestrator.tool_schemas import build_submit_tool_schemas, build_tool_schemas
+from src.orchestrator.tool_schemas import (
+    build_draft_finding_tool_schema,
+    build_submit_tool_schemas,
+    build_tool_schemas,
+)
 from src.tools import create_default_registry
 from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolSpec
 from src.tools.exceptions import ToolError
@@ -103,6 +108,7 @@ class AgentOrchestrator:
         self._run_id = ""
         self._event_log: EventLog | None = None
         self._run_journal: RunJournal | None = None
+        self._draft_finding_store = DraftFindingStore()
         self._last_plan: AnalysisPlan | None = None
         self._tool_feedback: list[dict[str, Any]] = []
         self._feedback_digest_index: dict[str, dict[str, Any]] = {}
@@ -184,6 +190,7 @@ class AgentOrchestrator:
         self._consolidation_latency_seconds = 0.0
         self._model_response_journal_writes = 0
         self._tool_result_journal_writes = 0
+        self._draft_findings_created = 0
         self._trace_recorder = TraceRecorder(
             detail_mode=self._settings.agent_trace_detail,
             max_chars=self._settings.agent_trace_max_chars,
@@ -1342,6 +1349,11 @@ class AgentOrchestrator:
                     serialized_tools = build_submit_tool_schemas()
                 else:
                     serialized_tools = build_tool_schemas(tool_specs)
+                    if (
+                        isinstance(request, ReviewRequest)
+                        and self._permission_mode != "plan"
+                    ):
+                        serialized_tools.append(build_draft_finding_tool_schema())
                     if not defer_review_submit:
                         serialized_tools += build_submit_tool_schemas()
                 result, total_tokens, reasoning_content = await engine.analyze(
@@ -1355,6 +1367,7 @@ class AgentOrchestrator:
                     file_contents=file_contents,
                     tool_feedback=self._tool_feedback,
                     feedback_digest_index=self._feedback_digest_index,
+                    draft_findings=self._draft_finding_store.all(),
                     prompt_input_token_budget=self._settings.prompt_input_token_budget,
                     iteration=self._iteration,
                     force_submit=force_submit,
@@ -1363,6 +1376,7 @@ class AgentOrchestrator:
                 )
                 self._latest_tokens = total_tokens
                 self._last_reasoning_content = reasoning_content
+                self._persist_draft_finding_calls(result)
                 if result.draft_review is not None:
                     self._submit_review_seen_any = True
                 if result.draft_debug is not None:
@@ -1904,6 +1918,7 @@ class AgentOrchestrator:
             ),
         )
         self._last_plan = None
+        self._draft_finding_store = DraftFindingStore()
         self._tool_feedback = []
         self._feedback_digest_index = {}
         self._tool_dedup_cache = {}
@@ -1962,6 +1977,7 @@ class AgentOrchestrator:
         self._consolidation_latency_seconds = 0.0
         self._model_response_journal_writes = 0
         self._tool_result_journal_writes = 0
+        self._draft_findings_created = 0
         self._record_event(
             EventType.PHASE_START,
             "prepare",
@@ -2390,6 +2406,7 @@ class AgentOrchestrator:
             "tool_call_count": self._tool_call_count,
             "model_response_journal_writes": self._model_response_journal_writes,
             "tool_result_journal_writes": self._tool_result_journal_writes,
+            "draft_findings_created": self._draft_findings_created,
             "grep_calls": self._tool_name_counts.get("grep_files", 0),
             "read_file_calls": self._tool_name_counts.get("read_file", 0),
             "symbol_lookup_calls": sum(
@@ -2653,6 +2670,45 @@ class AgentOrchestrator:
         )
         self._model_response_journal_writes += 1
         return entry.id
+
+    def _persist_draft_finding_calls(self, plan: AnalysisPlan) -> None:
+        """Journal runtime-bound drafts before making them available in memory."""
+
+        if not plan.draft_finding_calls:
+            return
+        if self._run_journal is None:
+            raise RunJournalError(
+                "Draft finding cannot be persisted without a run journal"
+            )
+        if not plan.source_response_id:
+            raise RunJournalError(
+                "Draft finding cannot be bound without a source model-response id"
+            )
+        for draft_input in plan.draft_finding_calls:
+            draft = self._draft_finding_store.bind(
+                draft_input,
+                source_response_id=plan.source_response_id,
+            )
+            self._run_journal.append(
+                PendingRunJournalEntry(
+                    type="draft_finding",
+                    payload=draft.model_dump(mode="json"),
+                )
+            )
+            self._draft_finding_store.add(draft)
+            self._draft_findings_created += 1
+            self._record_event(
+                EventType.DECISION,
+                "draft_finding",
+                {
+                    "iteration": self._iteration,
+                    "draft_id": draft.id,
+                    "source_response_id": draft.source_response_id,
+                    "file": draft.file,
+                    "line": draft.line,
+                    "symbol": draft.symbol,
+                },
+            )
 
     def _journal_tool_result(
         self,

@@ -233,6 +233,12 @@ as `get_changed_context` / `find_symbol_context` over large preloaded prompts.
 - 面向模型的 **工具列表** 与 **输出格式** 说明（须与第 2、4、5 节一致）；
 - 任何「强制 JSON」或 function-calling 的 schema 版本。
 
+Review 正常分析阶段可额外暴露编排层伪工具 `record_draft_finding`。模型输入
+严格限于 `file`、`claim` 与可选 `line`/`symbol`；`id`、
+`source_response_id` 由 runtime 绑定。该对象只表示待验证假设，不包含 severity、
+confidence、root cause、impact、evidence/verifier/candidate 字段，也不能绕过
+`submit_review` 或后续 verifier 合同。
+
 避免仅在一侧仓库私密修改导致线上与本地行为分叉。
 
 ---

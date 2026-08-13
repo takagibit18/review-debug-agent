@@ -33,7 +33,13 @@ from src.analyzer.schemas import (
 from src.analyzer.trace import TraceRecorder
 from src.config import get_settings
 from src.models.client import ModelClient
-from src.models.schemas import Message, ModelConfig, ModelResponse
+from src.models.schemas import (
+    DraftFinding,
+    DraftFindingInput,
+    Message,
+    ModelConfig,
+    ModelResponse,
+)
 from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -95,6 +101,7 @@ class InferenceEngine:
         file_contents: dict[str, str] | None = None,
         tool_feedback: list[dict[str, Any]] | None = None,
         feedback_digest_index: dict[str, dict[str, Any]] | None = None,
+        draft_findings: list[DraftFinding] | None = None,
         prompt_input_token_budget: int | None = None,
         iteration: int = 0,
         force_submit: bool = False,
@@ -185,6 +192,7 @@ class InferenceEngine:
                 self._build_final_submit_evidence_summary(
                     tool_feedback or [],
                     feedback_digest_index or {},
+                    draft_findings or [],
                     token_budget=final_feedback_budget,
                 )
             )
@@ -297,6 +305,7 @@ class InferenceEngine:
             repair_response.usage.prompt_tokens += initial_usage.prompt_tokens
             repair_response.usage.completion_tokens += initial_usage.completion_tokens
             if repair_plan.draft_review is not None:
+                repair_plan.draft_finding_calls = plan.draft_finding_calls
                 plan = repair_plan
                 response = repair_response
                 parse_meta = repair_meta
@@ -312,6 +321,7 @@ class InferenceEngine:
                 parsed = self._try_parse_submit_payload_from_json(fallback, request)
                 if parsed:
                     fallback_parse_valid = True
+                    parsed.draft_finding_calls = plan.draft_finding_calls
                     plan = parsed
         plan.source_response_id = response_id
         incomplete_reason = self._length_incomplete_reason(
@@ -476,6 +486,7 @@ class InferenceEngine:
         force_submit: bool = False,
     ) -> tuple[AnalysisPlan, dict[str, Any]]:
         tool_calls: list[dict[str, Any]] = []
+        draft_finding_calls: list[DraftFindingInput] = []
         draft_review: ReviewReport | None = None
         draft_debug: DebugResponse | None = None
         parse_meta: dict[str, Any] = {
@@ -483,6 +494,7 @@ class InferenceEngine:
             "submit_debug_seen": False,
             "submit_review_validation_error": "",
             "submit_debug_validation_error": "",
+            "draft_finding_validation_errors": [],
             "location_warnings": [],
             "force_submit_discarded_count": 0,
         }
@@ -503,6 +515,26 @@ class InferenceEngine:
                 payload = {}
                 argument_error = f"Invalid arguments for {name}: {exc}"
 
+            if name == "record_draft_finding":
+                if force_submit or not isinstance(request, ReviewRequest):
+                    parse_meta["force_submit_discarded_count"] += int(force_submit)
+                    continue
+                if argument_error or not isinstance(payload, dict):
+                    error = argument_error or (
+                        "Invalid record_draft_finding arguments type: "
+                        f"{type(payload).__name__}"
+                    )
+                    parse_meta["draft_finding_validation_errors"].append(error)
+                    logger.warning("Invalid draft finding ignored: %s", error)
+                    continue
+                try:
+                    draft_finding_calls.append(
+                        DraftFindingInput.model_validate(payload)
+                    )
+                except ValidationError as exc:
+                    parse_meta["draft_finding_validation_errors"].append(str(exc))
+                    logger.warning("Invalid draft finding ignored: %s", exc)
+                continue
             if name == "submit_review":
                 parse_meta["submit_review_seen"] = True
                 if argument_error or not isinstance(payload, dict):
@@ -565,6 +597,7 @@ class InferenceEngine:
                 AnalysisPlan(
                     needs_tools=bool(tool_calls),
                     tool_calls=tool_calls,
+                    draft_finding_calls=draft_finding_calls,
                     draft_review=draft_review,
                 ),
                 parse_meta,
@@ -805,6 +838,8 @@ class InferenceEngine:
     def _empty_final_evidence_telemetry(token_budget: int) -> dict[str, int]:
         return {
             "token_budget": max(0, token_budget),
+            "available_draft_finding_count": 0,
+            "included_draft_finding_count": 0,
             "available_tool_result_count": 0,
             "included_tool_result_count": 0,
             "available_concern_count": 0,
@@ -820,6 +855,7 @@ class InferenceEngine:
         cls,
         tool_feedback: list[dict[str, Any]],
         digest_index: dict[str, dict[str, Any]],
+        draft_findings: list[DraftFinding],
         *,
         token_budget: int,
     ) -> tuple[Message | None, dict[str, int]]:
@@ -829,6 +865,20 @@ class InferenceEngine:
         candidates: list[tuple[str, str]] = []
         seen_tools: set[str] = set()
         seen_concerns: set[str] = set()
+
+        for draft in draft_findings:
+            telemetry["available_draft_finding_count"] += 1
+            location = draft.file
+            if draft.line is not None:
+                location += f":{draft.line}"
+            if draft.symbol:
+                location += f" ({draft.symbol})"
+            candidates.append(
+                (
+                    "draft",
+                    f"- {draft.id}: {location}\n  claim: {draft.claim}",
+                )
+            )
 
         for item in reversed(tool_feedback):
             if not isinstance(item, dict):
@@ -908,10 +958,13 @@ class InferenceEngine:
         builder = ContextBuilder()
         lines = [
             "final_submit_evidence_summary:",
-            "Use this retained evidence and prior analysis when submitting the final "
-            "review. Do not discard a supported concern merely because the exploration "
-            "turn ended at the length limit.",
+            "Known draft findings are investigation hypotheses, not automatic final "
+            "findings. Decide whether retained evidence supports submitting each one. "
+            "Do not discard a supported concern merely because the exploration turn "
+            "ended at the length limit.",
         ]
+        if draft_findings:
+            lines.append("Known draft findings:")
         if builder.estimate_tokens("\n".join(lines)) > token_budget:
             telemetry["truncated_count"] = len(candidates)
             return None, telemetry
@@ -932,11 +985,12 @@ class InferenceEngine:
                 lines.append(fitted)
                 shortened = True
             telemetry["included_count"] += 1
-            telemetry[
-                "included_tool_result_count"
-                if kind == "tool"
-                else "included_concern_count"
-            ] += 1
+            if kind == "draft":
+                telemetry["included_draft_finding_count"] += 1
+            elif kind == "tool":
+                telemetry["included_tool_result_count"] += 1
+            else:
+                telemetry["included_concern_count"] += 1
             if shortened:
                 break
 
@@ -1145,6 +1199,10 @@ class InferenceEngine:
                 "tool_calls_count": len(plan.tool_calls),
                 "has_draft_review": plan.draft_review is not None,
                 "has_draft_debug": plan.draft_debug is not None,
+                "draft_finding_call_count": len(plan.draft_finding_calls),
+                "draft_finding_validation_errors": parse_meta.get(
+                    "draft_finding_validation_errors", []
+                ),
                 "submit_review_seen": bool(parse_meta.get("submit_review_seen")),
                 "submit_debug_seen": bool(parse_meta.get("submit_debug_seen")),
                 "submit_review_validation_error": self._trace_recorder.build_text_preview(

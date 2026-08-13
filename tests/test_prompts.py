@@ -52,6 +52,17 @@ def test_review_prompts_describe_atomic_review_tools() -> None:
     assert "submit_review" in combined
 
 
+def test_review_prompts_require_early_minimal_draft_without_promoting_it() -> None:
+    combined = f"{SYSTEM_PROMPT_REVIEW}\n{USER_PREFIX_REVIEW}\n{FINALIZE_REVIEW_NOTICE}"
+
+    assert "record_draft_finding" in combined
+    assert "before further exploration" in combined
+    assert "optional line/symbol plus the claim only" in combined
+    assert "investigation hypothesis" in combined
+    assert "not a final finding" in combined
+    assert "submit only those supported" in combined
+
+
 def test_review_prompts_make_evidence_provenance_system_owned() -> None:
     assert "runtime binds candidate_id and retrieval_source" in AGENT_SEARCH_POLICY
     assert "runtime binds its real diff, read, symbol" in GRAPH_CONTEXT_POLICY

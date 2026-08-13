@@ -124,6 +124,16 @@ only a malformed final line as an interrupted append and treats earlier damage
 as corruption. `EventLog` remains the telemetry/eval source and is not used as
 recovery storage.
 
+Review runs also expose the orchestrator-owned `record_draft_finding` pseudo-tool
+during normal (non-plan, non-finalize) analysis. Its model-controlled schema is
+deliberately weak: required `file` and `claim`, plus optional `line` and `symbol`.
+The runtime generates `id` and binds `source_response_id`, appends the complete
+six-field `DraftFinding` to the journal, and only then updates the in-memory
+`DraftFindingStore`, before ordinary tools execute. Drafts are investigation
+hypotheses, not final findings: finalize receives them ahead of retained tool
+evidence and legacy concern snippets, but `submit_review` and all downstream
+policy/verifier gates remain authoritative.
+
 ### v0.2.0 Finding Verification and Workflow Gate
 
 Review output now passes through two explicit gates after the normal five-phase loop:

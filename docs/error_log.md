@@ -4,6 +4,7 @@
 
 | Date | Module | Error | Cause | Fix |
 |------|--------|-------|-------|-----|
+| 2026-08-13 | Draft Finding schema patch | 首个 `AnalysisPlan` 补丁因 import 上下文不匹配而未应用 | 补丁沿用了旧模块布局，实际 `schemas.py` 还导入 `model_validator` 与 finding/location helper | 读取文件头后改用精确 import 与 `tool_calls` 字段锚点；确认首个补丁没有部分写入 |
 | 2026-08-13 | Run Journal typing | 定向 `mypy` 报 `schema_version` 默认值是普通 `str`，不能赋给 `Literal["1.0"]` 字段 | 版本常量未显式保留字面量类型，mypy 将模块级常量扩大推断为 `str` | 将 `RUN_JOURNAL_SCHEMA_VERSION` 标注为 `Literal["1.0"]`；随后重跑定向与全量类型检查 |
 | 2026-08-13 | Final verifier-contract Core Eval | 唯一正式矩阵只有 7/10 valid；Pydantic MergeWarden 与 pytest A/B 都未提交 review | 三个 run 的 workspace/validator/预算均正常，但 reviewer response 在 4096 completion tokens 以 `finish_reason=length` 截断且没有 tool call；pytest A/B 分析已明确找到 gold bug，Pydantic MergeWarden 也触及 gold 相关行为 | 遵守单轮策略不补跑、不改 budget/gold/matcher/verifier；保留 invalid records，并把剩余问题归为 reviewer discovery/submission reliability，而不是 evidence-chain rejection |
 | 2026-08-13 | Final Core Eval JSON audit | 首个 PowerShell 聚合把 calculated-property hashtable 传给 `Measure-Object -Property`，四个总数返回 null 并输出 property-not-found 错误 | Windows PowerShell 的 `Measure-Object -Property` 不接受该 calculated-property 形态 | 改为先用 `ForEach-Object` 投影成整数，再 `Measure-Object -Sum`；重新断言 10 records、attempt=1、6/6 valid controls，并得到 deterministic reject 2 / final 0 / gold 0 / clean FP 0 |
