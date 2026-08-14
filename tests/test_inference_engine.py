@@ -12,6 +12,7 @@ from src.analyzer.event_log import EventType
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.trace import TraceRecorder
 from src.analyzer.schemas import DebugRequest, ReviewRequest
+from src.models.conversation import ModelConversation
 from src.models.schemas import ModelResponse, TokenUsage
 from src.tools.base import ToolResult
 
@@ -727,7 +728,7 @@ def test_regular_review_enables_high_thinking_for_exploration(monkeypatch) -> No
 
     assert client.policies[-1].thinking == "high"
     assert client.policies[-1].forced_tool is None
-    assert client.configs[-1].max_tokens == 8192
+    assert client.configs[-1].max_tokens == 12288
 
 
 def test_analyze_records_context_telemetry_without_content(monkeypatch) -> None:
@@ -814,6 +815,83 @@ def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(
         "summary must not mention bugs, regressions" in str(message.content)
         for message in client.calls[-1]
     )
+
+
+def test_force_submit_places_replayed_tool_history_before_evidence_and_final_notice(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    conversation = ModelConversation()
+    read_call = {
+        "id": "prior-read",
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "arguments": '{"file_path":"pkg/wrapper.py"}',
+        },
+    }
+    conversation.add_assistant_tool_turn(
+        response_id="prior-response",
+        content="",
+        thinking="provider replay only",
+        tool_calls=[read_call],
+    )
+    conversation.add_tool_result(
+        "prior-read",
+        {"ok": True, "content": "return self.obj == other"},
+    )
+    engine = InferenceEngine(
+        model_client=client,  # type: ignore[arg-type]
+        conversation=conversation,
+    )
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+            tool_feedback=[
+                {
+                    "iteration": 0,
+                    "tool_call": read_call,
+                    "result": ToolResult(
+                        ok=True,
+                        data={
+                            "file_path": "pkg/wrapper.py",
+                            "content": "EVIDENCE-MARKER: return self.obj == other",
+                        },
+                    ),
+                }
+            ],
+            force_submit=True,
+        )
+    )
+
+    messages = client.calls[-1]
+    assistant_index = next(
+        index for index, message in enumerate(messages) if message.role == "assistant"
+    )
+    tool_index = next(
+        index
+        for index, message in enumerate(messages)
+        if message.role == "tool" and message.tool_call_id == "prior-read"
+    )
+    evidence_index = next(
+        index
+        for index, message in enumerate(messages)
+        if "final_submit_evidence_summary" in message.content
+    )
+    notice_index = next(
+        index
+        for index, message in enumerate(messages)
+        if "FINAL CALL" in message.content
+    )
+
+    assert assistant_index < tool_index < evidence_index < notice_index
+    assert notice_index == len(messages) - 1
+    assert messages[assistant_index].thinking == "provider replay only"
 
 
 def test_force_submit_review_uses_compact_reserved_prompt_budget(monkeypatch) -> None:

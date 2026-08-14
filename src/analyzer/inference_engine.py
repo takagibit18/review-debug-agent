@@ -46,7 +46,7 @@ from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
 _SUBMIT_MAX_TOKENS = 2048
-_EXPLORATION_MAX_TOKENS = 8192
+_EXPLORATION_MAX_TOKENS = 12288
 _SYNTHETIC_CONTEXT_MAX_CHARS = 3600
 _FINAL_EVIDENCE_ENTRY_MAX_CHARS = 2400
 _FINAL_EVIDENCE_TOOL_NAMES = {
@@ -185,6 +185,7 @@ class InferenceEngine:
         final_evidence_telemetry = self._empty_final_evidence_telemetry(
             final_feedback_budget
         )
+        finalize_conversation_insert_at = len(messages) if submit_only else None
         if submit_only:
             final_evidence, final_evidence_telemetry = (
                 self._build_final_submit_evidence_summary(
@@ -277,8 +278,17 @@ class InferenceEngine:
             thinking="off" if submit_only else "high",
             forced_tool=self._submit_tool_name(request) if submit_only else None,
         )
-        conversation_history_count = len(self._conversation.messages())
-        messages.extend(self._conversation.messages())
+        conversation_messages = self._conversation.messages()
+        conversation_history_count = len(conversation_messages)
+        if submit_only:
+            assert finalize_conversation_insert_at is not None
+            conversation_history_start = finalize_conversation_insert_at
+            messages[conversation_history_start:conversation_history_start] = (
+                conversation_messages
+            )
+        else:
+            conversation_history_start = len(messages)
+            messages.extend(conversation_messages)
         response = await self._model_client.chat(
             messages=messages,
             config=config,
@@ -314,6 +324,7 @@ class InferenceEngine:
                 tool_schemas=tool_schemas or [],
                 validation_error=str(parse_meta["submit_review_validation_error"]),
                 iteration=iteration,
+                prior_history_start=conversation_history_start,
                 prior_history_count=conversation_history_count,
                 invalid_tool_calls=response.tool_calls,
             )
@@ -384,6 +395,7 @@ class InferenceEngine:
         tool_schemas: list[dict[str, Any]],
         validation_error: str,
         iteration: int,
+        prior_history_start: int,
         prior_history_count: int,
         invalid_tool_calls: list[dict[str, Any]],
     ) -> tuple[AnalysisPlan, ModelResponse, dict[str, Any], str]:
@@ -398,12 +410,11 @@ class InferenceEngine:
                         "message": validation_error,
                     },
                 )
-        base_messages = (
-            messages[:-prior_history_count] if prior_history_count else messages
-        )
+        prior_history_end = prior_history_start + prior_history_count
         repair_messages = [
-            *base_messages,
+            *messages[:prior_history_start],
             *self._conversation.messages(),
+            *messages[prior_history_end:],
             Message(
                 role="user",
                 content=(

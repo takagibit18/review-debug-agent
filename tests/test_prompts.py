@@ -57,6 +57,9 @@ def test_review_prompts_require_early_minimal_draft_without_promoting_it() -> No
 
     assert "record_draft_finding" in combined
     assert "before further exploration" in combined
+    assert "mandatory draft checkpoint" in combined
+    assert "next assistant action must include" in combined
+    assert "private analysis" in combined
     assert "optional line/symbol plus the claim only" in combined
     assert "investigation hypothesis" in combined
     assert "not a final finding" in combined
