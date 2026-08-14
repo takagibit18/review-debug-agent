@@ -399,6 +399,16 @@ class AgentOrchestrator:
                 "severity_reviewed_count": self._severity_reviewed_count,
                 "severity_promoted_count": self._severity_promoted_count,
                 "verifier_context_entry_count": len(self._verifier_tool_evidence),
+                "candidates": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "source_issue_index": item.source_issue_index,
+                        "candidate_kind": item.candidate_kind,
+                        "finding_id": item.issue.finding_id,
+                        "location": item.issue.location,
+                    }
+                    for item in candidates
+                ],
                 "mode": self._finding_verifier_mode,
             },
         )
@@ -658,6 +668,14 @@ class AgentOrchestrator:
                 "raw_reason_codes": [
                     code for item in raw_batch.results for code in item.reason_codes
                 ],
+                "raw_verdicts": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "status": item.status,
+                        "reason_codes": item.reason_codes,
+                    }
+                    for item in raw_batch.results
+                ],
                 "deterministic_evidence_checked_count": validation_stats.checked_count,
                 "deterministic_evidence_passed_count": validation_stats.passed_count,
                 "deterministic_evidence_rejected_count": validation_stats.rejected_count,
@@ -670,6 +688,14 @@ class AgentOrchestrator:
                 "mode": self._finding_verifier_mode,
                 "reason_codes": [
                     code for item in batch.results for code in item.reason_codes
+                ],
+                "verdicts": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "status": item.status,
+                        "reason_codes": item.reason_codes,
+                    }
+                    for item in batch.results
                 ],
             },
         )

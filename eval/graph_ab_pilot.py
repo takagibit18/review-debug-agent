@@ -12,6 +12,7 @@ import hashlib
 import json
 import random
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -334,6 +335,7 @@ async def run_single_lifecycle(
     prime_graph_index: bool,
     temperature: float,
     review_max_iterations: int,
+    diagnostic_artifact_dir: Path | None = None,
 ) -> tuple[EvalResult, dict[str, Any]]:
     """Run the frozen eval pipeline with phase-two-owned index lifecycle."""
     expected_count = len(fixture.expected.issues)
@@ -348,6 +350,7 @@ async def run_single_lifecycle(
                 Path(tmp_dir) / "repo",
                 workspace_cache_dir=Path(get_settings().eval_workspace_cache_dir),
             )
+            lifecycle["workspace_prepared"] = True
             stage_timings["prepare_workspace_seconds"] = perf_counter() - stage_started
             stage_started = perf_counter()
             validation_errors = await asyncio.to_thread(
@@ -361,6 +364,7 @@ async def run_single_lifecycle(
             )
             stage_timings["validate_fixture_seconds"] = perf_counter() - stage_started
             if validation_errors:
+                lifecycle["fixture_validation_passed"] = False
                 return (
                     EvalResult(
                         fixture_id=fixture.id,
@@ -373,6 +377,7 @@ async def run_single_lifecycle(
                     ),
                     lifecycle,
                 )
+            lifecycle["fixture_validation_passed"] = True
             workspace_sqlite_before = sorted(
                 path.relative_to(repo_root).as_posix()
                 for path in repo_root.rglob("*.sqlite*")
@@ -486,6 +491,25 @@ async def run_single_lifecycle(
                 fixture.id,
                 parsed_response.run_id,
             )
+            if diagnostic_artifact_dir is not None:
+                journal_source = (
+                    repo_root
+                    / ".mergewarden"
+                    / "runs"
+                    / parsed_response.run_id
+                    / "journal.jsonl"
+                )
+                lifecycle["run_journal_status"] = (
+                    "persisted" if journal_source.is_file() else "missing_no_entries"
+                )
+                if journal_source.is_file():
+                    diagnostic_artifact_dir.mkdir(parents=True, exist_ok=True)
+                    journal_target = (
+                        diagnostic_artifact_dir
+                        / f"{fixture.id}_{variant.id}_{parsed_response.run_id}_journal.jsonl"
+                    )
+                    shutil.copy2(journal_source, journal_target)
+                    lifecycle["run_journal_path"] = str(journal_target.resolve())
             matches, matched_count, false_positive_count = base_runner._match_issues(
                 fixture, parsed_response
             )
