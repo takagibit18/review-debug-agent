@@ -46,11 +46,15 @@ class _SequenceClient:
         self.messages: list[list[Any]] = []
         self.tools: list[list[dict[str, Any]] | None] = []
         self.configs: list[ModelConfig | None] = []
+        self.policies: list[Any] = []
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.messages.append(messages)
         self.tools.append(tools)
         self.configs.append(config)
+        self.policies.append(policy)
         index = len(self.messages) - 1
         if index >= len(self._responses):
             raise AssertionError("Unexpected extra model call")
@@ -157,10 +161,8 @@ def test_length_with_draft_and_tool_recovers_via_submit_only_context(
     assert len(client.messages) == 2
     assert _tool_names(client.tools[1]) == {"submit_review"}
     assert client.configs[1] is not None
-    assert client.configs[1].tool_choice == {
-        "type": "function",
-        "function": {"name": "submit_review"},
-    }
+    assert client.policies[1].forced_tool == "submit_review"
+    assert client.policies[1].thinking == "off"
     final_context = next(
         message.content
         for message in client.messages[1]
@@ -399,7 +401,7 @@ def test_length_without_draft_still_recovers_and_never_persists_reasoning(
         event for event in recovery_events if event["payload"]["status"] == "required"
     )
     assert required["payload"]["draft_finding_ids"] == []
-    assert required["payload"]["transient_reasoning_present"] is True
+    assert "transient_reasoning_present" not in required["payload"]
 
 
 def test_length_recovery_accepts_explicit_valid_empty_review(

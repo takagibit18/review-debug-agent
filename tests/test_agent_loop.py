@@ -15,6 +15,7 @@ from src.analyzer.schemas import (
     ReviewRequest,
 )
 from src.models.exceptions import ModelTimeoutError
+from src.models.schemas import TokenUsage
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
 from src.tools.file_read import FileReadTool
@@ -1420,8 +1421,7 @@ def test_model_timeout_still_skips_extra_finalize(tmp_path, monkeypatch) -> None
                             {"function": {"name": "echo_tool", "arguments": "{}"}}
                         ],
                     ),
-                    100,
-                    "",
+                    TokenUsage(total_tokens=100),
                 )
             raise ModelTimeoutError("provider timed out after 90s", code="timeout")
 

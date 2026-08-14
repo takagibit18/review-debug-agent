@@ -87,7 +87,7 @@ def test_inference_parses_draft_as_pseudo_tool_not_regular_tool() -> None:
         model_response_writer=lambda response, iteration: "rje_runtime_bound",
     )
 
-    plan, _, _ = asyncio.run(
+    plan, _ = asyncio.run(
         engine.analyze(
             state=ContextState(goal="Run structured code review"),
             request=ReviewRequest(repo_path="."),
@@ -139,7 +139,9 @@ def test_validation_repair_keeps_draft_bound_to_original_response() -> None:
             self.default_config = ModelConfig(model="fake-model")
             self.calls = 0
 
-        async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+        async def chat(
+            self, messages, config=None, tools=None, policy=None, conversation=None
+        ):  # type: ignore[no-untyped-def]
             self.calls += 1
             if self.calls == 1:
                 return ModelResponse(
@@ -184,7 +186,7 @@ def test_validation_repair_keeps_draft_bound_to_original_response() -> None:
         model_response_writer=lambda response, iteration: next(response_ids),
     )
 
-    plan, _, _ = asyncio.run(
+    plan, _ = asyncio.run(
         engine.analyze(
             state=ContextState(goal="Run structured code review"),
             request=ReviewRequest(repo_path="."),
@@ -199,7 +201,7 @@ def test_validation_repair_keeps_draft_bound_to_original_response() -> None:
     assert plan.draft_review is not None
 
 
-def test_finalize_context_prioritizes_drafts_before_evidence_and_legacy_concerns() -> (
+def test_finalize_context_prioritizes_drafts_before_evidence_without_private_thinking() -> (
     None
 ):
     draft = DraftFinding(
@@ -221,9 +223,6 @@ def test_finalize_context_prioritizes_drafts_before_evidence_and_legacy_concerns
                     }
                 },
                 "result": ToolResult(ok=True, data={"content": "return left == right"}),
-                "reasoning_content": (
-                    "Compatibility regression may compare the wrapper against itself."
-                ),
             }
         ],
         {},
@@ -233,12 +232,10 @@ def test_finalize_context_prioritizes_drafts_before_evidence_and_legacy_concerns
 
     assert message is not None
     assert message.content.index("df_runtime") < message.content.index("tool_evidence")
-    assert message.content.index("tool_evidence") < message.content.index(
-        "prior_analysis_concern"
-    )
+    assert "prior_analysis_concern" not in message.content
     assert telemetry["included_draft_finding_count"] == 1
     assert telemetry["included_tool_result_count"] == 1
-    assert telemetry["included_concern_count"] == 1
+    assert telemetry["included_concern_count"] == 0
 
 
 class _OneResponseClient:
@@ -250,7 +247,9 @@ class _OneResponseClient:
         self.tools: list[list[dict[str, Any]] | None] = []
         self.messages: list[list[Any]] = []
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.messages.append(messages)
         self.tools.append(tools)
         return self.response.model_copy(deep=True)
@@ -265,7 +264,9 @@ class _DraftThenSubmitClient:
         self.messages: list[list[Any]] = []
         self.tools: list[list[dict[str, Any]] | None] = []
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.calls += 1
         self.messages.append(messages)
         self.tools.append(tools)
@@ -416,7 +417,9 @@ class _ModeSchemaClient:
         self.default_config = ModelConfig(model="fake-model")
         self.tools: list[list[dict[str, Any]] | None] = []
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.tools.append(tools)
         is_review = "code reviewer" in str(messages[0].content).lower()
         return ModelResponse(

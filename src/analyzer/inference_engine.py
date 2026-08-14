@@ -7,7 +7,6 @@ import json
 import logging
 import re
 from typing import Any, Callable
-from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -33,17 +32,21 @@ from src.analyzer.schemas import (
 from src.analyzer.trace import TraceRecorder
 from src.config import get_settings
 from src.models.client import ModelClient
+from src.models.compat import ModelCallPolicy
+from src.models.conversation import ModelConversation
 from src.models.schemas import (
     DraftFinding,
     DraftFindingInput,
     Message,
     ModelConfig,
     ModelResponse,
+    TokenUsage,
 )
 from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
 _SUBMIT_MAX_TOKENS = 2048
+_EXPLORATION_MAX_TOKENS = 12288
 _SYNTHETIC_CONTEXT_MAX_CHARS = 3600
 _FINAL_EVIDENCE_ENTRY_MAX_CHARS = 2400
 _FINAL_EVIDENCE_TOOL_NAMES = {
@@ -53,13 +56,6 @@ _FINAL_EVIDENCE_TOOL_NAMES = {
     "symbol_context",
     "find_symbol_context",
 }
-_PRIOR_ANALYSIS_CONCERN_PATTERN = re.compile(
-    r"\b("
-    r"bug|concern|regression|break(?:s|ing)?|compatibility|incorrect|error|"
-    r"fail(?:s|ure)?|exception|user-visible|fallback|wrapper|truncate(?:s|d|ion)?"
-    r")\b",
-    re.IGNORECASE,
-)
 _DSML_ISSUES_PARAMETER_PATTERN = re.compile(
     r"parameter\s+name\s*=\s*\\?[\"']issues\\?[\"']",
     re.IGNORECASE,
@@ -83,11 +79,13 @@ class InferenceEngine:
         trace_event_writer: Callable[[EventType, str, dict[str, Any]], None]
         | None = None,
         model_response_writer: Callable[[ModelResponse, int], str] | None = None,
+        conversation: ModelConversation | None = None,
     ) -> None:
         self._model_client = model_client
         self._trace_recorder = trace_recorder
         self._trace_event_writer = trace_event_writer
         self._model_response_writer = model_response_writer
+        self._conversation = conversation or ModelConversation()
 
     async def analyze(
         self,
@@ -107,7 +105,7 @@ class InferenceEngine:
         force_submit: bool = False,
         near_last_iteration: bool = False,
         defer_submit: bool = False,
-    ) -> tuple[AnalysisPlan, int, str]:
+    ) -> tuple[AnalysisPlan, TokenUsage]:
         file_contents = file_contents or {}
         settings = get_settings()
         submit_only = force_submit or near_last_iteration
@@ -187,6 +185,7 @@ class InferenceEngine:
         final_evidence_telemetry = self._empty_final_evidence_telemetry(
             final_feedback_budget
         )
+        finalize_conversation_insert_at = len(messages) if submit_only else None
         if submit_only:
             final_evidence, final_evidence_telemetry = (
                 self._build_final_submit_evidence_summary(
@@ -264,6 +263,10 @@ class InferenceEngine:
         config = None
         if submit_only:
             config = self._build_submit_config(request)
+        else:
+            config = self._model_client.default_config.model_copy(
+                update={"max_tokens": _EXPLORATION_MAX_TOKENS}
+            )
         if request.model_name:
             if config is None:
                 config = self._model_client.default_config.model_copy(
@@ -271,19 +274,38 @@ class InferenceEngine:
                 )
             else:
                 config.model = request.model_name
-        config = self._with_thinking_disabled_if_needed(config)
+        policy = ModelCallPolicy(
+            thinking="off" if submit_only else "high",
+            forced_tool=self._submit_tool_name(request) if submit_only else None,
+        )
+        conversation_messages = self._conversation.messages()
+        conversation_history_count = len(conversation_messages)
+        if submit_only:
+            assert finalize_conversation_insert_at is not None
+            conversation_history_start = finalize_conversation_insert_at
+            messages[conversation_history_start:conversation_history_start] = (
+                conversation_messages
+            )
+        else:
+            conversation_history_start = len(messages)
+            messages.extend(conversation_messages)
         response = await self._model_client.chat(
-            messages=messages, config=config, tools=tools
+            messages=messages,
+            config=config,
+            tools=tools,
+            policy=policy,
+            conversation=self._conversation,
         )
         response_id = self._persist_model_response(response, iteration)
         self._record_length_finish(response, iteration, config)
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=submit_only
         )
+        self._complete_invalid_draft_tool_calls(response.tool_calls, parse_meta)
         if plan.draft_finding_calls:
             plan.draft_finding_source_response_id = response_id
         parse_meta["tool_choice"] = self._trace_tool_choice(config)
-        parse_meta["thinking_disabled"] = self._is_thinking_disabled(config)
+        parse_meta["thinking_disabled"] = policy.thinking == "off"
         if (
             isinstance(request, ReviewRequest)
             and plan.draft_review is None
@@ -302,10 +324,14 @@ class InferenceEngine:
                 tool_schemas=tool_schemas or [],
                 validation_error=str(parse_meta["submit_review_validation_error"]),
                 iteration=iteration,
+                prior_history_start=conversation_history_start,
+                prior_history_count=conversation_history_count,
+                invalid_tool_calls=response.tool_calls,
             )
             repair_response.usage.total_tokens += initial_usage.total_tokens
             repair_response.usage.prompt_tokens += initial_usage.prompt_tokens
             repair_response.usage.completion_tokens += initial_usage.completion_tokens
+            repair_response.usage.reasoning_tokens += initial_usage.reasoning_tokens
             if repair_plan.draft_review is not None:
                 repair_plan.draft_finding_calls = plan.draft_finding_calls
                 repair_plan.draft_finding_source_response_id = (
@@ -359,7 +385,7 @@ class InferenceEngine:
             fallback_json_found,
             fallback_parse_valid,
         )
-        return plan, response.usage.total_tokens, response.reasoning_content
+        return plan, response.usage
 
     async def _retry_submit_review_validation_repair(
         self,
@@ -369,9 +395,26 @@ class InferenceEngine:
         tool_schemas: list[dict[str, Any]],
         validation_error: str,
         iteration: int,
+        prior_history_start: int,
+        prior_history_count: int,
+        invalid_tool_calls: list[dict[str, Any]],
     ) -> tuple[AnalysisPlan, ModelResponse, dict[str, Any], str]:
+        for raw_call in invalid_tool_calls:
+            call_id = str(raw_call.get("id", "")).strip()
+            if call_id:
+                self._conversation.add_tool_result(
+                    call_id,
+                    {
+                        "ok": False,
+                        "error_type": "validation_error",
+                        "message": validation_error,
+                    },
+                )
+        prior_history_end = prior_history_start + prior_history_count
         repair_messages = [
-            *messages,
+            *messages[:prior_history_start],
+            *self._conversation.messages(),
+            *messages[prior_history_end:],
             Message(
                 role="user",
                 content=(
@@ -383,23 +426,20 @@ class InferenceEngine:
             ),
         ]
         config = self._build_submit_config(request)
-        thinking_override = self._thinking_disable_extra_body(config)
-        if thinking_override:
-            config.extra_body = {
-                **(config.extra_body or {}),
-                **thinking_override,
-            }
+        policy = ModelCallPolicy(thinking="off", forced_tool="submit_review")
         response = await self._model_client.chat(
             messages=repair_messages,
             config=config,
             tools=self._submit_only_tools(tool_schemas, request),
+            policy=policy,
+            conversation=self._conversation,
         )
         response_id = self._persist_model_response(response, iteration)
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=True
         )
         parse_meta["tool_choice"] = self._trace_tool_choice(config)
-        parse_meta["thinking_disabled"] = self._is_thinking_disabled(config)
+        parse_meta["thinking_disabled"] = True
         return plan, response, parse_meta, response_id
 
     def _persist_model_response(self, response: ModelResponse, iteration: int) -> str:
@@ -415,31 +455,12 @@ class InferenceEngine:
         return self._model_client.default_config.model_copy(
             update={
                 "max_tokens": _SUBMIT_MAX_TOKENS,
-                "tool_choice": self._forced_submit_tool_choice(request),
             }
         )
 
-    def _with_thinking_disabled_if_needed(
-        self,
-        config: ModelConfig | None,
-    ) -> ModelConfig | None:
-        candidate = config or self._model_client.default_config
-        thinking_override = self._thinking_disable_extra_body(candidate)
-        if not thinking_override:
-            return config
-        updated = config or candidate.model_copy(deep=True)
-        updated.extra_body = {
-            **(updated.extra_body or {}),
-            **thinking_override,
-        }
-        return updated
-
     @staticmethod
-    def _forced_submit_tool_choice(
-        request: ReviewRequest | DebugRequest,
-    ) -> dict[str, dict[str, str] | str]:
-        name = "submit_review" if isinstance(request, ReviewRequest) else "submit_debug"
-        return {"type": "function", "function": {"name": name}}
+    def _submit_tool_name(request: ReviewRequest | DebugRequest) -> str:
+        return "submit_review" if isinstance(request, ReviewRequest) else "submit_debug"
 
     @staticmethod
     def _submit_only_tools(
@@ -455,29 +476,6 @@ class InferenceEngine:
             if isinstance(tool.get("function"), dict)
             and tool["function"].get("name") == expected
         ]
-
-    @staticmethod
-    def _thinking_disable_extra_body(config: ModelConfig) -> dict[str, Any]:
-        model = config.model.strip().lower()
-        base_url = str(get_settings().openai_base_url).strip().lower()
-        if model.startswith("deepseek") or "deepseek" in base_url:
-            return {"thinking": {"type": "disabled"}}
-        if "dashscope" in base_url or model.startswith(("qwen", "glm")):
-            return {"enable_thinking": False}
-        return {}
-
-    @staticmethod
-    def _requires_thinking_disabled(config: ModelConfig) -> bool:
-        return bool(InferenceEngine._thinking_disable_extra_body(config))
-
-    @staticmethod
-    def _is_thinking_disabled(config: ModelConfig | None) -> bool:
-        if config is None or not isinstance(config.extra_body, dict):
-            return False
-        if config.extra_body.get("enable_thinking") is False:
-            return True
-        thinking = config.extra_body.get("thinking")
-        return isinstance(thinking, dict) and thinking.get("type") == "disabled"
 
     @staticmethod
     def _trace_tool_choice(config: ModelConfig | None) -> Any:
@@ -502,6 +500,7 @@ class InferenceEngine:
             "submit_review_validation_error": "",
             "submit_debug_validation_error": "",
             "draft_finding_validation_errors": [],
+            "valid_draft_call_ids": [],
             "location_warnings": [],
             "force_submit_discarded_count": 0,
         }
@@ -537,6 +536,9 @@ class InferenceEngine:
                 try:
                     draft_finding_calls.append(
                         DraftFindingInput.model_validate(payload)
+                    )
+                    parse_meta["valid_draft_call_ids"].append(
+                        str(raw.get("id", "")).strip()
                     )
                 except ValidationError as exc:
                     parse_meta["draft_finding_validation_errors"].append(str(exc))
@@ -617,6 +619,32 @@ class InferenceEngine:
             ),
             parse_meta,
         )
+
+    def _complete_invalid_draft_tool_calls(
+        self,
+        raw_calls: list[dict[str, Any]],
+        parse_meta: dict[str, Any],
+    ) -> None:
+        """Satisfy rejected pseudo-calls so provider replay remains complete."""
+
+        valid_ids = set(parse_meta.get("valid_draft_call_ids", []))
+        for raw in raw_calls:
+            function = raw.get("function") if isinstance(raw, dict) else None
+            if not isinstance(function, dict):
+                continue
+            if function.get("name") != "record_draft_finding":
+                continue
+            call_id = str(raw.get("id", "")).strip()
+            if not call_id or call_id in valid_ids:
+                continue
+            self._conversation.add_tool_result(
+                call_id,
+                {
+                    "ok": False,
+                    "recorded": False,
+                    "error_type": "validation_error",
+                },
+            )
 
     @staticmethod
     def _parse_tool_arguments(arguments: Any) -> Any:
@@ -803,27 +831,6 @@ class InferenceEngine:
                 )
                 continue
 
-            call_id = str(raw_tool_call.get("id", "")).strip()
-            if not call_id:
-                call_id = "fallback-" + uuid4().hex[:12]
-                raw_tool_call = {**raw_tool_call, "id": call_id}
-
-            reasoning = item.get("reasoning_content") or None
-            messages.append(
-                Message(
-                    role="assistant",
-                    content="",
-                    tool_calls=[raw_tool_call],
-                    reasoning_content=reasoning,
-                )
-            )
-            messages.append(
-                Message(
-                    role="tool",
-                    content=iter_tag + json.dumps(result_payload, ensure_ascii=True),
-                    tool_call_id=call_id,
-                )
-            )
         return messages
 
     @staticmethod
@@ -871,7 +878,6 @@ class InferenceEngine:
         telemetry = cls._empty_final_evidence_telemetry(token_budget)
         candidates: list[tuple[str, str]] = []
         seen_tools: set[str] = set()
-        seen_concerns: set[str] = set()
 
         for draft in draft_findings:
             telemetry["available_draft_finding_count"] += 1
@@ -920,17 +926,6 @@ class InferenceEngine:
                                 f"name={name} args={arguments} result={result}",
                             )
                         )
-
-            for snippet in cls._prior_analysis_concern_snippets(
-                item.get("reasoning_content")
-            ):
-                normalized = " ".join(snippet.split()).lower()
-                if normalized in seen_concerns:
-                    telemetry["deduplicated_count"] += 1
-                    continue
-                seen_concerns.add(normalized)
-                telemetry["available_concern_count"] += 1
-                candidates.append(("concern", f"- prior_analysis_concern: {snippet}"))
 
         folded = sorted(
             digest_index.items(),
@@ -1046,24 +1041,6 @@ class InferenceEngine:
         if len(serialized) <= max_chars:
             return serialized
         return serialized[: max(0, max_chars - 14)] + "...[truncated]"
-
-    @staticmethod
-    def _prior_analysis_concern_snippets(reasoning: Any) -> list[str]:
-        if not isinstance(reasoning, str) or not reasoning.strip():
-            return []
-        snippets: list[str] = []
-        for segment in re.split(r"(?<=[.!?])\s+|[\r\n]+", reasoning):
-            compact = " ".join(segment.split()).strip()
-            match = _PRIOR_ANALYSIS_CONCERN_PATTERN.search(compact)
-            if match is None or len(compact) < 20:
-                continue
-            if len(compact) > 900:
-                start = max(0, match.start() - 300)
-                compact = compact[start : start + 900]
-            snippets.append(compact)
-            if len(snippets) >= 4:
-                break
-        return snippets
 
     @staticmethod
     def _truncate_text_to_tokens(
@@ -1188,7 +1165,6 @@ class InferenceEngine:
                     response.content
                 ),
                 "content_length": len(response.content),
-                "reasoning_content_length": len(response.reasoning_content),
                 "tool_choice": parse_meta.get("tool_choice"),
                 "thinking_disabled": bool(parse_meta.get("thinking_disabled")),
                 "tool_call_summaries": self._trace_recorder.build_tool_call_summaries(
@@ -1297,7 +1273,6 @@ class InferenceEngine:
                 "usage": response.usage.model_dump(),
                 "max_tokens": config.max_tokens if config is not None else None,
                 "content_length": len(response.content),
-                "reasoning_content_length": len(response.reasoning_content),
             },
         )
 
@@ -1336,6 +1311,5 @@ class InferenceEngine:
                 "usage": response.usage.model_dump(),
                 "max_tokens": config.max_tokens if config is not None else None,
                 "content_length": len(response.content),
-                "reasoning_content_length": len(response.reasoning_content),
             },
         )

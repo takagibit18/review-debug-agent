@@ -8,8 +8,10 @@ from typing import Any
 
 import pytest
 
-from src.models.exceptions import ModelTimeoutError
+from src.models.exceptions import ModelClientError, ModelTimeoutError
 from src.models.client import ModelClient
+from src.models.compat import ModelCallPolicy
+from src.models.conversation import AssistantToolTurn, ModelConversation
 from src.models.schemas import Message, ModelConfig
 
 
@@ -59,7 +61,9 @@ def _make_client(
     return client
 
 
-def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config() -> None:
+def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config() -> (
+    None
+):
     fake = _FakeOpenAIClient()
     client = _make_client(fake, base_url="https://api.deepseek.com/v1")
     config = ModelConfig(
@@ -68,7 +72,9 @@ def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config()
         extra_body={"trace_id": "keep-me"},
     )
 
-    asyncio.run(client.chat(messages=[Message(role="user", content="verify")], config=config))
+    asyncio.run(
+        client.chat(messages=[Message(role="user", content="verify")], config=config)
+    )
 
     assert fake.completions.payload is not None
     assert fake.completions.payload["extra_body"] == {
@@ -80,13 +86,17 @@ def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config()
 
 def test_forced_tool_choice_disables_dashscope_thinking() -> None:
     fake = _FakeOpenAIClient()
-    client = _make_client(fake, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    client = _make_client(
+        fake, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
     config = ModelConfig(
         model="qwen-plus",
         tool_choice={"type": "function", "function": {"name": "verify"}},
     )
 
-    asyncio.run(client.chat(messages=[Message(role="user", content="verify")], config=config))
+    asyncio.run(
+        client.chat(messages=[Message(role="user", content="verify")], config=config)
+    )
 
     assert fake.completions.payload is not None
     assert fake.completions.payload["extra_body"] == {"enable_thinking": False}
@@ -107,7 +117,7 @@ def test_call_without_forced_tool_choice_does_not_change_thinking() -> None:
     assert "extra_body" not in fake.completions.payload
 
 
-def test_chat_forwards_tool_choice_extra_body_and_reasoning_messages() -> None:
+def test_chat_forwards_tool_choice_extra_body_and_transient_thinking() -> None:
     fake = _FakeOpenAIClient()
     client = _make_client(fake)
     config = ModelConfig(
@@ -117,18 +127,21 @@ def test_chat_forwards_tool_choice_extra_body_and_reasoning_messages() -> None:
         extra_body={"thinking": {"type": "disabled"}},
     )
 
+    conversation = ModelConversation()
+    conversation.add_assistant_tool_turn(
+        response_id="prior",
+        content="",
+        thinking="prior reasoning",
+        tool_calls=[{"id": "call-1", "function": {"name": "read_file"}}],
+    )
+    conversation.add_tool_result("call-1", {"ok": True})
+
     response = asyncio.run(
         client.chat(
-            messages=[
-                Message(
-                    role="assistant",
-                    content="",
-                    tool_calls=[{"id": "call-1", "function": {"name": "read_file"}}],
-                    reasoning_content="prior reasoning",
-                )
-            ],
+            messages=conversation.messages(),
             config=config,
             tools=[{"type": "function", "function": {"name": "submit_review"}}],
+            conversation=conversation,
         )
     )
 
@@ -141,7 +154,8 @@ def test_chat_forwards_tool_choice_extra_body_and_reasoning_messages() -> None:
     assert payload["max_tokens"] == 8192
     assert payload["extra_body"] == {"thinking": {"type": "disabled"}}
     assert payload["messages"][0]["reasoning_content"] == "prior reasoning"
-    assert response.reasoning_content == "kept reasoning"
+    assert isinstance(conversation.turns[0], AssistantToolTurn)
+    assert response.usage.reasoning_tokens == 0
 
 
 def test_chat_enforces_outer_request_timeout() -> None:
@@ -153,5 +167,36 @@ def test_chat_enforces_outer_request_timeout() -> None:
             client.chat(
                 messages=[Message(role="user", content="slow")],
                 config=ModelConfig(model="fake-model", timeout=0.01),
+            )
+        )
+
+
+def test_explicit_provider_overrides_legacy_url_detection() -> None:
+    fake = _FakeOpenAIClient()
+    client = _make_client(fake, base_url="https://api.deepseek.com/v1")
+    client._settings.model_provider = "openai"  # noqa: SLF001
+
+    asyncio.run(
+        client.chat(
+            messages=[Message(role="user", content="ordinary")],
+            config=ModelConfig(model="deepseek-v4-pro"),
+            policy=ModelCallPolicy(thinking="off"),
+        )
+    )
+
+    assert fake.completions.payload is not None
+    assert "extra_body" not in fake.completions.payload
+
+
+def test_deepseek_rejects_thinking_with_forced_tool() -> None:
+    fake = _FakeOpenAIClient()
+    client = _make_client(fake, base_url="https://api.deepseek.com/v1")
+
+    with pytest.raises(ModelClientError, match="forced tool choice with thinking"):
+        asyncio.run(
+            client.chat(
+                messages=[Message(role="user", content="verify")],
+                config=ModelConfig(model="deepseek-v4-pro"),
+                policy=ModelCallPolicy(thinking="high", forced_tool="verify"),
             )
         )

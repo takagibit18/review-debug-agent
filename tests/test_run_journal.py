@@ -67,6 +67,7 @@ def test_append_replay_and_last_entry_preserve_monotonic_order(tmp_path) -> None
         "prompt_tokens": 10,
         "completion_tokens": 20,
         "total_tokens": 30,
+        "reasoning_tokens": 0,
     }
 
 
@@ -81,6 +82,7 @@ def test_length_response_is_saved_without_reasoning_content(tmp_path) -> None:
     assert entry.payload["finish_reason"] == "length"
     assert entry.payload["content"] == "partial visible claim"
     assert "reasoning_content" not in path.read_text(encoding="utf-8")
+    assert "thinking_content" not in path.read_text(encoding="utf-8")
 
 
 def test_tool_result_follows_source_response_and_keeps_structured_result(
@@ -169,7 +171,9 @@ class _LengthModelClient:
     def __init__(self) -> None:
         self.default_config = ModelConfig(model="fake-model")
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         return ModelResponse(
             content="visible partial finding",
             tool_calls=[],
@@ -244,7 +248,9 @@ class _ToolThenSubmitClient:
         self.default_config = ModelConfig(model="fake-model")
         self.calls = 0
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.calls += 1
         if self.calls == 1:
             return ModelResponse(
