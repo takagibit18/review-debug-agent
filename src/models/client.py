@@ -26,6 +26,7 @@ from src.models.exceptions import (
     RateLimitError,
     ServiceUnavailableError,
 )
+from src.models.compat import ModelCallPolicy, ModelProfile, resolve_model_profile
 from src.models.schemas import Message, ModelConfig, ModelResponse, TokenUsage
 
 
@@ -67,12 +68,17 @@ class ModelClient:
         messages: list[Message],
         config: ModelConfig | None = None,
         tools: list[dict[str, Any]] | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> ModelResponse:
         """Run one chat-completion request and return normalized output."""
         if not messages:
             raise ModelClientError("messages must not be empty")
 
-        runtime_config = self._with_forced_tool_compat(config or self._default_config)
+        source_config = config or self._default_config
+        profile = self.profile_for(source_config.model)
+        runtime_config, runtime_policy = self._apply_policy(
+            source_config, policy, profile
+        )
         payload: dict[str, Any] = {
             "model": runtime_config.model,
             "messages": self._serialize_messages(messages),
@@ -86,6 +92,11 @@ class ModelClient:
             payload["tool_choice"] = runtime_config.tool_choice
         if runtime_config.extra_body is not None:
             payload["extra_body"] = runtime_config.extra_body
+        if (
+            runtime_policy.thinking == "high"
+            and profile.compat.supports_reasoning_effort
+        ):
+            payload["reasoning_effort"] = "high"
 
         last_error: ModelClientError | None = None
         for attempt in range(self._max_retries):
@@ -167,28 +178,72 @@ class ModelClient:
 
         raise ModelClientError("Model request failed after retries", code="max_retries")
 
-    def _with_forced_tool_compat(self, config: ModelConfig) -> ModelConfig:
-        """Return a provider-compatible copy for forced structured tool calls."""
-        if not self._is_forced_tool_choice(config.tool_choice):
-            return config
-        model = config.model.strip().lower()
-        base_url = str(self._settings.openai_base_url).strip().lower()
-        override: dict[str, Any] = {}
-        if model.startswith("deepseek") or "deepseek" in base_url:
-            override = {"thinking": {"type": "disabled"}}
-        elif "dashscope" in base_url or model.startswith(("qwen", "glm")):
-            override = {"enable_thinking": False}
-        if not override:
-            return config
+    def profile_for(self, model: str) -> ModelProfile:
+        """Resolve compatibility metadata for a configured model."""
+
+        return resolve_model_profile(self._settings, model)
+
+    @classmethod
+    def _apply_policy(
+        cls,
+        config: ModelConfig,
+        policy: ModelCallPolicy | None,
+        profile: ModelProfile,
+    ) -> tuple[ModelConfig, ModelCallPolicy]:
+        """Translate provider-neutral call intent into current wire controls."""
+
+        forced_from_config = cls._forced_tool_name(config.tool_choice)
+        if policy is None and forced_from_config is None:
+            return config, ModelCallPolicy(thinking="off")
+        effective = policy or ModelCallPolicy(
+            thinking="off",
+            forced_tool=forced_from_config,
+        )
+        if (
+            effective.thinking != "off"
+            and effective.forced_tool
+            and not profile.compat.supports_tool_choice_with_thinking
+        ):
+            raise ModelClientError(
+                "Model profile does not support forced tool choice with thinking",
+                code="incompatible_call_policy",
+            )
+
         updated = config.model_copy(deep=True)
-        updated.extra_body = {**(updated.extra_body or {}), **override}
-        return updated
+        if effective.forced_tool:
+            updated.tool_choice = {
+                "type": "function",
+                "function": {"name": effective.forced_tool},
+            }
+        if profile.compat.thinking_format == "deepseek":
+            updated.extra_body = {
+                **(updated.extra_body or {}),
+                "thinking": {
+                    "type": "enabled" if effective.thinking == "high" else "disabled"
+                },
+            }
+        elif profile.compat.thinking_format == "dashscope":
+            updated.extra_body = {
+                **(updated.extra_body or {}),
+                "enable_thinking": effective.thinking == "high",
+            }
+        return updated, effective
 
     @staticmethod
     def _is_forced_tool_choice(value: str | dict[str, Any] | None) -> bool:
         if isinstance(value, dict):
             return value.get("type") == "function"
         return value == "required"
+
+    @staticmethod
+    def _forced_tool_name(value: str | dict[str, Any] | None) -> str | None:
+        if not isinstance(value, dict) or value.get("type") != "function":
+            return None
+        function = value.get("function")
+        if not isinstance(function, dict):
+            return None
+        name = str(function.get("name", "")).strip()
+        return name or None
 
     async def close(self) -> None:
         """Close underlying HTTP resources."""

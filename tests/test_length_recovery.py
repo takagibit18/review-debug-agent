@@ -47,7 +47,7 @@ class _SequenceClient:
         self.tools: list[list[dict[str, Any]] | None] = []
         self.configs: list[ModelConfig | None] = []
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
         self.messages.append(messages)
         self.tools.append(tools)
         self.configs.append(config)

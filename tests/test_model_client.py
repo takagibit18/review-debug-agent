@@ -8,8 +8,9 @@ from typing import Any
 
 import pytest
 
-from src.models.exceptions import ModelTimeoutError
+from src.models.exceptions import ModelClientError, ModelTimeoutError
 from src.models.client import ModelClient
+from src.models.compat import ModelCallPolicy
 from src.models.schemas import Message, ModelConfig
 
 
@@ -153,5 +154,36 @@ def test_chat_enforces_outer_request_timeout() -> None:
             client.chat(
                 messages=[Message(role="user", content="slow")],
                 config=ModelConfig(model="fake-model", timeout=0.01),
+            )
+        )
+
+
+def test_explicit_provider_overrides_legacy_url_detection() -> None:
+    fake = _FakeOpenAIClient()
+    client = _make_client(fake, base_url="https://api.deepseek.com/v1")
+    client._settings.model_provider = "openai"  # noqa: SLF001
+
+    asyncio.run(
+        client.chat(
+            messages=[Message(role="user", content="ordinary")],
+            config=ModelConfig(model="deepseek-v4-pro"),
+            policy=ModelCallPolicy(thinking="off"),
+        )
+    )
+
+    assert fake.completions.payload is not None
+    assert "extra_body" not in fake.completions.payload
+
+
+def test_deepseek_rejects_thinking_with_forced_tool() -> None:
+    fake = _FakeOpenAIClient()
+    client = _make_client(fake, base_url="https://api.deepseek.com/v1")
+
+    with pytest.raises(ModelClientError, match="forced tool choice with thinking"):
+        asyncio.run(
+            client.chat(
+                messages=[Message(role="user", content="verify")],
+                config=ModelConfig(model="deepseek-v4-pro"),
+                policy=ModelCallPolicy(thinking="high", forced_tool="verify"),
             )
         )

@@ -33,6 +33,7 @@ from src.analyzer.schemas import (
 from src.analyzer.trace import TraceRecorder
 from src.config import get_settings
 from src.models.client import ModelClient
+from src.models.compat import ModelCallPolicy
 from src.models.schemas import (
     DraftFinding,
     DraftFindingInput,
@@ -271,9 +272,12 @@ class InferenceEngine:
                 )
             else:
                 config.model = request.model_name
-        config = self._with_thinking_disabled_if_needed(config)
+        policy = ModelCallPolicy(
+            thinking="off",
+            forced_tool=self._submit_tool_name(request) if submit_only else None,
+        )
         response = await self._model_client.chat(
-            messages=messages, config=config, tools=tools
+            messages=messages, config=config, tools=tools, policy=policy
         )
         response_id = self._persist_model_response(response, iteration)
         self._record_length_finish(response, iteration, config)
@@ -283,7 +287,7 @@ class InferenceEngine:
         if plan.draft_finding_calls:
             plan.draft_finding_source_response_id = response_id
         parse_meta["tool_choice"] = self._trace_tool_choice(config)
-        parse_meta["thinking_disabled"] = self._is_thinking_disabled(config)
+        parse_meta["thinking_disabled"] = policy.thinking == "off"
         if (
             isinstance(request, ReviewRequest)
             and plan.draft_review is None
@@ -383,23 +387,19 @@ class InferenceEngine:
             ),
         ]
         config = self._build_submit_config(request)
-        thinking_override = self._thinking_disable_extra_body(config)
-        if thinking_override:
-            config.extra_body = {
-                **(config.extra_body or {}),
-                **thinking_override,
-            }
+        policy = ModelCallPolicy(thinking="off", forced_tool="submit_review")
         response = await self._model_client.chat(
             messages=repair_messages,
             config=config,
             tools=self._submit_only_tools(tool_schemas, request),
+            policy=policy,
         )
         response_id = self._persist_model_response(response, iteration)
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=True
         )
         parse_meta["tool_choice"] = self._trace_tool_choice(config)
-        parse_meta["thinking_disabled"] = self._is_thinking_disabled(config)
+        parse_meta["thinking_disabled"] = True
         return plan, response, parse_meta, response_id
 
     def _persist_model_response(self, response: ModelResponse, iteration: int) -> str:
@@ -415,31 +415,12 @@ class InferenceEngine:
         return self._model_client.default_config.model_copy(
             update={
                 "max_tokens": _SUBMIT_MAX_TOKENS,
-                "tool_choice": self._forced_submit_tool_choice(request),
             }
         )
 
-    def _with_thinking_disabled_if_needed(
-        self,
-        config: ModelConfig | None,
-    ) -> ModelConfig | None:
-        candidate = config or self._model_client.default_config
-        thinking_override = self._thinking_disable_extra_body(candidate)
-        if not thinking_override:
-            return config
-        updated = config or candidate.model_copy(deep=True)
-        updated.extra_body = {
-            **(updated.extra_body or {}),
-            **thinking_override,
-        }
-        return updated
-
     @staticmethod
-    def _forced_submit_tool_choice(
-        request: ReviewRequest | DebugRequest,
-    ) -> dict[str, dict[str, str] | str]:
-        name = "submit_review" if isinstance(request, ReviewRequest) else "submit_debug"
-        return {"type": "function", "function": {"name": name}}
+    def _submit_tool_name(request: ReviewRequest | DebugRequest) -> str:
+        return "submit_review" if isinstance(request, ReviewRequest) else "submit_debug"
 
     @staticmethod
     def _submit_only_tools(
@@ -455,29 +436,6 @@ class InferenceEngine:
             if isinstance(tool.get("function"), dict)
             and tool["function"].get("name") == expected
         ]
-
-    @staticmethod
-    def _thinking_disable_extra_body(config: ModelConfig) -> dict[str, Any]:
-        model = config.model.strip().lower()
-        base_url = str(get_settings().openai_base_url).strip().lower()
-        if model.startswith("deepseek") or "deepseek" in base_url:
-            return {"thinking": {"type": "disabled"}}
-        if "dashscope" in base_url or model.startswith(("qwen", "glm")):
-            return {"enable_thinking": False}
-        return {}
-
-    @staticmethod
-    def _requires_thinking_disabled(config: ModelConfig) -> bool:
-        return bool(InferenceEngine._thinking_disable_extra_body(config))
-
-    @staticmethod
-    def _is_thinking_disabled(config: ModelConfig | None) -> bool:
-        if config is None or not isinstance(config.extra_body, dict):
-            return False
-        if config.extra_body.get("enable_thinking") is False:
-            return True
-        thinking = config.extra_body.get("thinking")
-        return isinstance(thinking, dict) and thinking.get("type") == "disabled"
 
     @staticmethod
     def _trace_tool_choice(config: ModelConfig | None) -> Any:

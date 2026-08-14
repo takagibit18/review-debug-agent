@@ -168,6 +168,12 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("MODEL_NAME", "gpt-4o"),
         min_length=1,
     )
+    model_provider: str = Field(
+        default_factory=lambda: os.getenv("MODEL_PROVIDER", ""),
+        description=(
+            "Explicit OpenAI-compatible provider id; blank enables legacy profile detection."
+        ),
+    )
     log_level: str = Field(
         default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"),
     )

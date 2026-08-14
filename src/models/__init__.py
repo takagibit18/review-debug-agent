@@ -5,6 +5,7 @@ unified async interface so the rest of the codebase is provider-agnostic.
 """
 
 from src.models.client import ModelClient
+from src.models.compat import ModelCallPolicy, ModelProfile, ProviderCompat
 from src.models.exceptions import (
     AuthenticationError,
     ModelClientError,
@@ -19,10 +20,13 @@ __all__ = [
     "Message",
     "ModelClient",
     "ModelClientError",
+    "ModelCallPolicy",
     "ModelConfig",
     "ModelResponse",
+    "ModelProfile",
     "ModelTimeoutError",
     "RateLimitError",
+    "ProviderCompat",
     "ServiceUnavailableError",
     "TokenUsage",
 ]

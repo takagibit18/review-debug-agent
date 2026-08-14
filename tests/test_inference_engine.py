@@ -33,11 +33,13 @@ class RecordingFakeModelClient:
         self.default_config = ModelConfig(model="fake-model")
         self.configs: list[Any] = []
         self.tools: list[Any] = []
+        self.policies: list[Any] = []
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
+        self.policies.append(policy)
         first_content = str(messages[0].content)
         if self.SUMMARY_SYSTEM_MARKER in first_content:
             return ModelResponse(
@@ -74,7 +76,7 @@ class RecordingFakeModelClient:
 class InvalidThenValidSubmitClient(RecordingFakeModelClient):
     """Return one invalid submit_review call, then a repaired valid one."""
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
@@ -137,7 +139,7 @@ class InvalidThenValidSubmitClient(RecordingFakeModelClient):
 class DsmlLeakThenValidSubmitClient(RecordingFakeModelClient):
     """Return one DSML-leaked submit_review call, then a repaired valid one."""
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
@@ -196,7 +198,7 @@ class DsmlLeakThenValidSubmitClient(RecordingFakeModelClient):
 class IssueLikeSummaryThenValidSubmitClient(RecordingFakeModelClient):
     """Return empty issues with issue-like summary language, then a repaired valid issue."""
 
-    async def chat(self, messages, config=None, tools=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
@@ -502,7 +504,7 @@ def test_analyze_logs_length_finish_reason_even_without_trace_detail(
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_response(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def _length_response(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -556,7 +558,7 @@ def test_analyze_marks_length_finish_without_output_incomplete(monkeypatch) -> N
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_response(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def _length_response(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -605,7 +607,7 @@ def test_analyze_marks_length_blank_review_submit_incomplete(monkeypatch) -> Non
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_blank_submit(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def _length_blank_submit(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -646,7 +648,7 @@ def test_analyze_accepts_length_explicit_empty_review_submit(monkeypatch) -> Non
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_explicit_submit(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def _length_explicit_submit(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -705,8 +707,8 @@ def test_regular_review_disables_deepseek_thinking(monkeypatch) -> None:
         )
     )
 
-    config = client.configs[-1]
-    assert config.extra_body == {"thinking": {"type": "disabled"}}
+    assert client.policies[-1].thinking == "off"
+    assert client.policies[-1].forced_tool is None
 
 
 def test_analyze_records_context_telemetry_without_content(monkeypatch) -> None:
@@ -786,11 +788,8 @@ def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(
 
     config = client.configs[-1]
     assert config.max_tokens == 2048
-    assert config.tool_choice == {
-        "type": "function",
-        "function": {"name": "submit_review"},
-    }
-    assert config.extra_body == {"thinking": {"type": "disabled"}}
+    assert client.policies[-1].forced_tool == "submit_review"
+    assert client.policies[-1].thinking == "off"
     assert [tool["function"]["name"] for tool in client.tools[-1]] == ["submit_review"]
     assert any(
         "summary must not mention bugs, regressions" in str(message.content)
@@ -843,7 +842,7 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
     client = RecordingFakeModelClient()
     call_count = 0
 
-    async def _sequenced_response(messages, config=None, tools=None):  # type: ignore[no-untyped-def]
+    async def _sequenced_response(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
         nonlocal call_count
         call_count += 1
         client.calls.append(messages)
@@ -986,12 +985,8 @@ def test_force_submit_review_disables_qwen_dashscope_thinking(monkeypatch) -> No
         )
     )
 
-    config = client.configs[-1]
-    assert config.tool_choice == {
-        "type": "function",
-        "function": {"name": "submit_review"},
-    }
-    assert config.extra_body == {"enable_thinking": False}
+    assert client.policies[-1].forced_tool == "submit_review"
+    assert client.policies[-1].thinking == "off"
 
 
 def test_force_submit_review_disables_glm_dashscope_thinking(monkeypatch) -> None:
@@ -1017,12 +1012,8 @@ def test_force_submit_review_disables_glm_dashscope_thinking(monkeypatch) -> Non
         )
     )
 
-    config = client.configs[-1]
-    assert config.tool_choice == {
-        "type": "function",
-        "function": {"name": "submit_review"},
-    }
-    assert config.extra_body == {"enable_thinking": False}
+    assert client.policies[-1].forced_tool == "submit_review"
+    assert client.policies[-1].thinking == "off"
 
 
 def test_force_submit_debug_forces_debug_tool_without_openai_thinking_override(
@@ -1047,10 +1038,7 @@ def test_force_submit_debug_forces_debug_tool_without_openai_thinking_override(
     )
 
     config = client.configs[-1]
-    assert config.tool_choice == {
-        "type": "function",
-        "function": {"name": "submit_debug"},
-    }
+    assert client.policies[-1].forced_tool == "submit_debug"
     assert config.extra_body is None
 
 
@@ -1079,10 +1067,7 @@ def test_near_last_review_iteration_switches_to_submit_only_forced_mode(
 
     config = client.configs[-1]
     assert config.max_tokens == 2048
-    assert config.tool_choice == {
-        "type": "function",
-        "function": {"name": "submit_review"},
-    }
+    assert client.policies[-1].forced_tool == "submit_review"
     assert [tool["function"]["name"] for tool in client.tools[-1]] == ["submit_review"]
 
 
