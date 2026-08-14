@@ -27,6 +27,7 @@ from src.models.exceptions import (
     ServiceUnavailableError,
 )
 from src.models.compat import ModelCallPolicy, ModelProfile, resolve_model_profile
+from src.models.conversation import ModelConversation
 from src.models.schemas import Message, ModelConfig, ModelResponse, TokenUsage
 
 
@@ -69,6 +70,7 @@ class ModelClient:
         config: ModelConfig | None = None,
         tools: list[dict[str, Any]] | None = None,
         policy: ModelCallPolicy | None = None,
+        conversation: ModelConversation | None = None,
     ) -> ModelResponse:
         """Run one chat-completion request and return normalized output."""
         if not messages:
@@ -81,7 +83,7 @@ class ModelClient:
         )
         payload: dict[str, Any] = {
             "model": runtime_config.model,
-            "messages": self._serialize_messages(messages),
+            "messages": self._serialize_messages(messages, profile),
             "temperature": runtime_config.temperature,
             "max_tokens": runtime_config.max_tokens,
             "top_p": runtime_config.top_p,
@@ -108,7 +110,15 @@ class ModelClient:
                     ),
                     timeout=runtime_config.timeout,
                 )
-                return self._parse_completion(completion)
+                response = self._parse_completion(completion)
+                if conversation is not None and response.tool_calls:
+                    conversation.add_assistant_tool_turn(
+                        response_id=str(getattr(completion, "id", "") or ""),
+                        content=response.content,
+                        thinking=self._extract_thinking(completion),
+                        tool_calls=response.tool_calls,
+                    )
+                return response
             except OpenAIAuthenticationError as exc:
                 raise AuthenticationError(
                     "Authentication failed for the model provider",
@@ -250,7 +260,9 @@ class ModelClient:
         await self._client.close()
 
     @staticmethod
-    def _serialize_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    def _serialize_messages(
+        messages: list[Message], profile: ModelProfile
+    ) -> list[dict[str, Any]]:
         serialized: list[dict[str, Any]] = []
         for message in messages:
             item: dict[str, Any] = {
@@ -261,8 +273,11 @@ class ModelClient:
                 item["tool_call_id"] = message.tool_call_id
             if message.tool_calls:
                 item["tool_calls"] = message.tool_calls
-            if message.reasoning_content is not None:
-                item["reasoning_content"] = message.reasoning_content
+            if (
+                message.thinking is not None
+                and profile.compat.requires_reasoning_replay_for_tool_calls
+            ):
+                item["reasoning_content"] = message.thinking
             serialized.append(item)
         return serialized
 
@@ -274,12 +289,6 @@ class ModelClient:
         content = response_message.content if response_message else ""
         if content is None:
             content = ""
-
-        reasoning = ""
-        if response_message:
-            raw_reasoning = getattr(response_message, "reasoning_content", None)
-            if isinstance(raw_reasoning, str):
-                reasoning = raw_reasoning
 
         tool_calls: list[dict[str, Any]] = []
         if response_message and response_message.tool_calls:
@@ -306,5 +315,11 @@ class ModelClient:
             usage=token_usage,
             model=str(getattr(completion, "model", "") or ""),
             finish_reason=finish_reason,
-            reasoning_content=reasoning,
         )
+
+    @staticmethod
+    def _extract_thinking(completion: Any) -> str:
+        choice = completion.choices[0] if completion.choices else None
+        response_message = choice.message if choice else None
+        raw = getattr(response_message, "reasoning_content", None)
+        return raw if isinstance(raw, str) else ""

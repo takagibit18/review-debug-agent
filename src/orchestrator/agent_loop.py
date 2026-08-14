@@ -48,8 +48,9 @@ from src.analyzer.verifier_context import (
 )
 from src.config import get_settings
 from src.models.client import ModelClient
+from src.models.conversation import ModelConversation
 from src.models.exceptions import ModelClientError, ModelTimeoutError
-from src.models.schemas import DraftFindingInput, ModelResponse
+from src.models.schemas import DraftFinding, DraftFindingInput, ModelResponse
 from src.orchestrator.draft_findings import (
     DraftFindingStore,
     extract_visible_draft_finding,
@@ -120,7 +121,7 @@ class AgentOrchestrator:
         self._submit_review_seen_any = False
         self._submit_debug_seen_any = False
         self._latest_tokens = 0
-        self._last_reasoning_content: str = ""
+        self._model_conversation = ModelConversation()
         self._total_tokens = 0
         self._iteration = 0
         self._max_iterations = 1
@@ -1450,7 +1451,7 @@ class AgentOrchestrator:
                         serialized_tools.append(build_draft_finding_tool_schema())
                     if not defer_review_submit:
                         serialized_tools += build_submit_tool_schemas()
-                result, total_tokens, reasoning_content = await engine.analyze(
+                result, usage = await engine.analyze(
                     state=state,
                     request=request,
                     tool_specs=tool_specs,
@@ -1468,8 +1469,7 @@ class AgentOrchestrator:
                     near_last_iteration=(self._iteration + 1) >= self._max_iterations,
                     defer_submit=defer_review_submit,
                 )
-                self._latest_tokens = total_tokens
-                self._last_reasoning_content = reasoning_content
+                self._latest_tokens = usage.total_tokens
                 self._persist_draft_finding_calls(result)
                 if result.draft_review is not None:
                     self._submit_review_seen_any = True
@@ -1620,7 +1620,6 @@ class AgentOrchestrator:
                     {
                         "tool_call": raw_call,
                         "result": results[-1],
-                        "reasoning_content": self._last_reasoning_content,
                     }
                 )
                 index += 1
@@ -1649,7 +1648,6 @@ class AgentOrchestrator:
                         {
                             "tool_call": raw_call,
                             "result": results[-1],
-                            "reasoning_content": self._last_reasoning_content,
                         }
                     )
                     index += 1
@@ -1699,7 +1697,6 @@ class AgentOrchestrator:
                     {
                         "tool_call": raw_call,
                         "result": result,
-                        "reasoning_content": self._last_reasoning_content,
                     }
                 )
                 index += 1
@@ -1750,7 +1747,6 @@ class AgentOrchestrator:
                     {
                         "tool_call": raw_call,
                         "result": result,
-                        "reasoning_content": self._last_reasoning_content,
                     }
                 )
                 index += 1
@@ -1830,7 +1826,6 @@ class AgentOrchestrator:
                     {
                         "tool_call": batch_raw,
                         "result": batch_result,
-                        "reasoning_content": self._last_reasoning_content,
                     }
                 )
             index += len(batch_calls)
@@ -2019,7 +2014,7 @@ class AgentOrchestrator:
         self._submit_review_seen_any = False
         self._submit_debug_seen_any = False
         self._latest_tokens = 0
-        self._last_reasoning_content = ""
+        self._model_conversation = ModelConversation()
         self._total_tokens = 0
         self._iteration = 0
         self._max_iterations = max_iterations
@@ -2293,7 +2288,6 @@ class AgentOrchestrator:
             {
                 "iteration": self._iteration,
                 **payload.model_dump(mode="json"),
-                "transient_reasoning_present": bool(self._last_reasoning_content),
             },
         )
 
@@ -2732,7 +2726,6 @@ class AgentOrchestrator:
                 "iteration": self._iteration,
                 "tool_call": tool_call,
                 "result": result,
-                "reasoning_content": entry.get("reasoning_content"),
             }
             self._tool_feedback.append(enriched)
             digest = self._compute_feedback_digest(tool_call)
@@ -2840,6 +2833,7 @@ class AgentOrchestrator:
                 trace_recorder=self._trace_recorder,
                 trace_event_writer=self._record_event,
                 model_response_writer=self._journal_model_response,
+                conversation=self._model_conversation,
             )
         try:
             self._model_client = ModelClient(temperature=self._temperature)
@@ -2848,6 +2842,7 @@ class AgentOrchestrator:
                 trace_recorder=self._trace_recorder,
                 trace_event_writer=self._record_event,
                 model_response_writer=self._journal_model_response,
+                conversation=self._model_conversation,
             )
         except Exception:  # noqa: BLE001
             return None
@@ -2882,12 +2877,20 @@ class AgentOrchestrator:
         """Journal runtime-bound drafts before making them available in memory."""
 
         for draft_input in plan.draft_finding_calls:
-            self._persist_one_draft_finding(
+            draft = self._persist_one_draft_finding(
                 draft_input,
                 source_response_id=(
                     plan.draft_finding_source_response_id or plan.source_response_id
                 ),
                 origin="pseudo_tool",
+            )
+            self._model_conversation.add_tool_result_for_name(
+                "record_draft_finding",
+                {
+                    "ok": True,
+                    "recorded": True,
+                    "draft_id": draft.id,
+                },
             )
         if (
             not plan.recovery_required
@@ -2914,7 +2917,7 @@ class AgentOrchestrator:
         *,
         source_response_id: str,
         origin: str,
-    ) -> None:
+    ) -> DraftFinding:
         """Persist one trusted draft, then expose it through the in-memory store."""
 
         if self._run_journal is None:
@@ -2950,6 +2953,7 @@ class AgentOrchestrator:
                 "origin": origin,
             },
         )
+        return draft
 
     def _journaled_model_response_content(self, response_id: str) -> str:
         """Read visible content for one response from the durable journal."""
@@ -2969,8 +2973,6 @@ class AgentOrchestrator:
     ) -> None:
         """Persist a full structured ToolResult bound to its source response."""
 
-        if self._run_journal is None or not plan.source_response_id:
-            return
         function_block = raw_call.get("function") if isinstance(raw_call, dict) else {}
         if not isinstance(function_block, dict):
             function_block = {}
@@ -2999,6 +3001,12 @@ class AgentOrchestrator:
                 f"runtime_{plan.source_response_id}_"
                 f"{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:12]}"
             )
+        if str(raw_call.get("id", "")).strip():
+            self._model_conversation.add_tool_result(call_id, result)
+        else:
+            self._model_conversation.add_tool_result_for_name(tool_name, result)
+        if self._run_journal is None or not plan.source_response_id:
+            return
         payload = ToolResultJournalPayload(
             source_response_id=plan.source_response_id,
             tool_call_id=call_id,

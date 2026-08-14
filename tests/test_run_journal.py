@@ -169,7 +169,7 @@ class _LengthModelClient:
     def __init__(self) -> None:
         self.default_config = ModelConfig(model="fake-model")
 
-    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
+    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
         return ModelResponse(
             content="visible partial finding",
             tool_calls=[],
@@ -244,7 +244,7 @@ class _ToolThenSubmitClient:
         self.default_config = ModelConfig(model="fake-model")
         self.calls = 0
 
-    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
+    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
         self.calls += 1
         if self.calls == 1:
             return ModelResponse(

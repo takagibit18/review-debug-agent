@@ -11,6 +11,7 @@ import pytest
 from src.models.exceptions import ModelClientError, ModelTimeoutError
 from src.models.client import ModelClient
 from src.models.compat import ModelCallPolicy
+from src.models.conversation import AssistantToolTurn, ModelConversation
 from src.models.schemas import Message, ModelConfig
 
 
@@ -108,7 +109,7 @@ def test_call_without_forced_tool_choice_does_not_change_thinking() -> None:
     assert "extra_body" not in fake.completions.payload
 
 
-def test_chat_forwards_tool_choice_extra_body_and_reasoning_messages() -> None:
+def test_chat_forwards_tool_choice_extra_body_and_transient_thinking() -> None:
     fake = _FakeOpenAIClient()
     client = _make_client(fake)
     config = ModelConfig(
@@ -118,18 +119,21 @@ def test_chat_forwards_tool_choice_extra_body_and_reasoning_messages() -> None:
         extra_body={"thinking": {"type": "disabled"}},
     )
 
-    response = asyncio.run(
+    conversation = ModelConversation()
+    conversation.add_assistant_tool_turn(
+        response_id="prior",
+        content="",
+        thinking="prior reasoning",
+        tool_calls=[{"id": "call-1", "function": {"name": "read_file"}}],
+    )
+    conversation.add_tool_result("call-1", {"ok": True})
+
+    asyncio.run(
         client.chat(
-            messages=[
-                Message(
-                    role="assistant",
-                    content="",
-                    tool_calls=[{"id": "call-1", "function": {"name": "read_file"}}],
-                    reasoning_content="prior reasoning",
-                )
-            ],
+            messages=conversation.messages(),
             config=config,
             tools=[{"type": "function", "function": {"name": "submit_review"}}],
+            conversation=conversation,
         )
     )
 
@@ -142,7 +146,7 @@ def test_chat_forwards_tool_choice_extra_body_and_reasoning_messages() -> None:
     assert payload["max_tokens"] == 8192
     assert payload["extra_body"] == {"thinking": {"type": "disabled"}}
     assert payload["messages"][0]["reasoning_content"] == "prior reasoning"
-    assert response.reasoning_content == "kept reasoning"
+    assert isinstance(conversation.turns[0], AssistantToolTurn)
 
 
 def test_chat_enforces_outer_request_timeout() -> None:

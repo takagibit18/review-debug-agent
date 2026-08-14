@@ -7,7 +7,6 @@ import json
 import logging
 import re
 from typing import Any, Callable
-from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -34,12 +33,14 @@ from src.analyzer.trace import TraceRecorder
 from src.config import get_settings
 from src.models.client import ModelClient
 from src.models.compat import ModelCallPolicy
+from src.models.conversation import ModelConversation
 from src.models.schemas import (
     DraftFinding,
     DraftFindingInput,
     Message,
     ModelConfig,
     ModelResponse,
+    TokenUsage,
 )
 from src.tools.base import ToolResult, ToolSpec
 
@@ -54,13 +55,6 @@ _FINAL_EVIDENCE_TOOL_NAMES = {
     "symbol_context",
     "find_symbol_context",
 }
-_PRIOR_ANALYSIS_CONCERN_PATTERN = re.compile(
-    r"\b("
-    r"bug|concern|regression|break(?:s|ing)?|compatibility|incorrect|error|"
-    r"fail(?:s|ure)?|exception|user-visible|fallback|wrapper|truncate(?:s|d|ion)?"
-    r")\b",
-    re.IGNORECASE,
-)
 _DSML_ISSUES_PARAMETER_PATTERN = re.compile(
     r"parameter\s+name\s*=\s*\\?[\"']issues\\?[\"']",
     re.IGNORECASE,
@@ -84,11 +78,13 @@ class InferenceEngine:
         trace_event_writer: Callable[[EventType, str, dict[str, Any]], None]
         | None = None,
         model_response_writer: Callable[[ModelResponse, int], str] | None = None,
+        conversation: ModelConversation | None = None,
     ) -> None:
         self._model_client = model_client
         self._trace_recorder = trace_recorder
         self._trace_event_writer = trace_event_writer
         self._model_response_writer = model_response_writer
+        self._conversation = conversation or ModelConversation()
 
     async def analyze(
         self,
@@ -108,7 +104,7 @@ class InferenceEngine:
         force_submit: bool = False,
         near_last_iteration: bool = False,
         defer_submit: bool = False,
-    ) -> tuple[AnalysisPlan, int, str]:
+    ) -> tuple[AnalysisPlan, TokenUsage]:
         file_contents = file_contents or {}
         settings = get_settings()
         submit_only = force_submit or near_last_iteration
@@ -276,8 +272,14 @@ class InferenceEngine:
             thinking="off",
             forced_tool=self._submit_tool_name(request) if submit_only else None,
         )
+        conversation_history_count = len(self._conversation.messages())
+        messages.extend(self._conversation.messages())
         response = await self._model_client.chat(
-            messages=messages, config=config, tools=tools, policy=policy
+            messages=messages,
+            config=config,
+            tools=tools,
+            policy=policy,
+            conversation=self._conversation,
         )
         response_id = self._persist_model_response(response, iteration)
         self._record_length_finish(response, iteration, config)
@@ -306,6 +308,8 @@ class InferenceEngine:
                 tool_schemas=tool_schemas or [],
                 validation_error=str(parse_meta["submit_review_validation_error"]),
                 iteration=iteration,
+                prior_history_count=conversation_history_count,
+                invalid_tool_calls=response.tool_calls,
             )
             repair_response.usage.total_tokens += initial_usage.total_tokens
             repair_response.usage.prompt_tokens += initial_usage.prompt_tokens
@@ -363,7 +367,7 @@ class InferenceEngine:
             fallback_json_found,
             fallback_parse_valid,
         )
-        return plan, response.usage.total_tokens, response.reasoning_content
+        return plan, response.usage
 
     async def _retry_submit_review_validation_repair(
         self,
@@ -373,9 +377,26 @@ class InferenceEngine:
         tool_schemas: list[dict[str, Any]],
         validation_error: str,
         iteration: int,
+        prior_history_count: int,
+        invalid_tool_calls: list[dict[str, Any]],
     ) -> tuple[AnalysisPlan, ModelResponse, dict[str, Any], str]:
+        for raw_call in invalid_tool_calls:
+            call_id = str(raw_call.get("id", "")).strip()
+            if call_id:
+                self._conversation.add_tool_result(
+                    call_id,
+                    {
+                        "ok": False,
+                        "error_type": "validation_error",
+                        "message": validation_error,
+                    },
+                )
+        base_messages = (
+            messages[:-prior_history_count] if prior_history_count else messages
+        )
         repair_messages = [
-            *messages,
+            *base_messages,
+            *self._conversation.messages(),
             Message(
                 role="user",
                 content=(
@@ -393,6 +414,7 @@ class InferenceEngine:
             config=config,
             tools=self._submit_only_tools(tool_schemas, request),
             policy=policy,
+            conversation=self._conversation,
         )
         response_id = self._persist_model_response(response, iteration)
         plan, parse_meta = self._parse_tool_calls(
@@ -761,27 +783,6 @@ class InferenceEngine:
                 )
                 continue
 
-            call_id = str(raw_tool_call.get("id", "")).strip()
-            if not call_id:
-                call_id = "fallback-" + uuid4().hex[:12]
-                raw_tool_call = {**raw_tool_call, "id": call_id}
-
-            reasoning = item.get("reasoning_content") or None
-            messages.append(
-                Message(
-                    role="assistant",
-                    content="",
-                    tool_calls=[raw_tool_call],
-                    reasoning_content=reasoning,
-                )
-            )
-            messages.append(
-                Message(
-                    role="tool",
-                    content=iter_tag + json.dumps(result_payload, ensure_ascii=True),
-                    tool_call_id=call_id,
-                )
-            )
         return messages
 
     @staticmethod
@@ -829,7 +830,6 @@ class InferenceEngine:
         telemetry = cls._empty_final_evidence_telemetry(token_budget)
         candidates: list[tuple[str, str]] = []
         seen_tools: set[str] = set()
-        seen_concerns: set[str] = set()
 
         for draft in draft_findings:
             telemetry["available_draft_finding_count"] += 1
@@ -878,17 +878,6 @@ class InferenceEngine:
                                 f"name={name} args={arguments} result={result}",
                             )
                         )
-
-            for snippet in cls._prior_analysis_concern_snippets(
-                item.get("reasoning_content")
-            ):
-                normalized = " ".join(snippet.split()).lower()
-                if normalized in seen_concerns:
-                    telemetry["deduplicated_count"] += 1
-                    continue
-                seen_concerns.add(normalized)
-                telemetry["available_concern_count"] += 1
-                candidates.append(("concern", f"- prior_analysis_concern: {snippet}"))
 
         folded = sorted(
             digest_index.items(),
@@ -1004,24 +993,6 @@ class InferenceEngine:
         if len(serialized) <= max_chars:
             return serialized
         return serialized[: max(0, max_chars - 14)] + "...[truncated]"
-
-    @staticmethod
-    def _prior_analysis_concern_snippets(reasoning: Any) -> list[str]:
-        if not isinstance(reasoning, str) or not reasoning.strip():
-            return []
-        snippets: list[str] = []
-        for segment in re.split(r"(?<=[.!?])\s+|[\r\n]+", reasoning):
-            compact = " ".join(segment.split()).strip()
-            match = _PRIOR_ANALYSIS_CONCERN_PATTERN.search(compact)
-            if match is None or len(compact) < 20:
-                continue
-            if len(compact) > 900:
-                start = max(0, match.start() - 300)
-                compact = compact[start : start + 900]
-            snippets.append(compact)
-            if len(snippets) >= 4:
-                break
-        return snippets
 
     @staticmethod
     def _truncate_text_to_tokens(
@@ -1146,7 +1117,6 @@ class InferenceEngine:
                     response.content
                 ),
                 "content_length": len(response.content),
-                "reasoning_content_length": len(response.reasoning_content),
                 "tool_choice": parse_meta.get("tool_choice"),
                 "thinking_disabled": bool(parse_meta.get("thinking_disabled")),
                 "tool_call_summaries": self._trace_recorder.build_tool_call_summaries(
@@ -1255,7 +1225,6 @@ class InferenceEngine:
                 "usage": response.usage.model_dump(),
                 "max_tokens": config.max_tokens if config is not None else None,
                 "content_length": len(response.content),
-                "reasoning_content_length": len(response.reasoning_content),
             },
         )
 
@@ -1294,6 +1263,5 @@ class InferenceEngine:
                 "usage": response.usage.model_dump(),
                 "max_tokens": config.max_tokens if config is not None else None,
                 "content_length": len(response.content),
-                "reasoning_content_length": len(response.reasoning_content),
             },
         )

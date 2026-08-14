@@ -42,9 +42,9 @@ class Message(BaseModel):
     tool_call_id: str | None = Field(
         default=None, description="Tool call id for tool role messages"
     )
-    reasoning_content: str | None = Field(
+    thinking: str | None = Field(
         default=None,
-        description="Reasoning/thinking content (DeepSeek thinking mode)",
+        description="Canonical transient thinking retained only by the model layer",
     )
 
 
@@ -66,10 +66,6 @@ class ModelResponse(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     model: str = Field(default="", description="Provider model id in response")
     finish_reason: str = Field(default="", description="Provider finish reason")
-    reasoning_content: str = Field(
-        default="",
-        description="Raw reasoning/thinking content (e.g. DeepSeek thinking mode)",
-    )
 
 
 class DraftFindingInput(BaseModel):

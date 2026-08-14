@@ -35,7 +35,7 @@ class RecordingFakeModelClient:
         self.tools: list[Any] = []
         self.policies: list[Any] = []
 
-    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
@@ -76,7 +76,7 @@ class RecordingFakeModelClient:
 class InvalidThenValidSubmitClient(RecordingFakeModelClient):
     """Return one invalid submit_review call, then a repaired valid one."""
 
-    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
@@ -139,7 +139,7 @@ class InvalidThenValidSubmitClient(RecordingFakeModelClient):
 class DsmlLeakThenValidSubmitClient(RecordingFakeModelClient):
     """Return one DSML-leaked submit_review call, then a repaired valid one."""
 
-    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
@@ -198,7 +198,7 @@ class DsmlLeakThenValidSubmitClient(RecordingFakeModelClient):
 class IssueLikeSummaryThenValidSubmitClient(RecordingFakeModelClient):
     """Return empty issues with issue-like summary language, then a repaired valid issue."""
 
-    async def chat(self, messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def,unused-argument]
+    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def,unused-argument]
         self.calls.append(messages)
         self.configs.append(config)
         self.tools.append(tools)
@@ -262,7 +262,7 @@ class IssueLikeSummaryThenValidSubmitClient(RecordingFakeModelClient):
         )
 
 
-def test_analyze_appends_tool_feedback_messages(monkeypatch) -> None:
+def test_analyze_does_not_rebuild_provider_turns_from_business_feedback(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
@@ -287,8 +287,8 @@ def test_analyze_appends_tool_feedback_messages(monkeypatch) -> None:
         )
     )
     roles = [message.role for message in client.calls[-1]]
-    assert "assistant" in roles
-    assert "tool" in roles
+    assert "assistant" not in roles
+    assert "tool" not in roles
 
 
 def test_analyze_injects_synthetic_prefetch_feedback_as_user_context(
@@ -487,7 +487,7 @@ def test_analyze_emits_model_detail_and_plan_parsed_events(monkeypatch) -> None:
     )
     assert model_event["iteration"] == 1
     assert "content_length" in model_event
-    assert "reasoning_content_length" in model_event
+    assert "reasoning_content_length" not in model_event
     assert "tool_choice" in model_event
     assert "thinking_disabled" in model_event
     plan_event = next(
@@ -504,7 +504,7 @@ def test_analyze_logs_length_finish_reason_even_without_trace_detail(
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_response(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
+    async def _length_response(messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -558,7 +558,7 @@ def test_analyze_marks_length_finish_without_output_incomplete(monkeypatch) -> N
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_response(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
+    async def _length_response(messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -582,7 +582,7 @@ def test_analyze_marks_length_finish_without_output_incomplete(monkeypatch) -> N
         ),
     )
 
-    plan, _, _ = asyncio.run(
+    plan, _ = asyncio.run(
         engine.analyze(
             state=ContextState(goal="Run structured code review"),
             request=ReviewRequest(repo_path="."),
@@ -607,7 +607,7 @@ def test_analyze_marks_length_blank_review_submit_incomplete(monkeypatch) -> Non
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_blank_submit(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
+    async def _length_blank_submit(messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -629,7 +629,7 @@ def test_analyze_marks_length_blank_review_submit_incomplete(monkeypatch) -> Non
     client.chat = _length_blank_submit  # type: ignore[method-assign]
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
 
-    plan, _, _ = asyncio.run(
+    plan, _ = asyncio.run(
         engine.analyze(
             state=ContextState(goal="Run structured code review"),
             request=ReviewRequest(repo_path="."),
@@ -648,7 +648,7 @@ def test_analyze_accepts_length_explicit_empty_review_submit(monkeypatch) -> Non
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
 
-    async def _length_explicit_submit(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
+    async def _length_explicit_submit(messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
         client.calls.append(messages)
         client.configs.append(config)
         client.tools.append(tools)
@@ -672,7 +672,7 @@ def test_analyze_accepts_length_explicit_empty_review_submit(monkeypatch) -> Non
     client.chat = _length_explicit_submit  # type: ignore[method-assign]
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
 
-    plan, _, _ = asyncio.run(
+    plan, _ = asyncio.run(
         engine.analyze(
             state=ContextState(goal="Run structured code review"),
             request=ReviewRequest(repo_path="."),
@@ -842,7 +842,7 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
     client = RecordingFakeModelClient()
     call_count = 0
 
-    async def _sequenced_response(messages, config=None, tools=None, policy=None):  # type: ignore[no-untyped-def]
+    async def _sequenced_response(messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
         nonlocal call_count
         call_count += 1
         client.calls.append(messages)
@@ -893,7 +893,7 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
         ),
     )
     request = ReviewRequest(repo_path=".")
-    first_plan, _, reasoning = asyncio.run(
+    first_plan, _ = asyncio.run(
         engine.analyze(
             state=ContextState(goal="Run structured code review"),
             request=request,
@@ -912,7 +912,6 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
             "iteration": 1,
             "tool_call": first_plan.tool_calls[0],
             "result": ToolResult(ok=True, data={"content": "duplicate"}),
-            "reasoning_content": reasoning,
         },
         {
             "iteration": 1,
@@ -924,10 +923,9 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
                     "content": "EVIDENCE-MARKER: return self.obj == other",
                 },
             ),
-            "reasoning_content": reasoning,
         },
     ]
-    final_plan, _, _ = asyncio.run(
+    final_plan, _ = asyncio.run(
         engine.analyze(
             state=ContextState(goal="Run structured code review"),
             request=request,
@@ -945,9 +943,8 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
         if "final_submit_evidence_summary" in message.content
     )
     assert "EVIDENCE-MARKER" in final_digest
-    assert "Compatibility regression" in final_digest
     assert final_digest.count("tool_evidence") == 1
-    assert final_plan.final_submit_evidence_included_count == 2
+    assert final_plan.final_submit_evidence_included_count == 1
     assert 0 < final_plan.final_submit_evidence_token_count <= 1200
     telemetry = next(
         payload
@@ -959,7 +956,7 @@ def test_length_tool_result_is_retained_in_bounded_force_submit_evidence(
     assert telemetry["prompt_input_token_budget"] == 4000
     assert telemetry["base_context_token_budget"] == 2800
     assert telemetry["final_submit_feedback_token_budget"] == 1200
-    assert telemetry["final_submit_evidence"]["deduplicated_count"] == 2
+    assert telemetry["final_submit_evidence"]["deduplicated_count"] == 1
 
 
 def test_force_submit_review_disables_qwen_dashscope_thinking(monkeypatch) -> None:
@@ -1227,7 +1224,7 @@ def test_invalid_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
     state = ContextState(goal="Run structured code review")
     request = ReviewRequest(repo_path=".")
 
-    plan, total_tokens, _ = asyncio.run(
+    plan, usage = asyncio.run(
         engine.analyze(
             state=state,
             request=request,
@@ -1238,7 +1235,7 @@ def test_invalid_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
 
     assert plan.draft_review is not None
     assert plan.draft_review.issues[0].severity.value == "warning"
-    assert total_tokens == 24
+    assert usage.total_tokens == 24
     assert len(client.calls) == 2
     assert any("issues.0.severity" in message.content for message in client.calls[1])
 
@@ -1250,7 +1247,7 @@ def test_dsml_leaked_submit_review_payload_gets_repair_retry(monkeypatch) -> Non
     state = ContextState(goal="Run structured code review")
     request = ReviewRequest(repo_path=".")
 
-    plan, total_tokens, _ = asyncio.run(
+    plan, usage = asyncio.run(
         engine.analyze(
             state=state,
             request=request,
@@ -1261,7 +1258,7 @@ def test_dsml_leaked_submit_review_payload_gets_repair_retry(monkeypatch) -> Non
 
     assert plan.draft_review is not None
     assert plan.draft_review.issues[0].severity.value == "critical"
-    assert total_tokens == 24
+    assert usage.total_tokens == 24
     assert len(client.calls) == 2
     assert any("DSML parameter leak" in message.content for message in client.calls[1])
 
@@ -1273,7 +1270,7 @@ def test_issue_like_empty_submit_review_payload_gets_repair_retry(monkeypatch) -
     state = ContextState(goal="Run structured code review")
     request = ReviewRequest(repo_path=".")
 
-    plan, total_tokens, _ = asyncio.run(
+    plan, usage = asyncio.run(
         engine.analyze(
             state=state,
             request=request,
@@ -1284,7 +1281,7 @@ def test_issue_like_empty_submit_review_payload_gets_repair_retry(monkeypatch) -
 
     assert plan.draft_review is not None
     assert plan.draft_review.issues[0].severity.value == "warning"
-    assert total_tokens == 24
+    assert usage.total_tokens == 24
     assert len(client.calls) == 2
     assert any(
         "summary mentions review concerns" in message.content
