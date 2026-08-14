@@ -40,6 +40,7 @@ MODEL_NAME = "deepseek-v4-pro"
 FailureStage = Literal[
     "workspace",
     "context_retrieval",
+    "provider_request",
     "reviewer_discovery",
     "draft_persistence",
     "structured_submit",
@@ -671,6 +672,12 @@ def _attribute_failure(item: StageDiagnostic) -> None:
         item.failure_evidence = (
             "; ".join(item.runtime_errors) or "workspace/fixture validation failed"
         )
+    elif item.model_provider_call_errors:
+        item.failure_stage = "provider_request"
+        item.failure_evidence = (
+            "Provider request failed before any model response or submit_review: "
+            + "; ".join(item.model_provider_call_errors)
+        )
     elif item.runtime_valid_completion == "FAIL" and item.submit_review == "NO":
         item.failure_stage = "structured_submit"
         item.failure_evidence = (
@@ -932,7 +939,7 @@ def _skipped_b(reason: str) -> StageDiagnostic:
         variant_id="B1-graph-hybrid-cold",
         skipped=True,
         skip_reason=reason,
-        failure_stage="structured_submit",
+        failure_stage="provider_request",
         failure_evidence=reason,
         final_diagnosis=reason,
     )
@@ -1096,7 +1103,17 @@ def reanalyze_report(
     for variant_id in report.run_order:
         result = report.results.get(variant_id)
         if result is None:
-            diagnostics.append(previous[variant_id])
+            skipped_item = previous[variant_id]
+            if skipped_item.skipped and diagnostics:
+                inherited_stage = diagnostics[0].failure_stage
+                skipped_item = skipped_item.model_copy(
+                    update={
+                        "failure_stage": inherited_stage,
+                        "failure_evidence": skipped_item.skip_reason,
+                        "final_diagnosis": skipped_item.skip_reason,
+                    }
+                )
+            diagnostics.append(skipped_item)
             continue
         diagnostics.append(
             diagnose_attempt(

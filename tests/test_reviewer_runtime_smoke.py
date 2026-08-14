@@ -105,6 +105,23 @@ def test_failure_attribution_distinguishes_discovery_and_verifier() -> None:
     assert "claim_not_supported" in verifier.failure_evidence
 
 
+def test_provider_failure_precedes_structured_submit() -> None:
+    item = _diagnostic(
+        "A-agent-search",
+        runtime_valid_completion="FAIL",
+        valid_completion=False,
+        model_provider_call_errors=["request timeout"],
+        submit_review="NO",
+        final_finding_survived=False,
+        matcher_attempted=False,
+        gold_match="NOT_REACHED",
+    )
+
+    _attribute_failure(item)
+
+    assert item.failure_stage == "provider_request"
+
+
 def test_failure_attribution_reaches_matcher_only_after_final_survival() -> None:
     item = _diagnostic(
         "A-agent-search",

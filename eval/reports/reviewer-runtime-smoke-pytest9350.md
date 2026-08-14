@@ -31,14 +31,14 @@
 | Final finding survived | NO | SKIPPED |
 | Gold match | NOT_REACHED | SKIPPED |
 | Graph manifest valid | N/A | SKIPPED |
-| Final diagnosis | structured_submit: Provider/runtime failed before a model response or submit_review: Model provider request timed out after 90s [code=timeout]; Placeholder review output: no submit_review/debug before finalize. | SKIPPED |
+| Final diagnosis | provider_request: Provider request failed before any model response or submit_review: Model provider request timed out after 90s [code=timeout] | SKIPPED |
 
 ## Failure Attribution Matrix
 
 | Variant | Failure Stage | Evidence | Interpretation |
 |---|---|---|---|
-| A-agent-search | structured_submit | Provider/runtime failed before a model response or submit_review: Model provider request timed out after 90s [code=timeout]; Placeholder review output: no submit_review/debug before finalize. | structured_submit: Provider/runtime failed before a model response or submit_review: Model provider request timed out after 90s [code=timeout]; Placeholder review output: no submit_review/debug before finalize. |
-| B1-graph-hybrid-cold | structured_submit | B skipped because shared runtime blocker was observed in A | shared runtime blocker; not measured |
+| A-agent-search | provider_request | Provider request failed before any model response or submit_review: Model provider request timed out after 90s [code=timeout] | provider_request: Provider request failed before any model response or submit_review: Model provider request timed out after 90s [code=timeout] |
+| B1-graph-hybrid-cold | provider_request | B skipped because shared runtime blocker was observed in A | shared runtime blocker; not measured |
 
 ## Per-variant Audit
 
