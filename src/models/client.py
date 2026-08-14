@@ -57,7 +57,12 @@ class ModelClient:
         if temperature is not None:
             default_config_kwargs["temperature"] = temperature
         self._default_config = ModelConfig(**default_config_kwargs)
-        self._max_retries = max(1, max_retries if max_retries is not None else self._settings.model_max_retries)
+        self._max_retries = max(
+            1,
+            max_retries
+            if max_retries is not None
+            else self._settings.model_max_retries,
+        )
 
     @property
     def default_config(self) -> ModelConfig:
@@ -299,10 +304,16 @@ class ModelClient:
                     tool_calls.append(tool_call)
 
         usage = completion.usage
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        if isinstance(completion_details, dict):
+            reasoning_tokens = completion_details.get("reasoning_tokens", 0)
+        else:
+            reasoning_tokens = getattr(completion_details, "reasoning_tokens", 0)
         token_usage = TokenUsage(
             prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
             completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
             total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+            reasoning_tokens=int(reasoning_tokens or 0),
         )
 
         finish_reason = ""

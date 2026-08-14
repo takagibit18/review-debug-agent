@@ -139,7 +139,9 @@ def test_validation_repair_keeps_draft_bound_to_original_response() -> None:
             self.default_config = ModelConfig(model="fake-model")
             self.calls = 0
 
-        async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
+        async def chat(
+            self, messages, config=None, tools=None, policy=None, conversation=None
+        ):  # type: ignore[no-untyped-def]
             self.calls += 1
             if self.calls == 1:
                 return ModelResponse(
@@ -245,7 +247,9 @@ class _OneResponseClient:
         self.tools: list[list[dict[str, Any]] | None] = []
         self.messages: list[list[Any]] = []
 
-    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.messages.append(messages)
         self.tools.append(tools)
         return self.response.model_copy(deep=True)
@@ -260,7 +264,9 @@ class _DraftThenSubmitClient:
         self.messages: list[list[Any]] = []
         self.tools: list[list[dict[str, Any]] | None] = []
 
-    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.calls += 1
         self.messages.append(messages)
         self.tools.append(tools)
@@ -411,7 +417,9 @@ class _ModeSchemaClient:
         self.default_config = ModelConfig(model="fake-model")
         self.tools: list[list[dict[str, Any]] | None] = []
 
-    async def chat(self, messages, config=None, tools=None, policy=None, conversation=None):  # type: ignore[no-untyped-def]
+    async def chat(
+        self, messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
         self.tools.append(tools)
         is_review = "code reviewer" in str(messages[0].content).lower()
         return ModelResponse(

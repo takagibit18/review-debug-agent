@@ -1595,6 +1595,19 @@ class AgentOrchestrator:
                         "tool_budget": self._settings.agent_max_tool_calls,
                     },
                 )
+                for skipped_call in plan.tool_calls[index:]:
+                    skipped_result = ToolResult(
+                        ok=False,
+                        error="Agent tool-call budget exhausted.",
+                        data={
+                            "ok": False,
+                            "error_type": "tool_budget_exhausted",
+                        },
+                    )
+                    self._journal_tool_result(plan, skipped_call, skipped_result)
+                    executed_feedback.append(
+                        {"tool_call": skipped_call, "result": skipped_result}
+                    )
                 break
             raw_call = plan.tool_calls[index]
             call = self._parse_tool_call(raw_call)

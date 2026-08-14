@@ -98,9 +98,7 @@ class ModelConversation:
                 content=self._serialize_result(result),
             )
         )
-        self._pending = [
-            pair for pair in self._pending if pair[0] != normalized_id
-        ]
+        self._pending = [pair for pair in self._pending if pair[0] != normalized_id]
 
     def add_tool_result_for_name(self, tool_name: str, result: Any) -> str:
         """Append a result for the earliest unresolved pseudo-tool with this name."""

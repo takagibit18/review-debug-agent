@@ -61,7 +61,9 @@ def _make_client(
     return client
 
 
-def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config() -> None:
+def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config() -> (
+    None
+):
     fake = _FakeOpenAIClient()
     client = _make_client(fake, base_url="https://api.deepseek.com/v1")
     config = ModelConfig(
@@ -70,7 +72,9 @@ def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config()
         extra_body={"trace_id": "keep-me"},
     )
 
-    asyncio.run(client.chat(messages=[Message(role="user", content="verify")], config=config))
+    asyncio.run(
+        client.chat(messages=[Message(role="user", content="verify")], config=config)
+    )
 
     assert fake.completions.payload is not None
     assert fake.completions.payload["extra_body"] == {
@@ -82,13 +86,17 @@ def test_forced_tool_choice_disables_deepseek_thinking_without_mutating_config()
 
 def test_forced_tool_choice_disables_dashscope_thinking() -> None:
     fake = _FakeOpenAIClient()
-    client = _make_client(fake, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    client = _make_client(
+        fake, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
     config = ModelConfig(
         model="qwen-plus",
         tool_choice={"type": "function", "function": {"name": "verify"}},
     )
 
-    asyncio.run(client.chat(messages=[Message(role="user", content="verify")], config=config))
+    asyncio.run(
+        client.chat(messages=[Message(role="user", content="verify")], config=config)
+    )
 
     assert fake.completions.payload is not None
     assert fake.completions.payload["extra_body"] == {"enable_thinking": False}
@@ -128,7 +136,7 @@ def test_chat_forwards_tool_choice_extra_body_and_transient_thinking() -> None:
     )
     conversation.add_tool_result("call-1", {"ok": True})
 
-    asyncio.run(
+    response = asyncio.run(
         client.chat(
             messages=conversation.messages(),
             config=config,
@@ -147,6 +155,7 @@ def test_chat_forwards_tool_choice_extra_body_and_transient_thinking() -> None:
     assert payload["extra_body"] == {"thinking": {"type": "disabled"}}
     assert payload["messages"][0]["reasoning_content"] == "prior reasoning"
     assert isinstance(conversation.turns[0], AssistantToolTurn)
+    assert response.usage.reasoning_tokens == 0
 
 
 def test_chat_enforces_outer_request_timeout() -> None:

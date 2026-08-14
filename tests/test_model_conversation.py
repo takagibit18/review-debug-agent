@@ -94,9 +94,7 @@ def test_four_tool_rounds_are_not_windowed() -> None:
         conversation.add_tool_result(call_id, {"ok": True, "round": index})
 
     assert len(conversation.turns) == 8
-    assert sum(
-        isinstance(turn, AssistantToolTurn) for turn in conversation.turns
-    ) == 4
+    assert sum(isinstance(turn, AssistantToolTurn) for turn in conversation.turns) == 4
 
 
 def test_orchestrator_persists_draft_before_synthetic_result(tmp_path) -> None:
@@ -143,3 +141,25 @@ def test_orchestrator_run_reset_discards_conversation(tmp_path) -> None:
     orchestrator._reset_run(1, str(tmp_path))  # noqa: SLF001
 
     assert orchestrator._model_conversation.turns == ()  # noqa: SLF001
+
+
+def test_invalid_draft_pseudo_call_receives_validation_result() -> None:
+    conversation = ModelConversation()
+    raw_call = _call("invalid-draft", "record_draft_finding")
+    conversation.add_assistant_tool_turn(
+        response_id="response",
+        content="",
+        thinking="private",
+        tool_calls=[raw_call],
+    )
+    from src.analyzer.inference_engine import InferenceEngine
+
+    engine = InferenceEngine.__new__(InferenceEngine)
+    engine._conversation = conversation  # noqa: SLF001
+    engine._complete_invalid_draft_tool_calls(  # noqa: SLF001
+        [raw_call], {"valid_draft_call_ids": []}
+    )
+
+    result = conversation.turns[-1]
+    assert isinstance(result, ToolResultTurn)
+    assert json.loads(result.content)["error_type"] == "validation_error"

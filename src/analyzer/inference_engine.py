@@ -46,6 +46,7 @@ from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
 _SUBMIT_MAX_TOKENS = 2048
+_EXPLORATION_MAX_TOKENS = 8192
 _SYNTHETIC_CONTEXT_MAX_CHARS = 3600
 _FINAL_EVIDENCE_ENTRY_MAX_CHARS = 2400
 _FINAL_EVIDENCE_TOOL_NAMES = {
@@ -261,6 +262,10 @@ class InferenceEngine:
         config = None
         if submit_only:
             config = self._build_submit_config(request)
+        else:
+            config = self._model_client.default_config.model_copy(
+                update={"max_tokens": _EXPLORATION_MAX_TOKENS}
+            )
         if request.model_name:
             if config is None:
                 config = self._model_client.default_config.model_copy(
@@ -269,7 +274,7 @@ class InferenceEngine:
             else:
                 config.model = request.model_name
         policy = ModelCallPolicy(
-            thinking="off",
+            thinking="off" if submit_only else "high",
             forced_tool=self._submit_tool_name(request) if submit_only else None,
         )
         conversation_history_count = len(self._conversation.messages())
@@ -286,6 +291,7 @@ class InferenceEngine:
         plan, parse_meta = self._parse_tool_calls(
             response.tool_calls, request, force_submit=submit_only
         )
+        self._complete_invalid_draft_tool_calls(response.tool_calls, parse_meta)
         if plan.draft_finding_calls:
             plan.draft_finding_source_response_id = response_id
         parse_meta["tool_choice"] = self._trace_tool_choice(config)
@@ -314,6 +320,7 @@ class InferenceEngine:
             repair_response.usage.total_tokens += initial_usage.total_tokens
             repair_response.usage.prompt_tokens += initial_usage.prompt_tokens
             repair_response.usage.completion_tokens += initial_usage.completion_tokens
+            repair_response.usage.reasoning_tokens += initial_usage.reasoning_tokens
             if repair_plan.draft_review is not None:
                 repair_plan.draft_finding_calls = plan.draft_finding_calls
                 repair_plan.draft_finding_source_response_id = (
@@ -482,6 +489,7 @@ class InferenceEngine:
             "submit_review_validation_error": "",
             "submit_debug_validation_error": "",
             "draft_finding_validation_errors": [],
+            "valid_draft_call_ids": [],
             "location_warnings": [],
             "force_submit_discarded_count": 0,
         }
@@ -517,6 +525,9 @@ class InferenceEngine:
                 try:
                     draft_finding_calls.append(
                         DraftFindingInput.model_validate(payload)
+                    )
+                    parse_meta["valid_draft_call_ids"].append(
+                        str(raw.get("id", "")).strip()
                     )
                 except ValidationError as exc:
                     parse_meta["draft_finding_validation_errors"].append(str(exc))
@@ -597,6 +608,32 @@ class InferenceEngine:
             ),
             parse_meta,
         )
+
+    def _complete_invalid_draft_tool_calls(
+        self,
+        raw_calls: list[dict[str, Any]],
+        parse_meta: dict[str, Any],
+    ) -> None:
+        """Satisfy rejected pseudo-calls so provider replay remains complete."""
+
+        valid_ids = set(parse_meta.get("valid_draft_call_ids", []))
+        for raw in raw_calls:
+            function = raw.get("function") if isinstance(raw, dict) else None
+            if not isinstance(function, dict):
+                continue
+            if function.get("name") != "record_draft_finding":
+                continue
+            call_id = str(raw.get("id", "")).strip()
+            if not call_id or call_id in valid_ids:
+                continue
+            self._conversation.add_tool_result(
+                call_id,
+                {
+                    "ok": False,
+                    "recorded": False,
+                    "error_type": "validation_error",
+                },
+            )
 
     @staticmethod
     def _parse_tool_arguments(arguments: Any) -> Any:
