@@ -1,0 +1,61 @@
+experiment_id: graph-ab-development-28
+formal_graph_ab: false
+held_out_executed: false
+runtime_contract_source: current
+seed: 20260815
+
+# Reuse the Flash contract from the successful 2026-08-15 reviewer/runtime smoke.
+shared:
+  model: deepseek-v4-flash
+  temperature: 0.0
+  max_output_tokens: 4096
+  prompt_input_token_budget: 12000
+  token_budget: 60000
+  token_hard_budget: 80000
+  final_submit_reserve_tokens: 12000
+  final_submit_prompt_token_budget: 4000
+  final_submit_feedback_token_budget: 1200
+  max_iterations: 3
+  tool_budget: 64
+  model_request_timeout_seconds: 180.0
+  tool_timeout_seconds: 30.0
+  run_timeout_seconds: 600.0
+
+variants:
+  - id: A-agent-search
+    context_mode: agent_search
+    graph_cache_mode: disabled
+    samples: 3
+  - id: B1-graph-hybrid-cold
+    context_mode: graph_hybrid
+    graph_cache_mode: cold
+    samples: 1
+  - id: B2-graph-hybrid-warm
+    context_mode: graph_hybrid
+    graph_cache_mode: warm
+    requires_priming: true
+    samples: 3
+
+fixtures:
+  - phase: validation
+    path: eval/development_fixtures/development_agent_search_cross_file.json
+    types:
+      - direct-cross-file
+      - graph-sensitive
+      - positive-sample
+  - phase: validation
+    path: eval/fixtures/golden_vybestack_llxprt-code_pr3012_reverse.json
+    types:
+      - multi-hop
+      - graph-sensitive
+      - positive-sample
+  - phase: validation
+    path: eval/fixtures/golden_pytest-dev_pytest_pr9350.json
+    types:
+      - local
+      - positive-sample
+  - phase: validation
+    path: eval/fixtures/golden_real_requests_netrc_pr7205.json
+    types:
+      - local
+      - negative-sample

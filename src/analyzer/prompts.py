@@ -13,6 +13,7 @@ from src.analyzer.context_priority import (
     assemble_review_payload,
     build_debug_context_parts,
     build_review_context_parts,
+    compact_review_prompt_parts,
 )
 from src.analyzer.context_state import ContextState
 from src.analyzer.schemas import DebugRequest, ReviewRequest
@@ -128,6 +129,9 @@ AGENT_SEARCH_POLICY = (
 GRAPH_CONTEXT_POLICY = (
     "Context policy: graph_hybrid. Candidate context manifests are first-pass navigation context, not a "
     "complete world model. A graph edge indicates only its named structural relation and is not runtime fact. "
+    "Before requesting read or grep tools, use exact visible manifest spans when they already cover the question. "
+    "Do not re-read or grep solely to rediscover the same file/span; use tools only for a specific evidence gap "
+    "that the supplied diff and manifests do not cover. "
     "Cite the exact visible file/span and what it proves; the runtime binds its real diff, read, symbol, "
     "or manifest provenance, including canonical context_manifest_id and context_hash. Successful "
     "read-only tool results outside a "
@@ -243,6 +247,7 @@ def build_review_messages(
         selected = cb.truncate_context(all_parts, prompt_token_budget)
     else:
         selected = all_parts
+    all_parts, selected = compact_review_prompt_parts(all_parts, selected)
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context, selected)
@@ -287,6 +292,7 @@ async def build_review_messages_async(
         )
     else:
         selected = cb.truncate_context(all_parts, prompt_token_budget)
+    all_parts, selected = compact_review_prompt_parts(all_parts, selected)
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context, selected)
