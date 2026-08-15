@@ -394,3 +394,25 @@ def test_resumed_summary_equals_uninterrupted_summary(
             resumed["variants"][variant_id]["structural_metrics"]
             == full["variants"][variant_id]["structural_metrics"]
         )
+
+
+def test_configured_variant_sample_counts_produce_uneven_matrix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config, _fixture, executions = _pilot_harness(monkeypatch, tmp_path)
+    config["variants"][0]["samples"] = 3
+    config["variants"][1]["samples"] = 1
+    config["variants"][2]["samples"] = 3
+
+    result = _run_harness(tmp_path, tmp_path / "checkpoint.jsonl")
+
+    assert len(executions) == 7
+    assert executions.count("A-agent-search") == 3
+    assert executions.count("B1-graph-hybrid-cold") == 1
+    assert executions.count("B2-graph-hybrid-warm") == 3
+    assert result["pairing_errors"] == []
+    assert result["variant_sample_counts"] == {
+        "A-agent-search": 3,
+        "B1-graph-hybrid-cold": 1,
+        "B2-graph-hybrid-warm": 3,
+    }

@@ -670,6 +670,8 @@ def _run_git(*args: str) -> str:
 def _frozen_contract(config: dict[str, Any]) -> dict[str, Any]:
     baseline_path = ROOT / "eval" / "contracts" / "agent-baseline-v1.yaml"
     baseline = yaml.safe_load(baseline_path.read_text(encoding="utf-8"))
+    if config.get("runtime_contract_source") == "current":
+        return {"shared": dict(config.get("shared", {})), "contracts": {}}
     runtime = baseline["runtime"]
     expected = {
         "model": runtime["model"],
@@ -693,6 +695,30 @@ def _frozen_contract(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Pilot run_timeout_seconds must be greater than zero")
     expected["run_timeout_seconds"] = run_timeout_seconds
     return {"shared": expected, "contracts": baseline["contracts"]}
+
+
+def _apply_runtime_contract(config: dict[str, Any]) -> None:
+    """Apply an explicit development-run contract to the shared runtime settings."""
+    if config.get("runtime_contract_source") != "current":
+        return
+    shared = config.get("shared", {})
+    settings = get_settings()
+    field_map = {
+        "model": "model_name",
+        "max_output_tokens": "model_max_tokens",
+        "tool_budget": "agent_max_tool_calls",
+        "model_request_timeout_seconds": "model_request_timeout_seconds",
+        "tool_timeout_seconds": "agent_tool_timeout_seconds",
+        "prompt_input_token_budget": "prompt_input_token_budget",
+        "token_budget": "token_budget",
+        "token_hard_budget": "token_hard_budget",
+        "final_submit_reserve_tokens": "final_submit_reserve_tokens",
+        "final_submit_prompt_token_budget": "final_submit_prompt_token_budget",
+        "final_submit_feedback_token_budget": "final_submit_feedback_token_budget",
+    }
+    for config_key, settings_key in field_map.items():
+        if config_key in shared:
+            setattr(settings, settings_key, shared[config_key])
 
 
 def _fixture_entries(
@@ -823,8 +849,13 @@ async def run_pilot(
     stop_after_measured: int | None = None,
 ) -> dict[str, Any]:
     config = _load_config(config_path)
+    _apply_runtime_contract(config)
     frozen = _frozen_contract(config)
     variants = _variants(config)
+    configured_sample_counts = {
+        str(item["id"]): max(1, int(item.get("samples", samples)))
+        for item in config.get("variants", [])
+    }
     entries = _fixture_entries(config, suite)
     experiment_contract_hash = _experiment_contract_hash(config, frozen, seed=seed)
     journal = CheckpointJournal(checkpoint_path) if checkpoint_path else None
@@ -848,9 +879,18 @@ async def run_pilot(
         ).resolve()
         index_path.parent.mkdir(parents=True, exist_ok=True)
         fixture_records: list[PilotRunRecord] = []
-        fixture_samples = 1 if phase == "smoke" else max(1, samples)
+        sample_counts = (
+            {variant_id: 1 for variant_id in VARIANT_IDS}
+            if phase == "smoke"
+            else configured_sample_counts
+        )
+        fixture_samples = max(sample_counts.values())
         for sample in range(fixture_samples):
-            order = variant_order(seed, fixture_index, sample)
+            order = [
+                variant_id
+                for variant_id in variant_order(seed, fixture_index, sample)
+                if sample < sample_counts[variant_id]
+            ]
             for order_index, variant_id in enumerate(order):
                 variant = variants[variant_id]
                 stable_key = _stable_run_key(
@@ -894,6 +934,11 @@ async def run_pilot(
                     review_max_iterations=int(config["shared"]["max_iterations"]),
                     agent_run_timeout_seconds=float(
                         config["shared"]["run_timeout_seconds"]
+                    ),
+                    diagnostic_artifact_dir=(
+                        checkpoint_path.parent / "run_journals"
+                        if checkpoint_path is not None
+                        else None
                     ),
                 )
                 index_after = (
@@ -965,7 +1010,12 @@ async def run_pilot(
     for record in records:
         by_fixture_sample[(record.fixture_id, record.sample)].append(record)
     for key, paired in by_fixture_sample.items():
-        if {item.variant_id for item in paired} != set(VARIANT_IDS):
+        expected_variants = {
+            variant_id
+            for variant_id, count in configured_sample_counts.items()
+            if key[1] <= count
+        }
+        if {item.variant_id for item in paired} != expected_variants:
             pairing_errors.append(f"{key}:variant_membership")
         if len({item.repository_snapshot for item in paired}) != 1:
             pairing_errors.append(f"{key}:snapshot_mismatch")
@@ -984,6 +1034,7 @@ async def run_pilot(
         "held_out_executed": False,
         "seed": seed,
         "samples": samples,
+        "variant_sample_counts": configured_sample_counts,
         "suite": suite,
         "shared_contract": frozen,
         "experiment_contract_hash": experiment_contract_hash,
