@@ -390,6 +390,11 @@ def _populate_context_telemetry(
         {
             "available": _measure_context_parts(builder, all_parts),
             "selected": _measure_context_parts(builder, selected),
+            "selected_file_complete_lines": {
+                str(part.label)[5:]: str(part.content).count("\n")
+                for part in selected
+                if str(part.label).startswith("file:")
+            },
             "dropped_part_count": dropped_count,
             "summarized_part_count": len(
                 [

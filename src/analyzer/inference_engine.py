@@ -221,7 +221,14 @@ class InferenceEngine:
                 )
             )
         if tool_feedback and not submit_only:
-            messages.extend(self._build_tool_feedback_messages(tool_feedback))
+            messages.extend(
+                self._build_tool_feedback_messages(
+                    tool_feedback,
+                    selected_file_complete_lines=context_telemetry.get(
+                        "selected_file_complete_lines", {}
+                    ),
+                )
+            )
             failure_guidance = self._build_failure_guidance_message(tool_feedback)
             if failure_guidance is not None:
                 messages.append(failure_guidance)
@@ -791,11 +798,15 @@ class InferenceEngine:
         }
         return mapping.get(value, value)
 
-    @staticmethod
+    @classmethod
     def _build_tool_feedback_messages(
+        cls,
         tool_feedback: list[dict[str, Any]],
+        *,
+        selected_file_complete_lines: dict[str, int] | None = None,
     ) -> list[Message]:
         messages: list[Message] = []
+        selected_file_complete_lines = selected_file_complete_lines or {}
         for item in tool_feedback:
             raw_tool_call = item.get("tool_call", {})
             if not isinstance(raw_tool_call, dict):
@@ -815,6 +826,12 @@ class InferenceEngine:
             iteration = item.get("iteration")
             iter_tag = f"[iter={iteration}] " if iteration is not None else ""
             if raw_tool_call.get("synthetic_context") is True:
+                if cls._prefetch_covered_by_selected_file(
+                    raw_tool_call,
+                    result_payload,
+                    selected_file_complete_lines,
+                ):
+                    continue
                 result_payload = InferenceEngine._compact_synthetic_context_payload(
                     result_payload
                 )
@@ -837,6 +854,20 @@ class InferenceEngine:
                 continue
 
         return messages
+
+    @classmethod
+    def _prefetch_covered_by_selected_file(
+        cls,
+        raw_tool_call: dict[str, Any],
+        result_payload: dict[str, Any],
+        selected_file_complete_lines: dict[str, int],
+    ) -> bool:
+        entry = cls._prefetch_coverage_entry(
+            raw_tool_call,
+            result_payload,
+            selected_file_complete_lines,
+        )
+        return bool(entry and entry["covered_by_file_context"])
 
     @staticmethod
     def _compact_synthetic_context_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1283,7 +1314,11 @@ class InferenceEngine:
             )
         )
         prefetch_coverage = self._measure_prefetch_coverage(
-            file_contents, tool_feedback
+            file_contents,
+            tool_feedback,
+            selected_file_complete_lines=context_telemetry.get(
+                "selected_file_complete_lines", {}
+            ),
         )
         self._trace_event_writer(
             EventType.CONTEXT_TELEMETRY,
@@ -1357,8 +1392,11 @@ class InferenceEngine:
         cls,
         file_contents: dict[str, str],
         tool_feedback: list[dict[str, Any]],
+        *,
+        selected_file_complete_lines: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         entries: list[dict[str, Any]] = []
+        selected_file_complete_lines = selected_file_complete_lines or {}
         for item in tool_feedback:
             raw_call = item.get("tool_call")
             if (
@@ -1369,38 +1407,15 @@ class InferenceEngine:
             function = raw_call.get("function")
             if not isinstance(function, dict) or function.get("name") != "read_file":
                 continue
-            try:
-                arguments = json.loads(str(function.get("arguments", "{}")))
-            except json.JSONDecodeError:
-                arguments = {}
-            path = str(arguments.get("file_path", "")).replace("\\", "/")
-            while path.startswith("./"):
-                path = path[2:]
-            path = path.lstrip("/")
             result_payload = cls._tool_result_payload(item.get("result"))
-            data = result_payload.get("data")
-            if not isinstance(data, dict):
-                data = {}
-            start_line = int(data.get("start_line", 0) or 0)
-            line_count = int(data.get("line_count", 0) or 0)
-            end_line = start_line + line_count - 1 if start_line and line_count else 0
-            loaded = file_contents.get(path, "")
-            loaded_complete_lines = loaded.count("\n")
-            covered = bool(end_line and end_line <= loaded_complete_lines)
-            content = data.get("content")
-            entries.append(
-                {
-                    "file": path,
-                    "start_line": start_line,
-                    "end_line": end_line,
-                    "prefetch_content_chars": len(content)
-                    if isinstance(content, str)
-                    else 0,
-                    "loaded_file_chars": len(loaded),
-                    "loaded_complete_lines": loaded_complete_lines,
-                    "covered_by_file_context": covered,
-                }
+            entry = cls._prefetch_coverage_entry(
+                raw_call,
+                result_payload,
+                selected_file_complete_lines,
+                file_contents=file_contents,
             )
+            if entry is not None:
+                entries.append(entry)
         return {
             "entry_count": len(entries),
             "covered_entry_count": sum(
@@ -1411,7 +1426,49 @@ class InferenceEngine:
                 for item in entries
                 if item["covered_by_file_context"]
             ),
+            "suppressed_entry_count": sum(
+                bool(item["covered_by_file_context"]) for item in entries
+            ),
             "entries": entries,
+        }
+
+    @staticmethod
+    def _prefetch_coverage_entry(
+        raw_tool_call: dict[str, Any],
+        result_payload: dict[str, Any],
+        selected_file_complete_lines: dict[str, int],
+        *,
+        file_contents: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        function = raw_tool_call.get("function")
+        if not isinstance(function, dict) or function.get("name") != "read_file":
+            return None
+        try:
+            arguments = json.loads(str(function.get("arguments", "{}")))
+        except json.JSONDecodeError:
+            arguments = {}
+        path = str(arguments.get("file_path", "")).replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        path = path.lstrip("/")
+        data = result_payload.get("data")
+        if result_payload.get("ok") is not True or not isinstance(data, dict):
+            return None
+        start_line = int(data.get("start_line", 0) or 0)
+        line_count = int(data.get("line_count", 0) or 0)
+        end_line = start_line + line_count - 1 if start_line and line_count else 0
+        loaded_complete_lines = int(selected_file_complete_lines.get(path, 0) or 0)
+        covered = bool(end_line and end_line <= loaded_complete_lines)
+        content = data.get("content")
+        loaded = (file_contents or {}).get(path, "")
+        return {
+            "file": path,
+            "start_line": start_line,
+            "end_line": end_line,
+            "prefetch_content_chars": len(content) if isinstance(content, str) else 0,
+            "loaded_file_chars": len(loaded),
+            "loaded_complete_lines": loaded_complete_lines,
+            "covered_by_file_context": covered,
         }
 
     def _record_length_finish(

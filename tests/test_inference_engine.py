@@ -342,6 +342,119 @@ def test_analyze_injects_synthetic_prefetch_feedback_as_user_context(
     )
 
 
+def test_analyze_suppresses_prefetch_covered_by_selected_file_context(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    loaded = "".join(f"line {number}\n" for number in range(1, 101))
+    tool_feedback = [
+        {
+            "tool_call": {
+                "id": "prefetch-read-file-0",
+                "type": "function",
+                "synthetic_context": True,
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"file_path":"src/app.py"}',
+                },
+            },
+            "result": ToolResult(
+                ok=True,
+                data={
+                    "file_path": "src/app.py",
+                    "content": "41: line 41\n42: line 42",
+                    "start_line": 41,
+                    "line_count": 2,
+                },
+            ),
+        }
+    ]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            file_contents={"src/app.py": loaded},
+            tool_feedback=tool_feedback,
+        )
+    )
+
+    assert not any(
+        "prefetched_tool_context" in message.content for message in client.calls[-1]
+    )
+
+
+def test_analyze_keeps_prefetch_when_loaded_file_is_not_selected(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    loaded = "".join(f"line {number}\n" for number in range(1, 101))
+    tool_feedback = [
+        {
+            "tool_call": {
+                "id": "prefetch-read-file-0",
+                "type": "function",
+                "synthetic_context": True,
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"file_path":"src/app.py"}',
+                },
+            },
+            "result": ToolResult(
+                ok=True,
+                data={
+                    "file_path": "src/app.py",
+                    "content": "41: line 41\n42: line 42",
+                    "start_line": 41,
+                    "line_count": 2,
+                },
+            ),
+        }
+    ]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            file_contents={"src/app.py": loaded},
+            tool_feedback=tool_feedback,
+            prompt_input_token_budget=1,
+        )
+    )
+
+    assert any(
+        "prefetched_tool_context" in message.content for message in client.calls[-1]
+    )
+
+
+def test_prefetch_coverage_requires_selected_file_to_reach_end_line() -> None:
+    raw_call = {
+        "synthetic_context": True,
+        "function": {
+            "name": "read_file",
+            "arguments": '{"file_path":"src/app.py"}',
+        },
+    }
+    result = {
+        "ok": True,
+        "data": {
+            "start_line": 41,
+            "line_count": 2,
+            "content": "41: line 41\n42: line 42",
+        },
+    }
+
+    assert not InferenceEngine._prefetch_covered_by_selected_file(  # noqa: SLF001
+        raw_call,
+        result,
+        {"src/app.py": 20},
+    )
+
+
 def test_synthetic_prefetch_feedback_is_compacted(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
@@ -832,6 +945,7 @@ def test_context_telemetry_records_prefetch_coverage_without_source(
     coverage = telemetry["prefetch_coverage"]
     assert coverage["entry_count"] == 1
     assert coverage["covered_entry_count"] == 1
+    assert coverage["suppressed_entry_count"] == 1
     assert coverage["entries"][0] == {
         "file": "src/app.py",
         "start_line": 41,
