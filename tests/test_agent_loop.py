@@ -976,7 +976,7 @@ def test_prepare_start_logs_runtime_budget_and_timeout_settings(
     monkeypatch.setenv("MODEL_MAX_TOKENS", "1024")
     monkeypatch.setenv("REVIEW_DIFF_FIRST_CHANGED_FILES", "1")
 
-    orchestrator = AgentOrchestrator()
+    orchestrator = AgentOrchestrator(agent_run_timeout_seconds=240)
     orchestrator._reset_run(max_iterations=1, repo_path=".")  # noqa: SLF001
 
     log_path = tmp_path / ".mergewarden" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
@@ -993,7 +993,7 @@ def test_prepare_start_logs_runtime_budget_and_timeout_settings(
     assert start_event["payload"]["token_hard_budget"] == 32000
     assert start_event["payload"]["prompt_input_token_budget"] == 28000
     assert start_event["payload"]["model_request_timeout_seconds"] == 45.0
-    assert start_event["payload"]["agent_run_timeout_seconds"] == 90.0
+    assert start_event["payload"]["agent_run_timeout_seconds"] == 240.0
     assert start_event["payload"]["agent_tool_timeout_seconds"] == 12.0
     assert start_event["payload"]["model_max_tokens"] == 1024
     assert start_event["payload"]["review_diff_first_changed_files"] is True

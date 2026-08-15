@@ -335,6 +335,7 @@ async def run_single_lifecycle(
     prime_graph_index: bool,
     temperature: float,
     review_max_iterations: int,
+    agent_run_timeout_seconds: float | None = None,
     diagnostic_artifact_dir: Path | None = None,
 ) -> tuple[EvalResult, dict[str, Any]]:
     """Run the frozen eval pipeline with phase-two-owned index lifecycle."""
@@ -439,6 +440,7 @@ async def run_single_lifecycle(
                     1, get_settings().eval_review_min_tool_iterations
                 ),
                 review_diff_first_changed_files=True,
+                agent_run_timeout_seconds=agent_run_timeout_seconds,
                 relation_graph_index_path=relation_graph_index_path,
                 context_mode=variant.context_mode,
             )
@@ -677,7 +679,6 @@ def _frozen_contract(config: dict[str, Any]) -> dict[str, Any]:
         "tool_budget": runtime["tool_budget"],
         "model_request_timeout_seconds": runtime["model_request_timeout_seconds"],
         "tool_timeout_seconds": runtime["tool_timeout_seconds"],
-        "run_timeout_seconds": runtime["run_timeout_seconds"],
     }
     shared = config.get("shared", {})
     mismatches = [key for key, value in expected.items() if shared.get(key) != value]
@@ -685,6 +686,12 @@ def _frozen_contract(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"Pilot shared config differs from frozen baseline: {mismatches}"
         )
+    run_timeout_seconds = float(
+        shared.get("run_timeout_seconds", runtime["run_timeout_seconds"])
+    )
+    if run_timeout_seconds <= 0:
+        raise ValueError("Pilot run_timeout_seconds must be greater than zero")
+    expected["run_timeout_seconds"] = run_timeout_seconds
     return {"shared": expected, "contracts": baseline["contracts"]}
 
 
@@ -885,6 +892,9 @@ async def run_pilot(
                     prime_graph_index=variant_id == "B2-graph-hybrid-warm",
                     temperature=float(config["shared"]["temperature"]),
                     review_max_iterations=int(config["shared"]["max_iterations"]),
+                    agent_run_timeout_seconds=float(
+                        config["shared"]["run_timeout_seconds"]
+                    ),
                 )
                 index_after = (
                     inspect_index(index_path)

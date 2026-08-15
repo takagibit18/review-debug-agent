@@ -173,7 +173,11 @@ def _pilot_harness(
         "experiment_id": "checkpoint-test",
         "formal_graph_ab": False,
         "held_out_executed": False,
-        "shared": {"temperature": 0.0, "max_iterations": 1},
+        "shared": {
+            "temperature": 0.0,
+            "max_iterations": 1,
+            "run_timeout_seconds": 240.0,
+        },
         "variants": [
             {
                 "id": "A-agent-search",

@@ -10,7 +10,12 @@ import pytest
 
 from eval.formal_ab_readiness import render_report
 from eval.graph_ab_gate import FROZEN_BASELINE_TARGET, VARIANTS, evaluate_gate
-from eval.graph_ab_pilot import _fixture_entries, _load_config, _load_fixture
+from eval.graph_ab_pilot import (
+    _fixture_entries,
+    _frozen_contract,
+    _load_config,
+    _load_fixture,
+)
 
 CONFIG = Path("eval/variants/graph-ab-formal-readiness.yaml")
 
@@ -104,6 +109,15 @@ def test_formal_config_contains_no_held_out_fixture() -> None:
         for fixture, _types, _phase in entries
     )
     assert config["held_out_executed"] is False
+
+
+def test_formal_config_only_overrides_the_experiment_run_timeout() -> None:
+    config = _load_config(CONFIG)
+
+    contract = _frozen_contract(config)
+
+    assert contract["shared"] == config["shared"]
+    assert contract["shared"]["run_timeout_seconds"] == 240.0
 
 
 def test_complete_engineering_evidence_passes_without_manual_blockers() -> None:

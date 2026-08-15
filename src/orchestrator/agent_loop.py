@@ -93,6 +93,7 @@ class AgentOrchestrator:
         finding_verifier_mode: Literal["off", "shadow", "enforce"] | None = None,
         review_workflow_enforcement: Literal["off", "warn", "enforce"] | None = None,
         review_diff_first_changed_files: bool | None = None,
+        agent_run_timeout_seconds: float | None = None,
         relation_graph_index_path: str | Path | None = None,
         context_mode: ReviewContextMode | None = None,
         context_strategy: ContextStrategy | None = None,
@@ -132,7 +133,15 @@ class AgentOrchestrator:
         self._last_decision_reason: str = ""
         self._workspace_root: Path | None = None
         self._run_started_at = 0.0
-        self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
+        effective_run_timeout = (
+            self._settings.agent_run_timeout_seconds
+            if agent_run_timeout_seconds is None
+            else float(agent_run_timeout_seconds)
+        )
+        if effective_run_timeout <= 0:
+            raise ValueError("agent_run_timeout_seconds must be greater than zero")
+        self._agent_run_timeout_seconds = effective_run_timeout
+        self._run_timeout_seconds = self._agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
@@ -2083,7 +2092,7 @@ class AgentOrchestrator:
         self._model_completed = False
         self._last_decision_reason = ""
         self._run_started_at = perf_counter()
-        self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
+        self._run_timeout_seconds = self._agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
@@ -2149,7 +2158,7 @@ class AgentOrchestrator:
                 ),
                 "prompt_input_token_budget": self._settings.prompt_input_token_budget,
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
-                "agent_run_timeout_seconds": self._settings.agent_run_timeout_seconds,
+                "agent_run_timeout_seconds": self._agent_run_timeout_seconds,
                 "agent_tool_timeout_seconds": self._settings.agent_tool_timeout_seconds,
                 "agent_max_tool_calls": self._settings.agent_max_tool_calls,
                 "model_max_tokens": self._settings.model_max_tokens,
