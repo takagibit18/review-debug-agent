@@ -17,6 +17,7 @@ from src.analyzer.context_priority import (
     assemble_review_payload,
     build_debug_context_parts,
     build_review_context_parts,
+    compact_review_prompt_parts,
     split_diff_hunks,
 )
 from src.analyzer.context_state import ContextState
@@ -181,6 +182,172 @@ def test_graph_manifest_is_budgeted_and_excludes_audit_only_paths() -> None:
     assert (
         complete["candidate_context_manifests"][0]["included_graph_paths"][0]["path_id"]
         == "P-1"
+    )
+
+
+def test_review_prompt_omits_diff_only_manifest_already_present_in_diff() -> None:
+    request = ReviewRequest(repo_path=".")
+    manifest = {
+        "candidate_id": "C-diff-only",
+        "included_spans": [
+            {
+                "file": "docs/api.md",
+                "start_line": 10,
+                "end_line": 12,
+                "role": "changed_hunk",
+                "retrieval_source": "git_diff",
+                "content": "already visible",
+            }
+        ],
+        "included_graph_paths": [],
+        "token_cost": 42,
+    }
+    context = ContextState(candidate_context_manifests=[manifest])
+
+    parts = build_review_context_parts(
+        request,
+        context,
+        "diff --git a/docs/api.md b/docs/api.md\n@@ -9,0 +10,3 @@\n+already visible\n",
+        {},
+    )
+    compacted_parts, compacted_selected = compact_review_prompt_parts(parts, parts)
+    payload = assemble_review_payload(
+        request, context, compacted_parts, compacted_selected
+    )
+
+    assert any(part.label.startswith("manifest:") for part in parts)
+    assert not any(part.label.startswith("manifest:") for part in compacted_parts)
+    assert payload["candidate_context_manifests"] == []
+    assert context.candidate_context_manifests == [manifest]
+
+
+def test_review_message_reports_zero_prompt_cost_for_elided_diff_only_manifest() -> (
+    None
+):
+    request = ReviewRequest(repo_path=".")
+    context = ContextState(
+        candidate_context_manifests=[
+            {
+                "candidate_id": "C-diff-only",
+                "included_spans": [
+                    {
+                        "file": "docs/api.md",
+                        "start_line": 10,
+                        "end_line": 10,
+                        "role": "changed_hunk",
+                        "retrieval_source": "git_diff",
+                        "content": "already visible",
+                    }
+                ],
+                "included_graph_paths": [],
+                "token_cost": 42,
+            }
+        ]
+    )
+    telemetry: dict[str, Any] = {}
+
+    messages = build_review_messages(
+        request,
+        context,
+        "diff --git a/docs/api.md b/docs/api.md\n@@ -9,0 +10 @@\n+already visible\n",
+        {},
+        prompt_token_budget=10_000,
+        telemetry_sink=telemetry,
+    )
+    payload = _user_payload(messages[1].content)
+
+    assert payload["candidate_context_manifests"] == []
+    assert payload["truncated"]["any"] is False
+    assert telemetry["candidate_context_manifest_count"] == 1
+    assert telemetry["candidate_context_manifest_selected_count"] == 0
+    assert telemetry["candidate_context_prompt_token_cost"] == 0
+    assert telemetry["candidate_context_token_cost"] == 42
+
+
+def test_review_prompt_keeps_graph_spans_but_drops_duplicate_diff_span() -> None:
+    request = ReviewRequest(repo_path=".")
+    context = ContextState(
+        candidate_context_manifests=[
+            {
+                "candidate_id": "C-related",
+                "included_spans": [
+                    {
+                        "file": "src/changed.py",
+                        "start_line": 4,
+                        "end_line": 4,
+                        "role": "changed_hunk",
+                        "retrieval_source": "git_diff",
+                        "content": "duplicate diff",
+                    },
+                    {
+                        "file": "src/caller.py",
+                        "start_line": 20,
+                        "end_line": 24,
+                        "role": "execution_flow",
+                        "retrieval_source": "relation_graph",
+                        "content": "useful graph context",
+                    },
+                ],
+                "included_graph_paths": [],
+            }
+        ]
+    )
+
+    parts = build_review_context_parts(
+        request,
+        context,
+        "diff --git a/src/changed.py b/src/changed.py\n@@ -3,0 +4 @@\n+duplicate diff\n",
+        {},
+    )
+    compacted_parts, _ = compact_review_prompt_parts(parts, parts)
+    manifest_part = next(
+        part for part in compacted_parts if part.label == "manifest:C-related"
+    )
+    prompt_manifest = json.loads(manifest_part.content)
+
+    assert [span["content"] for span in prompt_manifest["included_spans"]] == [
+        "useful graph context"
+    ]
+
+
+def test_review_prompt_keeps_diff_span_when_diff_hunk_was_not_selected() -> None:
+    request = ReviewRequest(repo_path=".")
+    context = ContextState(
+        candidate_context_manifests=[
+            {
+                "candidate_id": "C-fallback",
+                "included_spans": [
+                    {
+                        "file": "src/changed.py",
+                        "start_line": 4,
+                        "end_line": 4,
+                        "role": "changed_hunk",
+                        "retrieval_source": "git_diff",
+                        "content": "retained fallback evidence",
+                    }
+                ],
+                "included_graph_paths": [],
+            }
+        ]
+    )
+    parts = build_review_context_parts(
+        request,
+        context,
+        "diff --git a/src/changed.py b/src/changed.py\n@@ -1,0 +1,500 @@\n"
+        + "+oversized diff line\n" * 500,
+        {},
+    )
+    selected = [part for part in parts if part.label in {"meta", "manifest:C-fallback"}]
+
+    compacted_parts, compacted_selected = compact_review_prompt_parts(parts, selected)
+    payload = assemble_review_payload(
+        request, context, compacted_parts, compacted_selected
+    )
+
+    assert payload["truncated"]["diff_hunks"] is True
+    assert (
+        payload["candidate_context_manifests"][0]["included_spans"][0]["content"]
+        == "retained fallback evidence"
     )
 
 

@@ -29,6 +29,38 @@ MANIFEST_PATH_LABEL_PREFIX = "manifest_path:"
 _AUDIT_ONLY_MANIFEST_FIELDS = {"excluded_low_confidence_paths", "discarded_paths"}
 
 
+def _is_diff_duplicate_span(span: Any) -> bool:
+    """Return whether a manifest span repeats a changed hunk already in the diff."""
+
+    return (
+        isinstance(span, dict)
+        and str(span.get("retrieval_source", "")).strip() == "git_diff"
+        and str(span.get("role", "")).strip() == "changed_hunk"
+    )
+
+
+def _review_prompt_manifest(
+    manifest: dict[str, Any], *, has_selected_graph_paths: bool
+) -> dict[str, Any] | None:
+    """Build the reviewer-facing manifest without duplicating visible diff hunks."""
+
+    prompt_manifest = {
+        key: value
+        for key, value in manifest.items()
+        if key not in _AUDIT_ONLY_MANIFEST_FIELDS and key != "included_graph_paths"
+    }
+    spans = prompt_manifest.get("included_spans", [])
+    if isinstance(spans, list):
+        prompt_manifest["included_spans"] = [
+            span for span in spans if not _is_diff_duplicate_span(span)
+        ]
+    retained_spans = prompt_manifest.get("included_spans", [])
+    if not retained_spans and not has_selected_graph_paths:
+        return None
+    prompt_manifest["included_graph_paths"] = []
+    return prompt_manifest
+
+
 def _split_section_at_hunks(section: str) -> list[str]:
     """Split one file's diff section at ``@@`` boundaries (after the first hunk)."""
     lines = section.splitlines(keepends=True)
@@ -212,6 +244,55 @@ def build_debug_context_parts(
 
 def _selected_labels(selected: list[ContextPart]) -> set[str]:
     return {p.label for p in selected}
+
+
+def compact_review_prompt_parts(
+    all_parts: list[ContextPart], selected: list[ContextPart]
+) -> tuple[list[ContextPart], list[ContextPart]]:
+    """Elide duplicate diff spans only when the exact diff is already selected."""
+
+    diff_labels = [
+        part.label for part in all_parts if part.label.startswith("diff_hunk_")
+    ]
+    selected_labels = _selected_labels(selected)
+    if not diff_labels or any(label not in selected_labels for label in diff_labels):
+        return all_parts, selected
+    selected_path_candidates = {
+        part.label[len(MANIFEST_PATH_LABEL_PREFIX) :].split(":", 1)[0]
+        for part in selected
+        if part.label.startswith(MANIFEST_PATH_LABEL_PREFIX)
+    }
+    replacements: dict[str, ContextPart | None] = {}
+    for part in all_parts:
+        if not part.label.startswith(MANIFEST_LABEL_PREFIX):
+            continue
+        decoded = json.loads(part.content)
+        if not isinstance(decoded, dict):
+            continue
+        candidate_id = part.label[len(MANIFEST_LABEL_PREFIX) :]
+        prompt_manifest = _review_prompt_manifest(
+            decoded,
+            has_selected_graph_paths=candidate_id in selected_path_candidates,
+        )
+        replacements[part.label] = (
+            None
+            if prompt_manifest is None
+            else ContextPart(
+                priority=part.priority,
+                label=part.label,
+                content=json.dumps(prompt_manifest, ensure_ascii=True),
+            )
+        )
+
+    def apply(parts: list[ContextPart]) -> list[ContextPart]:
+        compacted: list[ContextPart] = []
+        for part in parts:
+            replacement = replacements.get(part.label, part)
+            if replacement is not None:
+                compacted.append(replacement)
+        return compacted
+
+    return apply(all_parts), apply(selected)
 
 
 def _base_label(label: str) -> str:

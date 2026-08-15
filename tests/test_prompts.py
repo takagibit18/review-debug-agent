@@ -82,6 +82,14 @@ def test_review_prompts_make_evidence_provenance_system_owned() -> None:
     assert "do not invent provenance metadata" in SYSTEM_PROMPT_REVIEW
 
 
+def test_graph_prompt_avoids_rediscovering_visible_manifest_spans() -> None:
+    normalized = GRAPH_CONTEXT_POLICY.lower()
+
+    assert "before requesting read or grep tools" in normalized
+    assert "do not re-read or grep solely to rediscover" in normalized
+    assert "specific evidence gap" in normalized
+
+
 def test_review_prompts_require_risk_severity_for_concrete_regressions() -> None:
     for prompt in (SYSTEM_PROMPT_REVIEW, USER_PREFIX_REVIEW, FINALIZE_REVIEW_NOTICE):
         normalized = prompt.lower()

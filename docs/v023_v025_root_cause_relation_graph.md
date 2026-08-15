@@ -237,6 +237,8 @@ Planner 支持 token/字符预算、最大节点数、最大深度、边类型�
 
 Manifest 中的 `included_spans` 作为 candidate 核心块参与 `PROMPT_INPUT_TOKEN_BUDGET`，`included_graph_paths` 作为独立的低优先级块在剩余预算内选择；未选中的 path 不进入 Reviewer prompt。`excluded_low_confidence_paths` 和 `discarded_paths` 仅保留在审计状态/事件日志中，不进入 prompt，也不具备 accepted evidence 资格。
 
+当同一请求的全部 diff hunk 已完整选入 Reviewer prompt 时，prompt 会省略重复的 `git_diff/changed_hunk` Manifest span；若一个 Manifest 在省略后既没有关系 span 也没有已选 graph path，则整份 Manifest 不进入 Reviewer prompt。只要 diff 因预算被裁掉，Manifest 中的 changed-hunk fallback 就保持原样。完整 Manifest 始终保留在 Context State、EventLog 和 verifier provenance 中。Graph policy 同时要求 Reviewer 先使用已经可见的 Manifest span，只在存在明确 evidence gap 时继续 `read_file` / `grep_files`，避免把关系图作为原文件搜索之外的附加浏览清单。
+
 ```json
 {
   "candidate_id": "C-12",
