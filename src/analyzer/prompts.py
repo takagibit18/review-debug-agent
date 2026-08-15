@@ -187,7 +187,13 @@ FINALIZE_REVIEW_NOTICE = (
     "as your FIRST and ONLY action. Do NOT output any reasoning, analysis, or prose text "
     "before the tool call — go directly to submit_review with the best conclusions you can "
     "derive from the known draft findings and accumulated tool feedback. Do NOT request "
-    "any additional tools. Treat drafts as hypotheses and submit only those supported by "
+    "any additional tools. The submit_review function arguments must directly contain "
+    "top-level summary and issues fields; do not wrap them inside an arguments object. "
+    "Keep the summary concise, submit one issue per independent root cause, and avoid "
+    "repeating the same explanation across evidence, causal mechanism, and impact. "
+    "Include only necessary related locations and prefer complete valid JSON over "
+    "exhaustive prose. "
+    "Treat drafts as hypotheses and submit only those supported by "
     "the retained evidence. "
     "If the accumulated evidence only supports speculative, info/style/design, or "
     "non-blocking suggestions, submit issues: [] with an honest summary. "
@@ -390,6 +396,11 @@ def _populate_context_telemetry(
         {
             "available": _measure_context_parts(builder, all_parts),
             "selected": _measure_context_parts(builder, selected),
+            "selected_file_complete_lines": {
+                str(part.label)[5:]: str(part.content).count("\n")
+                for part in selected
+                if str(part.label).startswith("file:")
+            },
             "dropped_part_count": dropped_count,
             "summarized_part_count": len(
                 [

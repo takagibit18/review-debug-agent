@@ -18,6 +18,16 @@ def test_finalize_review_notice_requires_empty_issues_for_speculative_suggestion
     assert "issues: []" in FINALIZE_REVIEW_NOTICE
 
 
+def test_finalize_review_notice_prioritizes_concise_complete_json() -> None:
+    normalized = FINALIZE_REVIEW_NOTICE.lower()
+
+    assert "keep the summary concise" in normalized
+    assert "one issue per independent root cause" in normalized
+    assert "avoid repeating" in normalized
+    assert "only necessary related locations" in normalized
+    assert "complete valid json over exhaustive prose" in normalized
+
+
 def test_review_prompts_call_out_silent_fallback_semantic_changes() -> None:
     combined = f"{SYSTEM_PROMPT_REVIEW}\n{FINALIZE_REVIEW_NOTICE}"
 

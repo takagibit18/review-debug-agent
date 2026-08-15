@@ -17,12 +17,30 @@ def build_tool_schemas(specs: list[ToolSpec]) -> list[dict[str, Any]]:
                 "function": {
                     "name": spec.name,
                     "description": spec.description,
-                    "parameters": spec.parameters
-                    or {"type": "object", "properties": {}},
+                    "parameters": _llm_facing_schema(
+                        spec.parameters or {"type": "object", "properties": {}}
+                    ),
                 },
             }
         )
     return schemas
+
+
+def _llm_facing_schema(value: Any) -> Any:
+    """Drop generated metadata that does not affect the callable contract."""
+
+    if isinstance(value, list):
+        return [_llm_facing_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    cleaned: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "title":
+            continue
+        if key == "default" and (item is None or item == "" or item == []):
+            continue
+        cleaned[key] = _llm_facing_schema(item)
+    return cleaned
 
 
 def build_draft_finding_tool_schema() -> dict[str, Any]:

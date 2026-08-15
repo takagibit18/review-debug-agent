@@ -45,7 +45,7 @@ from src.models.schemas import (
 from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
-_SUBMIT_MAX_TOKENS = 2048
+_SUBMIT_MAX_TOKENS = 4096
 _EXPLORATION_MAX_TOKENS = 12288
 _SYNTHETIC_CONTEXT_MAX_CHARS = 3600
 _FINAL_EVIDENCE_ENTRY_MAX_CHARS = 2400
@@ -221,7 +221,14 @@ class InferenceEngine:
                 )
             )
         if tool_feedback and not submit_only:
-            messages.extend(self._build_tool_feedback_messages(tool_feedback))
+            messages.extend(
+                self._build_tool_feedback_messages(
+                    tool_feedback,
+                    selected_file_complete_lines=context_telemetry.get(
+                        "selected_file_complete_lines", {}
+                    ),
+                )
+            )
             failure_guidance = self._build_failure_guidance_message(tool_feedback)
             if failure_guidance is not None:
                 messages.append(failure_guidance)
@@ -248,17 +255,6 @@ class InferenceEngine:
             self._submit_only_tools(tool_schemas or [], request)
             if submit_only
             else tool_schemas or []
-        )
-        self._record_context_telemetry(
-            context_telemetry=context_telemetry,
-            messages=messages,
-            tools=tools,
-            iteration=iteration,
-            prompt_input_token_budget=total_prompt_budget,
-            base_context_token_budget=budget,
-            final_submit_feedback_token_budget=final_feedback_budget,
-            final_evidence_telemetry=final_evidence_telemetry,
-            force_submit=submit_only,
         )
         config = None
         if submit_only:
@@ -289,6 +285,22 @@ class InferenceEngine:
         else:
             conversation_history_start = len(messages)
             messages.extend(conversation_messages)
+        self._record_context_telemetry(
+            context_telemetry=context_telemetry,
+            messages=messages,
+            tools=tools,
+            config=config,
+            policy=policy,
+            file_contents=file_contents,
+            tool_feedback=tool_feedback or [],
+            conversation_history_count=conversation_history_count,
+            iteration=iteration,
+            prompt_input_token_budget=total_prompt_budget,
+            base_context_token_budget=budget,
+            final_submit_feedback_token_budget=final_feedback_budget,
+            final_evidence_telemetry=final_evidence_telemetry,
+            force_submit=submit_only,
+        )
         response = await self._model_client.chat(
             messages=messages,
             config=config,
@@ -309,6 +321,7 @@ class InferenceEngine:
         if (
             isinstance(request, ReviewRequest)
             and plan.draft_review is None
+            and response.finish_reason != "length"
             and parse_meta.get("submit_review_seen")
             and parse_meta.get("submit_review_validation_error")
         ):
@@ -421,7 +434,9 @@ class InferenceEngine:
                     "Your previous submit_review tool call was rejected by schema validation. "
                     "Call submit_review again as your only action, preserving supported findings "
                     "but fixing this exact validation error:\n"
-                    f"{validation_error}"
+                    f"{validation_error}\n"
+                    "The submit_review function arguments must directly contain top-level "
+                    "summary and issues fields; do not wrap them inside an arguments object."
                 ),
             ),
         ]
@@ -498,6 +513,7 @@ class InferenceEngine:
             "submit_review_seen": False,
             "submit_debug_seen": False,
             "submit_review_validation_error": "",
+            "submit_review_arguments_normalized": False,
             "submit_debug_validation_error": "",
             "draft_finding_validation_errors": [],
             "valid_draft_call_ids": [],
@@ -554,6 +570,13 @@ class InferenceEngine:
                     logger.warning("Invalid submit_review arguments ignored: %s", error)
                     parse_meta["submit_review_validation_error"] = error
                     continue
+                payload, arguments_normalized = (
+                    self._normalize_nested_submit_review_arguments(payload)
+                )
+                parse_meta["submit_review_arguments_normalized"] = bool(
+                    parse_meta["submit_review_arguments_normalized"]
+                    or arguments_normalized
+                )
                 payload_error = self._validate_submit_review_payload(payload)
                 if payload_error:
                     logger.warning(
@@ -709,6 +732,19 @@ class InferenceEngine:
             return None
 
     @staticmethod
+    def _normalize_nested_submit_review_arguments(
+        payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Unwrap one exact provider-style arguments envelope for submit_review."""
+
+        if set(payload) != {"arguments"}:
+            return payload, False
+        nested = payload.get("arguments")
+        if not isinstance(nested, dict) or not {"summary", "issues"}.issubset(nested):
+            return payload, False
+        return nested, True
+
+    @staticmethod
     def _validate_submit_review_payload(payload: dict[str, Any]) -> str:
         summary = payload.get("summary")
         if isinstance(summary, str) and _DSML_ISSUES_PARAMETER_PATTERN.search(summary):
@@ -786,11 +822,15 @@ class InferenceEngine:
         }
         return mapping.get(value, value)
 
-    @staticmethod
+    @classmethod
     def _build_tool_feedback_messages(
+        cls,
         tool_feedback: list[dict[str, Any]],
+        *,
+        selected_file_complete_lines: dict[str, int] | None = None,
     ) -> list[Message]:
         messages: list[Message] = []
+        selected_file_complete_lines = selected_file_complete_lines or {}
         for item in tool_feedback:
             raw_tool_call = item.get("tool_call", {})
             if not isinstance(raw_tool_call, dict):
@@ -810,6 +850,12 @@ class InferenceEngine:
             iteration = item.get("iteration")
             iter_tag = f"[iter={iteration}] " if iteration is not None else ""
             if raw_tool_call.get("synthetic_context") is True:
+                if cls._prefetch_covered_by_selected_file(
+                    raw_tool_call,
+                    result_payload,
+                    selected_file_complete_lines,
+                ):
+                    continue
                 result_payload = InferenceEngine._compact_synthetic_context_payload(
                     result_payload
                 )
@@ -832,6 +878,20 @@ class InferenceEngine:
                 continue
 
         return messages
+
+    @classmethod
+    def _prefetch_covered_by_selected_file(
+        cls,
+        raw_tool_call: dict[str, Any],
+        result_payload: dict[str, Any],
+        selected_file_complete_lines: dict[str, int],
+    ) -> bool:
+        entry = cls._prefetch_coverage_entry(
+            raw_tool_call,
+            result_payload,
+            selected_file_complete_lines,
+        )
+        return bool(entry and entry["covered_by_file_context"])
 
     @staticmethod
     def _compact_synthetic_context_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1191,6 +1251,9 @@ class InferenceEngine:
                 "submit_review_validation_error": self._trace_recorder.build_text_preview(
                     str(parse_meta.get("submit_review_validation_error", ""))
                 ),
+                "submit_review_arguments_normalized": bool(
+                    parse_meta.get("submit_review_arguments_normalized")
+                ),
                 "submit_debug_validation_error": self._trace_recorder.build_text_preview(
                     str(parse_meta.get("submit_debug_validation_error", ""))
                 ),
@@ -1221,6 +1284,11 @@ class InferenceEngine:
         context_telemetry: dict[str, Any],
         messages: list[Message],
         tools: list[dict[str, Any]],
+        config: ModelConfig,
+        policy: ModelCallPolicy,
+        file_contents: dict[str, str],
+        tool_feedback: list[dict[str, Any]],
+        conversation_history_count: int,
         iteration: int,
         prompt_input_token_budget: int,
         base_context_token_budget: int,
@@ -1232,8 +1300,52 @@ class InferenceEngine:
             return
         builder = ContextBuilder()
         message_tokens = sum(builder.estimate_tokens(item.content) for item in messages)
-        tool_schema_tokens = builder.estimate_tokens(
-            json.dumps(tools, ensure_ascii=True)
+        tool_schema_json = json.dumps(tools, ensure_ascii=True, sort_keys=True)
+        tool_schema_tokens = builder.estimate_tokens(tool_schema_json)
+        message_shapes = [
+            {
+                "index": index,
+                "role": item.role,
+                "chars": len(item.content),
+                "estimated_tokens": builder.estimate_tokens(item.content),
+                "component": self._message_component(item),
+            }
+            for index, item in enumerate(messages)
+        ]
+        role_counts = {
+            role: sum(item.role == role for item in messages)
+            for role in ("system", "user", "assistant", "tool")
+        }
+        role_chars = {
+            role: sum(len(item.content) for item in messages if item.role == role)
+            for role in role_counts
+        }
+        tool_shapes = [self._tool_schema_shape(item, builder) for item in tools]
+        assembled_request_chars = len(
+            json.dumps(
+                {
+                    "model": config.model,
+                    "messages": [
+                        item.model_dump(mode="json", exclude_none=True)
+                        for item in messages
+                    ],
+                    "temperature": config.temperature,
+                    "max_tokens": config.max_tokens,
+                    "top_p": config.top_p,
+                    "tools": tools,
+                    "thinking": policy.thinking,
+                    "forced_tool": policy.forced_tool,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+        )
+        prefetch_coverage = self._measure_prefetch_coverage(
+            file_contents,
+            tool_feedback,
+            selected_file_complete_lines=context_telemetry.get(
+                "selected_file_complete_lines", {}
+            ),
         )
         self._trace_event_writer(
             EventType.CONTEXT_TELEMETRY,
@@ -1248,12 +1360,143 @@ class InferenceEngine:
                 "estimated_message_tokens": message_tokens,
                 "estimated_tool_schema_tokens": tool_schema_tokens,
                 "estimated_prompt_tokens": message_tokens + tool_schema_tokens,
+                "message_count": len(messages),
+                "message_count_by_role": role_counts,
+                "message_chars": sum(len(item.content) for item in messages),
+                "message_chars_by_role": role_chars,
+                "message_shapes": message_shapes,
+                "conversation_history_count": conversation_history_count,
+                "tool_schema_chars": len(tool_schema_json),
+                "tool_schema_shapes": tool_shapes,
+                "assembled_request_chars": assembled_request_chars,
+                "max_output_tokens": config.max_tokens,
+                "thinking": policy.thinking,
+                "forced_tool": policy.forced_tool or "none",
+                "prefetch_coverage": prefetch_coverage,
                 "force_submit": force_submit,
                 "final_submit_evidence": final_evidence_telemetry,
                 "tool_schema_count": len(tools),
                 **context_telemetry,
             },
         )
+
+    @staticmethod
+    def _message_component(message: Message) -> str:
+        if message.role == "system":
+            return "system"
+        content = message.content
+        if "prefetched_tool_context:" in content:
+            return "prefetch_context"
+        if content.startswith("Do not call submit_review yet."):
+            return "defer_submit_notice"
+        if content.startswith("final_submit_evidence_summary:"):
+            return "final_submit_evidence"
+        if content.startswith("FINAL CALL"):
+            return "finalize_notice"
+        if content.startswith("Review the payload"):
+            return "review_payload"
+        if content.startswith("Return tool calls if needed"):
+            return "debug_payload"
+        return "conversation_or_feedback"
+
+    @staticmethod
+    def _tool_schema_shape(
+        schema: dict[str, Any], builder: ContextBuilder
+    ) -> dict[str, Any]:
+        serialized = json.dumps(schema, ensure_ascii=True, sort_keys=True)
+        function = schema.get("function", {})
+        name = (
+            function.get("name", "unknown") if isinstance(function, dict) else "unknown"
+        )
+        return {
+            "name": str(name),
+            "chars": len(serialized),
+            "estimated_tokens": builder.estimate_tokens(serialized),
+        }
+
+    @classmethod
+    def _measure_prefetch_coverage(
+        cls,
+        file_contents: dict[str, str],
+        tool_feedback: list[dict[str, Any]],
+        *,
+        selected_file_complete_lines: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        entries: list[dict[str, Any]] = []
+        selected_file_complete_lines = selected_file_complete_lines or {}
+        for item in tool_feedback:
+            raw_call = item.get("tool_call")
+            if (
+                not isinstance(raw_call, dict)
+                or raw_call.get("synthetic_context") is not True
+            ):
+                continue
+            function = raw_call.get("function")
+            if not isinstance(function, dict) or function.get("name") != "read_file":
+                continue
+            result_payload = cls._tool_result_payload(item.get("result"))
+            entry = cls._prefetch_coverage_entry(
+                raw_call,
+                result_payload,
+                selected_file_complete_lines,
+                file_contents=file_contents,
+            )
+            if entry is not None:
+                entries.append(entry)
+        return {
+            "entry_count": len(entries),
+            "covered_entry_count": sum(
+                bool(item["covered_by_file_context"]) for item in entries
+            ),
+            "covered_prefetch_content_chars": sum(
+                int(item["prefetch_content_chars"])
+                for item in entries
+                if item["covered_by_file_context"]
+            ),
+            "suppressed_entry_count": sum(
+                bool(item["covered_by_file_context"]) for item in entries
+            ),
+            "entries": entries,
+        }
+
+    @staticmethod
+    def _prefetch_coverage_entry(
+        raw_tool_call: dict[str, Any],
+        result_payload: dict[str, Any],
+        selected_file_complete_lines: dict[str, int],
+        *,
+        file_contents: dict[str, str] | None = None,
+    ) -> dict[str, Any] | None:
+        function = raw_tool_call.get("function")
+        if not isinstance(function, dict) or function.get("name") != "read_file":
+            return None
+        try:
+            arguments = json.loads(str(function.get("arguments", "{}")))
+        except json.JSONDecodeError:
+            arguments = {}
+        path = str(arguments.get("file_path", "")).replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        path = path.lstrip("/")
+        data = result_payload.get("data")
+        if result_payload.get("ok") is not True or not isinstance(data, dict):
+            return None
+        start_line = int(data.get("start_line", 0) or 0)
+        line_count = int(data.get("line_count", 0) or 0)
+        end_line = start_line + line_count - 1 if start_line and line_count else 0
+        loaded_complete_lines = int(selected_file_complete_lines.get(path, 0) or 0)
+        covered = bool(end_line and end_line <= loaded_complete_lines)
+        content = data.get("content")
+        loaded = (file_contents or {}).get(path, "")
+        return {
+            "file": path,
+            "start_line": start_line,
+            "end_line": end_line,
+            "prefetch_content_chars": len(content) if isinstance(content, str) else 0,
+            "loaded_file_chars": len(loaded),
+            "loaded_complete_lines": loaded_complete_lines,
+            "covered_by_file_context": covered,
+        }
 
     def _record_length_finish(
         self,

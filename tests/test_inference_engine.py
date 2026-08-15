@@ -342,6 +342,119 @@ def test_analyze_injects_synthetic_prefetch_feedback_as_user_context(
     )
 
 
+def test_analyze_suppresses_prefetch_covered_by_selected_file_context(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    loaded = "".join(f"line {number}\n" for number in range(1, 101))
+    tool_feedback = [
+        {
+            "tool_call": {
+                "id": "prefetch-read-file-0",
+                "type": "function",
+                "synthetic_context": True,
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"file_path":"src/app.py"}',
+                },
+            },
+            "result": ToolResult(
+                ok=True,
+                data={
+                    "file_path": "src/app.py",
+                    "content": "41: line 41\n42: line 42",
+                    "start_line": 41,
+                    "line_count": 2,
+                },
+            ),
+        }
+    ]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            file_contents={"src/app.py": loaded},
+            tool_feedback=tool_feedback,
+        )
+    )
+
+    assert not any(
+        "prefetched_tool_context" in message.content for message in client.calls[-1]
+    )
+
+
+def test_analyze_keeps_prefetch_when_loaded_file_is_not_selected(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    loaded = "".join(f"line {number}\n" for number in range(1, 101))
+    tool_feedback = [
+        {
+            "tool_call": {
+                "id": "prefetch-read-file-0",
+                "type": "function",
+                "synthetic_context": True,
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"file_path":"src/app.py"}',
+                },
+            },
+            "result": ToolResult(
+                ok=True,
+                data={
+                    "file_path": "src/app.py",
+                    "content": "41: line 41\n42: line 42",
+                    "start_line": 41,
+                    "line_count": 2,
+                },
+            ),
+        }
+    ]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            file_contents={"src/app.py": loaded},
+            tool_feedback=tool_feedback,
+            prompt_input_token_budget=1,
+        )
+    )
+
+    assert any(
+        "prefetched_tool_context" in message.content for message in client.calls[-1]
+    )
+
+
+def test_prefetch_coverage_requires_selected_file_to_reach_end_line() -> None:
+    raw_call = {
+        "synthetic_context": True,
+        "function": {
+            "name": "read_file",
+            "arguments": '{"file_path":"src/app.py"}',
+        },
+    }
+    result = {
+        "ok": True,
+        "data": {
+            "start_line": 41,
+            "line_count": 2,
+            "content": "41: line 41\n42: line 42",
+        },
+    }
+
+    assert not InferenceEngine._prefetch_covered_by_selected_file(  # noqa: SLF001
+        raw_call,
+        result,
+        {"src/app.py": 20},
+    )
+
+
 def test_synthetic_prefetch_feedback_is_compacted(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
     client = RecordingFakeModelClient()
@@ -760,9 +873,89 @@ def test_analyze_records_context_telemetry_without_content(monkeypatch) -> None:
         if event_type == EventType.CONTEXT_TELEMETRY and phase == "analyze"
     )
     assert telemetry["tool_schema_count"] == 1
+    assert telemetry["message_count_by_role"] == {
+        "system": 1,
+        "user": 1,
+        "assistant": 0,
+        "tool": 0,
+    }
+    assert telemetry["message_shapes"][0]["component"] == "system"
+    assert telemetry["message_shapes"][1]["component"] == "review_payload"
+    assert telemetry["tool_schema_shapes"][0]["name"] == "submit_review"
+    assert telemetry["tool_schema_chars"] > 0
+    assert telemetry["assembled_request_chars"] > telemetry["message_chars"]
+    assert telemetry["max_output_tokens"] == 12288
+    assert telemetry["thinking"] == "high"
     assert telemetry["selected"]["tokens"] > 0
     assert telemetry["selected"]["by_kind"]["diff_hunk"]["chars"] > 0
     assert "print('new')" not in json.dumps(telemetry)
+
+
+def test_context_telemetry_records_prefetch_coverage_without_source(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    events: list[tuple[EventType, str, dict[str, Any]]] = []
+    engine = InferenceEngine(
+        model_client=client,  # type: ignore[arg-type]
+        trace_event_writer=lambda event_type, phase, payload: events.append(
+            (event_type, phase, payload)
+        ),
+    )
+    loaded = "".join(f"line {number}\n" for number in range(1, 101))
+    tool_feedback = [
+        {
+            "tool_call": {
+                "id": "prefetch-read-file-0",
+                "type": "function",
+                "synthetic_context": True,
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"file_path":"src/app.py"}',
+                },
+            },
+            "result": ToolResult(
+                ok=True,
+                data={
+                    "file_path": "src/app.py",
+                    "content": "41: line 41\n42: line 42",
+                    "start_line": 41,
+                    "line_count": 2,
+                },
+            ),
+        }
+    ]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            file_contents={"src/app.py": loaded},
+            tool_feedback=tool_feedback,
+        )
+    )
+
+    telemetry = next(
+        payload
+        for event_type, phase, payload in events
+        if event_type == EventType.CONTEXT_TELEMETRY and phase == "analyze"
+    )
+    coverage = telemetry["prefetch_coverage"]
+    assert coverage["entry_count"] == 1
+    assert coverage["covered_entry_count"] == 1
+    assert coverage["suppressed_entry_count"] == 1
+    assert coverage["entries"][0] == {
+        "file": "src/app.py",
+        "start_line": 41,
+        "end_line": 42,
+        "prefetch_content_chars": 23,
+        "loaded_file_chars": len(loaded),
+        "loaded_complete_lines": 100,
+        "covered_by_file_context": True,
+    }
+    assert "line 41" not in json.dumps(telemetry)
 
 
 def test_normalize_review_payload_canonicalizes_location() -> None:
@@ -807,9 +1000,13 @@ def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(
     )
 
     config = client.configs[-1]
-    assert config.max_tokens == 2048
+    assert config.max_tokens == 4096
     assert client.policies[-1].forced_tool == "submit_review"
     assert client.policies[-1].thinking == "off"
+    assert any(
+        "directly contain top-level summary and issues" in message.content
+        for message in client.calls[-1]
+    )
     assert [tool["function"]["name"] for tool in client.tools[-1]] == ["submit_review"]
     assert any(
         "summary must not mention bugs, regressions" in str(message.content)
@@ -1162,7 +1359,7 @@ def test_near_last_review_iteration_switches_to_submit_only_forced_mode(
     )
 
     config = client.configs[-1]
-    assert config.max_tokens == 2048
+    assert config.max_tokens == 4096
     assert client.policies[-1].forced_tool == "submit_review"
     assert [tool["function"]["name"] for tool in client.tools[-1]] == ["submit_review"]
 
@@ -1186,6 +1383,67 @@ def test_invalid_submit_review_arguments_do_not_create_empty_draft() -> None:
 
     assert plan.draft_review is None
     assert "Invalid JSON" in parse_meta["submit_review_validation_error"]
+
+
+def test_nested_submit_review_arguments_are_strictly_normalized() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    nested = {
+        "arguments": {
+            "summary": "Found one supported issue.",
+            "issues": [
+                {
+                    "severity": "warning",
+                    "location": "src/a.py:1",
+                    "evidence": "The changed branch returns the wrong value.",
+                    "suggestion": "Return the preserved value.",
+                    "confidence": 0.9,
+                }
+            ],
+        }
+    }
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps(nested),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert parse_meta["submit_review_arguments_normalized"] is True
+    assert parse_meta["submit_review_validation_error"] == ""
+    assert plan.draft_review is not None
+    assert len(plan.draft_review.issues) == 1
+
+
+def test_unrelated_arguments_envelope_is_not_normalized() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps(
+                        {"arguments": {"summary": "Missing issues."}}
+                    ),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert parse_meta["submit_review_arguments_normalized"] is False
+    assert plan.draft_review is None
+    assert "issues" in parse_meta["submit_review_validation_error"]
 
 
 def test_submit_review_arguments_allow_unescaped_control_characters() -> None:
@@ -1337,6 +1595,59 @@ def test_invalid_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
     assert usage.total_tokens == 24
     assert len(client.calls) == 2
     assert any("issues.0.severity" in message.content for message in client.calls[1])
+    assert any(
+        "directly contain top-level summary and issues" in message.content
+        for message in client.calls[1]
+    )
+
+
+def test_length_invalid_submit_defers_to_length_recovery_without_schema_repair(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+
+    async def _length_invalid_submit(
+        messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
+        client.calls.append(messages)
+        client.configs.append(config)
+        client.tools.append(tools)
+        return ModelResponse(
+            content="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_review",
+                        "arguments": '{"summary":"truncated","issues":[',
+                    }
+                }
+            ],
+            usage=TokenUsage(total_tokens=2048),
+            model="deepseek-v4-flash",
+            finish_reason="length",
+        )
+
+    client.chat = _length_invalid_submit  # type: ignore[method-assign]
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, usage = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            tool_schemas=[
+                {"type": "function", "function": {"name": "submit_review"}}
+            ],
+            force_submit=True,
+        )
+    )
+
+    assert len(client.calls) == 1
+    assert usage.total_tokens == 2048
+    assert plan.draft_review is None
+    assert plan.incomplete_reason == "model_finish_reason_length_no_submit"
+    assert plan.recovery_required is True
 
 
 def test_dsml_leaked_submit_review_payload_gets_repair_retry(monkeypatch) -> None:

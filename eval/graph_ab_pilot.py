@@ -12,6 +12,7 @@ import hashlib
 import json
 import random
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -334,6 +335,8 @@ async def run_single_lifecycle(
     prime_graph_index: bool,
     temperature: float,
     review_max_iterations: int,
+    agent_run_timeout_seconds: float | None = None,
+    diagnostic_artifact_dir: Path | None = None,
 ) -> tuple[EvalResult, dict[str, Any]]:
     """Run the frozen eval pipeline with phase-two-owned index lifecycle."""
     expected_count = len(fixture.expected.issues)
@@ -348,6 +351,7 @@ async def run_single_lifecycle(
                 Path(tmp_dir) / "repo",
                 workspace_cache_dir=Path(get_settings().eval_workspace_cache_dir),
             )
+            lifecycle["workspace_prepared"] = True
             stage_timings["prepare_workspace_seconds"] = perf_counter() - stage_started
             stage_started = perf_counter()
             validation_errors = await asyncio.to_thread(
@@ -361,6 +365,7 @@ async def run_single_lifecycle(
             )
             stage_timings["validate_fixture_seconds"] = perf_counter() - stage_started
             if validation_errors:
+                lifecycle["fixture_validation_passed"] = False
                 return (
                     EvalResult(
                         fixture_id=fixture.id,
@@ -373,6 +378,7 @@ async def run_single_lifecycle(
                     ),
                     lifecycle,
                 )
+            lifecycle["fixture_validation_passed"] = True
             workspace_sqlite_before = sorted(
                 path.relative_to(repo_root).as_posix()
                 for path in repo_root.rglob("*.sqlite*")
@@ -434,6 +440,7 @@ async def run_single_lifecycle(
                     1, get_settings().eval_review_min_tool_iterations
                 ),
                 review_diff_first_changed_files=True,
+                agent_run_timeout_seconds=agent_run_timeout_seconds,
                 relation_graph_index_path=relation_graph_index_path,
                 context_mode=variant.context_mode,
             )
@@ -486,6 +493,25 @@ async def run_single_lifecycle(
                 fixture.id,
                 parsed_response.run_id,
             )
+            if diagnostic_artifact_dir is not None:
+                journal_source = (
+                    repo_root
+                    / ".mergewarden"
+                    / "runs"
+                    / parsed_response.run_id
+                    / "journal.jsonl"
+                )
+                lifecycle["run_journal_status"] = (
+                    "persisted" if journal_source.is_file() else "missing_no_entries"
+                )
+                if journal_source.is_file():
+                    diagnostic_artifact_dir.mkdir(parents=True, exist_ok=True)
+                    journal_target = (
+                        diagnostic_artifact_dir
+                        / f"{fixture.id}_{variant.id}_{parsed_response.run_id}_journal.jsonl"
+                    )
+                    shutil.copy2(journal_source, journal_target)
+                    lifecycle["run_journal_path"] = str(journal_target.resolve())
             matches, matched_count, false_positive_count = base_runner._match_issues(
                 fixture, parsed_response
             )
@@ -653,7 +679,6 @@ def _frozen_contract(config: dict[str, Any]) -> dict[str, Any]:
         "tool_budget": runtime["tool_budget"],
         "model_request_timeout_seconds": runtime["model_request_timeout_seconds"],
         "tool_timeout_seconds": runtime["tool_timeout_seconds"],
-        "run_timeout_seconds": runtime["run_timeout_seconds"],
     }
     shared = config.get("shared", {})
     mismatches = [key for key, value in expected.items() if shared.get(key) != value]
@@ -661,6 +686,12 @@ def _frozen_contract(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"Pilot shared config differs from frozen baseline: {mismatches}"
         )
+    run_timeout_seconds = float(
+        shared.get("run_timeout_seconds", runtime["run_timeout_seconds"])
+    )
+    if run_timeout_seconds <= 0:
+        raise ValueError("Pilot run_timeout_seconds must be greater than zero")
+    expected["run_timeout_seconds"] = run_timeout_seconds
     return {"shared": expected, "contracts": baseline["contracts"]}
 
 
@@ -861,6 +892,9 @@ async def run_pilot(
                     prime_graph_index=variant_id == "B2-graph-hybrid-warm",
                     temperature=float(config["shared"]["temperature"]),
                     review_max_iterations=int(config["shared"]["max_iterations"]),
+                    agent_run_timeout_seconds=float(
+                        config["shared"]["run_timeout_seconds"]
+                    ),
                 )
                 index_after = (
                     inspect_index(index_path)

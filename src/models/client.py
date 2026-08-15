@@ -136,10 +136,15 @@ class ModelClient:
                     status_code=429,
                     code="rate_limited",
                 )
-            except (APITimeoutError, asyncio.TimeoutError):
+            except APITimeoutError as exc:
                 last_error = ModelTimeoutError(
                     f"Model provider request timed out after {runtime_config.timeout:g}s",
-                    code="timeout",
+                    code=self._sdk_timeout_code(exc),
+                )
+            except asyncio.TimeoutError:
+                last_error = ModelTimeoutError(
+                    f"Model provider request timed out after {runtime_config.timeout:g}s",
+                    code="application_request_timeout",
                 )
             except APIStatusError as exc:
                 if exc.status_code in {401, 403}:
@@ -197,6 +202,22 @@ class ModelClient:
         """Resolve compatibility metadata for a configured model."""
 
         return resolve_model_profile(self._settings, model)
+
+    @staticmethod
+    def _sdk_timeout_code(exc: BaseException) -> str:
+        """Classify an SDK timeout without depending on httpx internals."""
+
+        current: BaseException | None = exc
+        for _ in range(4):
+            name = current.__class__.__name__.lower()
+            if "connecttimeout" in name:
+                return "sdk_connect_timeout"
+            if "readtimeout" in name:
+                return "sdk_read_timeout"
+            current = current.__cause__ or current.__context__
+            if current is None:
+                break
+        return "sdk_timeout"
 
     @classmethod
     def _apply_policy(

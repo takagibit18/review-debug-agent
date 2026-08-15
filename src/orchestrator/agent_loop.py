@@ -93,6 +93,7 @@ class AgentOrchestrator:
         finding_verifier_mode: Literal["off", "shadow", "enforce"] | None = None,
         review_workflow_enforcement: Literal["off", "warn", "enforce"] | None = None,
         review_diff_first_changed_files: bool | None = None,
+        agent_run_timeout_seconds: float | None = None,
         relation_graph_index_path: str | Path | None = None,
         context_mode: ReviewContextMode | None = None,
         context_strategy: ContextStrategy | None = None,
@@ -132,7 +133,15 @@ class AgentOrchestrator:
         self._last_decision_reason: str = ""
         self._workspace_root: Path | None = None
         self._run_started_at = 0.0
-        self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
+        effective_run_timeout = (
+            self._settings.agent_run_timeout_seconds
+            if agent_run_timeout_seconds is None
+            else float(agent_run_timeout_seconds)
+        )
+        if effective_run_timeout <= 0:
+            raise ValueError("agent_run_timeout_seconds must be greater than zero")
+        self._agent_run_timeout_seconds = effective_run_timeout
+        self._run_timeout_seconds = self._agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
@@ -399,6 +408,16 @@ class AgentOrchestrator:
                 "severity_reviewed_count": self._severity_reviewed_count,
                 "severity_promoted_count": self._severity_promoted_count,
                 "verifier_context_entry_count": len(self._verifier_tool_evidence),
+                "candidates": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "source_issue_index": item.source_issue_index,
+                        "candidate_kind": item.candidate_kind,
+                        "finding_id": item.issue.finding_id,
+                        "location": item.issue.location,
+                    }
+                    for item in candidates
+                ],
                 "mode": self._finding_verifier_mode,
             },
         )
@@ -658,6 +677,14 @@ class AgentOrchestrator:
                 "raw_reason_codes": [
                     code for item in raw_batch.results for code in item.reason_codes
                 ],
+                "raw_verdicts": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "status": item.status,
+                        "reason_codes": item.reason_codes,
+                    }
+                    for item in raw_batch.results
+                ],
                 "deterministic_evidence_checked_count": validation_stats.checked_count,
                 "deterministic_evidence_passed_count": validation_stats.passed_count,
                 "deterministic_evidence_rejected_count": validation_stats.rejected_count,
@@ -670,6 +697,14 @@ class AgentOrchestrator:
                 "mode": self._finding_verifier_mode,
                 "reason_codes": [
                     code for item in batch.results for code in item.reason_codes
+                ],
+                "verdicts": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "status": item.status,
+                        "reason_codes": item.reason_codes,
+                    }
+                    for item in batch.results
                 ],
             },
         )
@@ -1440,10 +1475,15 @@ class AgentOrchestrator:
                     and self._iteration < self._review_min_tool_iterations
                     and self._permission_mode != "plan"
                 )
+                active_tool_specs = self._review_tool_specs_for_stage(
+                    tool_specs,
+                    request=request,
+                    defer_submit=defer_review_submit,
+                )
                 if force_submit:
                     serialized_tools = build_submit_tool_schemas()
                 else:
-                    serialized_tools = build_tool_schemas(tool_specs)
+                    serialized_tools = build_tool_schemas(active_tool_specs)
                     if (
                         isinstance(request, ReviewRequest)
                         and self._permission_mode != "plan"
@@ -1454,7 +1494,7 @@ class AgentOrchestrator:
                 result, usage = await engine.analyze(
                     state=state,
                     request=request,
-                    tool_specs=tool_specs,
+                    tool_specs=active_tool_specs,
                     tool_schemas=serialized_tools,
                     diff_text=diff_text,
                     error_log=error_log_text,
@@ -1548,6 +1588,21 @@ class AgentOrchestrator:
             },
         )
         return result
+
+    def _review_tool_specs_for_stage(
+        self,
+        tool_specs: list[ToolSpec],
+        *,
+        request: ReviewRequest | DebugRequest,
+        defer_submit: bool,
+    ) -> list[ToolSpec]:
+        """Hide submit-adjacent validation until a review candidate can exist."""
+
+        if not isinstance(request, ReviewRequest):
+            return tool_specs
+        if not defer_submit or self._draft_finding_store.all():
+            return tool_specs
+        return [spec for spec in tool_specs if spec.name != "validate_review_draft"]
 
     async def execute_tools(
         self,
@@ -2037,7 +2092,7 @@ class AgentOrchestrator:
         self._model_completed = False
         self._last_decision_reason = ""
         self._run_started_at = perf_counter()
-        self._run_timeout_seconds = self._settings.agent_run_timeout_seconds
+        self._run_timeout_seconds = self._agent_run_timeout_seconds
         self._model_timeout_seen = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
@@ -2103,7 +2158,7 @@ class AgentOrchestrator:
                 ),
                 "prompt_input_token_budget": self._settings.prompt_input_token_budget,
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
-                "agent_run_timeout_seconds": self._settings.agent_run_timeout_seconds,
+                "agent_run_timeout_seconds": self._agent_run_timeout_seconds,
                 "agent_tool_timeout_seconds": self._settings.agent_tool_timeout_seconds,
                 "agent_max_tool_calls": self._settings.agent_max_tool_calls,
                 "model_max_tokens": self._settings.model_max_tokens,

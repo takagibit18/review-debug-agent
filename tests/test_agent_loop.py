@@ -15,7 +15,7 @@ from src.analyzer.schemas import (
     ReviewRequest,
 )
 from src.models.exceptions import ModelTimeoutError
-from src.models.schemas import TokenUsage
+from src.models.schemas import DraftFindingInput, TokenUsage
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
 from src.tools.file_read import FileReadTool
@@ -182,6 +182,45 @@ def test_review_min_tool_iterations_defers_first_round_submit(
     assert analyze_calls == 2
     assert continue_steps[0].result == "continue"
     assert continue_steps[-1].result == "stop:max_iterations"
+
+
+def test_review_validator_tool_is_disclosed_only_when_actionable(tmp_path) -> None:
+    orchestrator = AgentOrchestrator()
+    specs = [
+        ToolSpec(
+            name=name,
+            description=name,
+            parameters={"type": "object", "properties": {}},
+            safety=ToolSafety.READONLY,
+        )
+        for name in ("read_file", "validate_review_draft")
+    ]
+    request = ReviewRequest(repo_path=str(tmp_path))
+
+    initial = orchestrator._review_tool_specs_for_stage(  # noqa: SLF001
+        specs, request=request, defer_submit=True
+    )
+    submit_allowed = orchestrator._review_tool_specs_for_stage(  # noqa: SLF001
+        specs, request=request, defer_submit=False
+    )
+    draft = orchestrator._draft_finding_store.bind(  # noqa: SLF001
+        DraftFindingInput(file="src/app.py", claim="A concrete incorrect result"),
+        source_response_id="response-1",
+    )
+    orchestrator._draft_finding_store.add(draft)  # noqa: SLF001
+    after_draft = orchestrator._review_tool_specs_for_stage(  # noqa: SLF001
+        specs, request=request, defer_submit=True
+    )
+
+    assert [spec.name for spec in initial] == ["read_file"]
+    assert [spec.name for spec in submit_allowed] == [
+        "read_file",
+        "validate_review_draft",
+    ]
+    assert [spec.name for spec in after_draft] == [
+        "read_file",
+        "validate_review_draft",
+    ]
 
 
 def test_debug_run_stops_at_iteration_limit(tmp_path, monkeypatch) -> None:
@@ -937,7 +976,7 @@ def test_prepare_start_logs_runtime_budget_and_timeout_settings(
     monkeypatch.setenv("MODEL_MAX_TOKENS", "1024")
     monkeypatch.setenv("REVIEW_DIFF_FIRST_CHANGED_FILES", "1")
 
-    orchestrator = AgentOrchestrator()
+    orchestrator = AgentOrchestrator(agent_run_timeout_seconds=240)
     orchestrator._reset_run(max_iterations=1, repo_path=".")  # noqa: SLF001
 
     log_path = tmp_path / ".mergewarden" / "logs" / f"{orchestrator._run_id}.jsonl"  # noqa: SLF001
@@ -954,7 +993,7 @@ def test_prepare_start_logs_runtime_budget_and_timeout_settings(
     assert start_event["payload"]["token_hard_budget"] == 32000
     assert start_event["payload"]["prompt_input_token_budget"] == 28000
     assert start_event["payload"]["model_request_timeout_seconds"] == 45.0
-    assert start_event["payload"]["agent_run_timeout_seconds"] == 90.0
+    assert start_event["payload"]["agent_run_timeout_seconds"] == 240.0
     assert start_event["payload"]["agent_tool_timeout_seconds"] == 12.0
     assert start_event["payload"]["model_max_tokens"] == 1024
     assert start_event["payload"]["review_diff_first_changed_files"] is True

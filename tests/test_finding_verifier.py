@@ -1014,7 +1014,13 @@ def test_candidate_context_retains_explicit_nonoverlapping_read_window() -> None
                     "file_path": "pkg/service.py",
                     "start_line": 38,
                     "line_count": 5,
-                    "content": "38: prepare()\n40: publish(cache_value)\n42: cleanup()",
+                    "content": (
+                        "38: prepare()\n"
+                        "39: value = cache_value\n"
+                        "40: publish(cache_value)\n"
+                        "41: finalize()\n"
+                        "42: cleanup()"
+                    ),
                 },
             }
         ],
@@ -1041,12 +1047,151 @@ def test_candidate_context_retains_explicit_nonoverlapping_read_window() -> None
             "path": "pkg/service.py",
             "start_line": 38,
             "end_line": 42,
-            "content": "38: prepare()\n40: publish(cache_value)\n42: cleanup()",
+            "content": (
+                "38: prepare()\n"
+                "39: value = cache_value\n"
+                "40: publish(cache_value)\n"
+                "41: finalize()\n"
+                "42: cleanup()"
+            ),
             "truncated": False,
             "source": "read_file",
         }
     ]
     assert result.results[0].status == "accepted"
+
+
+def test_candidate_context_slices_large_read_to_cited_evidence_under_budget() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    schemas = importlib.import_module("src.analyzer.schemas")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.impact = "A later unchanged consumer exposes the compatibility break."
+    issue.impact_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "retrieval_source": "read_file",
+                "line": 40,
+                "end_line": 40,
+                "statement": "The later consumer publishes the stale value.",
+            }
+        )
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(
+        repo_path=".",
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n+++ b/pkg/service.py\n"
+            "@@ -11,0 +12,1 @@\n+return cache[key]\n"
+        ),
+    )
+    content = "\n".join(
+        f"{line}: source line {line} " + "x" * 80 for line in range(30, 101)
+    )
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [
+            {
+                "tool_name": "read_file",
+                "arguments": {"file_path": "pkg/service.py"},
+                "data": {
+                    "file_path": "pkg/service.py",
+                    "start_line": 30,
+                    "line_count": 71,
+                    "content": content,
+                    "truncated": True,
+                },
+            }
+        ],
+        max_chars=2_500,
+        context_mode="agent_search",
+    )
+    batch = schemas.FindingVerificationBatch(
+        results=[
+            schemas.FindingVerification(
+                candidate_id=candidate.candidate_id,
+                status="accepted",
+                reason_codes=["verified"],
+                rationale="The retained read confirms the downstream impact.",
+                verified_evidence=["pkg/service.py:12", "pkg/service.py:40"],
+            )
+        ]
+    )
+
+    result = module.validate_verifications(
+        [candidate], batch, request, candidate_context=context
+    )
+
+    assert context[0]["file_windows"] == [
+        {
+            "path": "pkg/service.py",
+            "start_line": 40,
+            "end_line": 40,
+            "content": "40: source line 40 " + "x" * 80,
+            "truncated": True,
+            "source": "read_file",
+        }
+    ]
+    assert context_module.provenance_in_candidate_context(
+        context[0], issue.impact_evidence[0]
+    )
+    adjacent = issue.impact_evidence[0].model_copy(update={"line": 41, "end_line": 41})
+    assert not context_module.provenance_in_candidate_context(context[0], adjacent)
+    assert result.results[0].status == "accepted"
+
+
+def test_candidate_context_rejects_unreturned_read_lines() -> None:
+    module = importlib.import_module("src.analyzer.finding_verifier")
+    context_module = importlib.import_module("src.analyzer.verifier_context")
+    issue = _structured_boundary_issue(Severity.WARNING, confidence=0.92)
+    issue.impact = "An alleged later consumer exposes the compatibility break."
+    issue.impact_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "retrieval_source": "read_file",
+                "file": "pkg/consumer.py",
+                "line": 40,
+                "end_line": 40,
+                "statement": "The alleged consumer publishes the stale value.",
+            }
+        )
+    ]
+    candidate = module.build_candidates(
+        ReviewReport(summary="review", issues=[issue]), iteration=0
+    )[0]
+    request = ReviewRequest(repo_path=".", diff_mode=True, diff_text="")
+
+    context = context_module.build_candidate_verifier_context(
+        [candidate],
+        request,
+        [
+            {
+                "tool_name": "read_file",
+                "arguments": {"file_path": "pkg/consumer.py"},
+                "data": {
+                    "file_path": "pkg/consumer.py",
+                    "start_line": 1,
+                    "line_count": 100,
+                    "content": "\n".join(
+                        f"{line}: source line {line}" for line in range(1, 21)
+                    ),
+                    "truncated": True,
+                },
+            }
+        ],
+        max_chars=8_000,
+        context_mode="agent_search",
+    )
+
+    assert context[0]["file_windows"] == []
+    assert not context_module.provenance_in_candidate_context(
+        context[0], issue.impact_evidence[0]
+    )
 
 
 def test_candidate_context_retains_unchanged_primary_display_from_tool_read() -> None:

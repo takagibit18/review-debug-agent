@@ -12,7 +12,9 @@ shared:
   tool_budget: 64
   model_request_timeout_seconds: 90.0
   tool_timeout_seconds: 30.0
-  run_timeout_seconds: 170.0
+  # Diagnostic smoke observed a valid 176.7s Graph cold completion. Keep this
+  # experiment-only wall-clock cap clear of normal provider latency variance.
+  run_timeout_seconds: 240.0
 
 variants:
   - id: A-agent-search

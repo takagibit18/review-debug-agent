@@ -261,6 +261,23 @@ class GraphHybridContextStrategy:
                     "candidate_id": manifest.candidate_id,
                     "token_cost": manifest.token_cost,
                     "included_span_count": len(manifest.included_spans),
+                    "changed_anchor": {
+                        "file": manifest.changed_anchor.file,
+                        "line": manifest.changed_anchor.line,
+                        "symbol_id": manifest.changed_anchor.symbol_id,
+                    },
+                    "included_spans": [
+                        {
+                            "file": span.file,
+                            "start_line": span.start_line,
+                            "end_line": span.end_line,
+                            "symbol_id": span.symbol_id,
+                            "role": span.role,
+                            "retrieval_source": span.retrieval_source,
+                            "truncated": span.truncated,
+                        }
+                        for span in manifest.included_spans
+                    ],
                     "included_path_count": len(manifest.included_graph_paths),
                     "discarded_path_count": len(manifest.discarded_paths),
                     "truncation_reasons": manifest.truncation_reasons,
