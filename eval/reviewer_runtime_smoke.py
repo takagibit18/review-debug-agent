@@ -200,32 +200,9 @@ def _issue_text(issue: Any) -> str:
 
 
 def _semantic_tokens(value: str) -> set[str]:
-    stop = {
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "be",
-        "by",
-        "for",
-        "from",
-        "in",
-        "is",
-        "it",
-        "of",
-        "or",
-        "that",
-        "the",
-        "this",
-        "to",
-        "with",
-    }
-    return {
-        token
-        for token in re.findall(r"[a-z0-9_]+", value.lower().replace(".", " "))
-        if len(token) > 1 and token not in stop
-    }
+    """Use the Core matcher vocabulary so diagnostics grade the same wording."""
+
+    return core_eval._semantic_tokens(value)  # noqa: SLF001
 
 
 def _semantic_grade(text: str, spec: CoreFixtureSpec) -> DiscoveryStatus:

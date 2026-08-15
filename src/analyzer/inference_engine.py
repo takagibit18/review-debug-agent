@@ -321,6 +321,7 @@ class InferenceEngine:
         if (
             isinstance(request, ReviewRequest)
             and plan.draft_review is None
+            and response.finish_reason != "length"
             and parse_meta.get("submit_review_seen")
             and parse_meta.get("submit_review_validation_error")
         ):
@@ -433,7 +434,9 @@ class InferenceEngine:
                     "Your previous submit_review tool call was rejected by schema validation. "
                     "Call submit_review again as your only action, preserving supported findings "
                     "but fixing this exact validation error:\n"
-                    f"{validation_error}"
+                    f"{validation_error}\n"
+                    "The submit_review function arguments must directly contain top-level "
+                    "summary and issues fields; do not wrap them inside an arguments object."
                 ),
             ),
         ]
@@ -510,6 +513,7 @@ class InferenceEngine:
             "submit_review_seen": False,
             "submit_debug_seen": False,
             "submit_review_validation_error": "",
+            "submit_review_arguments_normalized": False,
             "submit_debug_validation_error": "",
             "draft_finding_validation_errors": [],
             "valid_draft_call_ids": [],
@@ -566,6 +570,13 @@ class InferenceEngine:
                     logger.warning("Invalid submit_review arguments ignored: %s", error)
                     parse_meta["submit_review_validation_error"] = error
                     continue
+                payload, arguments_normalized = (
+                    self._normalize_nested_submit_review_arguments(payload)
+                )
+                parse_meta["submit_review_arguments_normalized"] = bool(
+                    parse_meta["submit_review_arguments_normalized"]
+                    or arguments_normalized
+                )
                 payload_error = self._validate_submit_review_payload(payload)
                 if payload_error:
                     logger.warning(
@@ -719,6 +730,19 @@ class InferenceEngine:
             return candidate if isinstance(candidate, dict) else None
         except Exception:  # noqa: BLE001
             return None
+
+    @staticmethod
+    def _normalize_nested_submit_review_arguments(
+        payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Unwrap one exact provider-style arguments envelope for submit_review."""
+
+        if set(payload) != {"arguments"}:
+            return payload, False
+        nested = payload.get("arguments")
+        if not isinstance(nested, dict) or not {"summary", "issues"}.issubset(nested):
+            return payload, False
+        return nested, True
 
     @staticmethod
     def _validate_submit_review_payload(payload: dict[str, Any]) -> str:
@@ -1226,6 +1250,9 @@ class InferenceEngine:
                 "submit_debug_seen": bool(parse_meta.get("submit_debug_seen")),
                 "submit_review_validation_error": self._trace_recorder.build_text_preview(
                     str(parse_meta.get("submit_review_validation_error", ""))
+                ),
+                "submit_review_arguments_normalized": bool(
+                    parse_meta.get("submit_review_arguments_normalized")
                 ),
                 "submit_debug_validation_error": self._trace_recorder.build_text_preview(
                     str(parse_meta.get("submit_debug_validation_error", ""))

@@ -1003,6 +1003,10 @@ def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(
     assert config.max_tokens == 2048
     assert client.policies[-1].forced_tool == "submit_review"
     assert client.policies[-1].thinking == "off"
+    assert any(
+        "directly contain top-level summary and issues" in message.content
+        for message in client.calls[-1]
+    )
     assert [tool["function"]["name"] for tool in client.tools[-1]] == ["submit_review"]
     assert any(
         "summary must not mention bugs, regressions" in str(message.content)
@@ -1381,6 +1385,67 @@ def test_invalid_submit_review_arguments_do_not_create_empty_draft() -> None:
     assert "Invalid JSON" in parse_meta["submit_review_validation_error"]
 
 
+def test_nested_submit_review_arguments_are_strictly_normalized() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    nested = {
+        "arguments": {
+            "summary": "Found one supported issue.",
+            "issues": [
+                {
+                    "severity": "warning",
+                    "location": "src/a.py:1",
+                    "evidence": "The changed branch returns the wrong value.",
+                    "suggestion": "Return the preserved value.",
+                    "confidence": 0.9,
+                }
+            ],
+        }
+    }
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps(nested),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert parse_meta["submit_review_arguments_normalized"] is True
+    assert parse_meta["submit_review_validation_error"] == ""
+    assert plan.draft_review is not None
+    assert len(plan.draft_review.issues) == 1
+
+
+def test_unrelated_arguments_envelope_is_not_normalized() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps(
+                        {"arguments": {"summary": "Missing issues."}}
+                    ),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert parse_meta["submit_review_arguments_normalized"] is False
+    assert plan.draft_review is None
+    assert "issues" in parse_meta["submit_review_validation_error"]
+
+
 def test_submit_review_arguments_allow_unescaped_control_characters() -> None:
     client = RecordingFakeModelClient()
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
@@ -1530,6 +1595,59 @@ def test_invalid_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
     assert usage.total_tokens == 24
     assert len(client.calls) == 2
     assert any("issues.0.severity" in message.content for message in client.calls[1])
+    assert any(
+        "directly contain top-level summary and issues" in message.content
+        for message in client.calls[1]
+    )
+
+
+def test_length_invalid_submit_defers_to_length_recovery_without_schema_repair(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+
+    async def _length_invalid_submit(
+        messages, config=None, tools=None, policy=None, conversation=None
+    ):  # type: ignore[no-untyped-def]
+        client.calls.append(messages)
+        client.configs.append(config)
+        client.tools.append(tools)
+        return ModelResponse(
+            content="",
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_review",
+                        "arguments": '{"summary":"truncated","issues":[',
+                    }
+                }
+            ],
+            usage=TokenUsage(total_tokens=2048),
+            model="deepseek-v4-flash",
+            finish_reason="length",
+        )
+
+    client.chat = _length_invalid_submit  # type: ignore[method-assign]
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, usage = asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            tool_schemas=[
+                {"type": "function", "function": {"name": "submit_review"}}
+            ],
+            force_submit=True,
+        )
+    )
+
+    assert len(client.calls) == 1
+    assert usage.total_tokens == 2048
+    assert plan.draft_review is None
+    assert plan.incomplete_reason == "model_finish_reason_length_no_submit"
+    assert plan.recovery_required is True
 
 
 def test_dsml_leaked_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
