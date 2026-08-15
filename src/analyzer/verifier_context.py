@@ -19,6 +19,7 @@ VERIFIER_CONTEXT_TOOL_NAMES = {
     "find_symbol_context",
     "symbol_context",
 }
+_MAX_CONTEXT_TEXT_CHARS = 3_500
 
 
 @dataclass(frozen=True)
@@ -426,21 +427,42 @@ def _append_matching_tool_context(
         start_line = _as_int(data.get("start_line"))
         line_count = _as_int(data.get("line_count")) or 0
         end_line = start_line + max(0, line_count - 1) if start_line else None
+        content = data.get("content")
         if not _ranges_overlap(
             requested.start_line, requested.end_line, start_line, end_line
+        ) or not isinstance(content, str):
+            return
+        retained_window = _retained_read_window(
+            data,
+            path=data_path,
+            requested_start=requested.start_line,
+            requested_end=requested.end_line,
+            source=tool_name,
+        )
+        if retained_window is None:
+            return
+        if (
+            len(content) <= _MAX_CONTEXT_TEXT_CHARS
+            and _read_window_fully_returned(data)
+            and _append_bounded(
+                context,
+                "file_windows",
+                {
+                    "path": data_path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "content": content,
+                    "truncated": bool(data.get("truncated", False)),
+                    "source": tool_name,
+                },
+                budget,
+            )
         ):
             return
         _append_bounded(
             context,
             "file_windows",
-            {
-                "path": data_path,
-                "start_line": start_line,
-                "end_line": end_line,
-                "content": data.get("content", ""),
-                "truncated": bool(data.get("truncated", False)),
-                "source": tool_name,
-            },
+            retained_window,
             budget,
         )
         return
@@ -516,6 +538,87 @@ def _tool_source_matches(requested_source: str, tool_name: str) -> bool:
     )
 
 
+def _retained_read_window(
+    data: dict[str, Any],
+    *,
+    path: str,
+    requested_start: int,
+    requested_end: int,
+    source: str,
+) -> dict[str, Any] | None:
+    """Retain only cited lines that are present in a successful read result.
+
+    Large read windows must not consume the whole candidate-context budget, but
+    their metadata also must not authorize lines whose content was clipped or
+    never returned. Slicing to the cited range keeps provenance fail-closed and
+    leaves room for later trigger/impact evidence in the bounded envelope.
+    """
+
+    source_start = _as_int(data.get("start_line"))
+    declared_count = _as_int(data.get("line_count")) or 0
+    content = data.get("content")
+    if source_start is None or declared_count <= 0 or not isinstance(content, str):
+        return None
+    content_lines = content.splitlines()
+    if not content_lines:
+        return None
+    declared_end = source_start + declared_count - 1
+    retained_start = max(requested_start, source_start)
+    retained_end = min(requested_end, declared_end)
+    if retained_start > retained_end:
+        return None
+    numbered_lines = _numbered_read_lines(content_lines, source_start, declared_end)
+    retained_lines = [
+        numbered_lines[line_number]
+        for line_number in range(retained_start, retained_end + 1)
+        if line_number in numbered_lines
+    ]
+    if len(retained_lines) != retained_end - retained_start + 1:
+        return None
+    retained_content = "\n".join(retained_lines)
+    return {
+        "path": path,
+        "start_line": retained_start,
+        "end_line": retained_start + len(retained_lines) - 1,
+        "content": retained_content,
+        "truncated": bool(data.get("truncated", False))
+        or retained_start != source_start
+        or retained_end != declared_end,
+        "source": source,
+    }
+
+
+def _read_window_fully_returned(data: dict[str, Any]) -> bool:
+    """Return whether read content covers every line claimed by its metadata."""
+
+    source_start = _as_int(data.get("start_line"))
+    declared_count = _as_int(data.get("line_count")) or 0
+    content = data.get("content")
+    if source_start is None or declared_count <= 0 or not isinstance(content, str):
+        return False
+    declared_end = source_start + declared_count - 1
+    numbered_lines = _numbered_read_lines(
+        content.splitlines(), source_start, declared_end
+    )
+    return all(
+        line_number in numbered_lines
+        for line_number in range(source_start, declared_end + 1)
+    )
+
+
+def _numbered_read_lines(
+    content_lines: list[str], source_start: int, declared_end: int
+) -> dict[int, str]:
+    numbered_lines: dict[int, str] = {}
+    for content_line in content_lines:
+        prefix, separator, _remainder = content_line.partition(":")
+        if separator and prefix.strip().isdigit():
+            line_number = int(prefix.strip())
+            if source_start <= line_number <= declared_end:
+                numbered_lines[line_number] = content_line
+    return numbered_lines
+
+
 def _append_symbols(
     context: dict[str, Any],
     raw_symbols: Any,
@@ -554,21 +657,23 @@ def _append_bounded(
     key: str,
     value: dict[str, Any],
     budget: int,
-) -> None:
+) -> bool:
     clipped = _clip_payload(value)
     bucket = context[key]
     if not isinstance(bucket, list):
-        return
+        return False
     fingerprint = json.dumps(clipped, ensure_ascii=True, sort_keys=True, default=str)
     if any(
         json.dumps(item, ensure_ascii=True, sort_keys=True, default=str) == fingerprint
         for item in bucket
     ):
-        return
+        return True
     bucket.append(clipped)
     serialized = json.dumps(context, ensure_ascii=True, default=str)
     if len(serialized) > budget:
         bucket.pop()
+        return False
+    return True
 
 
 def location_in_candidate_context(
@@ -838,7 +943,7 @@ def _clip_payload(value: Any, *, key: str = "") -> Any:
     if isinstance(value, list):
         return [_clip_payload(item, key=key) for item in value[:20]]
     if isinstance(value, str):
-        limit = 3_500 if key in {"content", "text"} else 1_500
+        limit = _MAX_CONTEXT_TEXT_CHARS if key in {"content", "text"} else 1_500
         if len(value) <= limit:
             return value
         return value[:limit] + f"...(truncated {len(value) - limit} chars)"
