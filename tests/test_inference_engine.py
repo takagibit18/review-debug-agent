@@ -760,9 +760,88 @@ def test_analyze_records_context_telemetry_without_content(monkeypatch) -> None:
         if event_type == EventType.CONTEXT_TELEMETRY and phase == "analyze"
     )
     assert telemetry["tool_schema_count"] == 1
+    assert telemetry["message_count_by_role"] == {
+        "system": 1,
+        "user": 1,
+        "assistant": 0,
+        "tool": 0,
+    }
+    assert telemetry["message_shapes"][0]["component"] == "system"
+    assert telemetry["message_shapes"][1]["component"] == "review_payload"
+    assert telemetry["tool_schema_shapes"][0]["name"] == "submit_review"
+    assert telemetry["tool_schema_chars"] > 0
+    assert telemetry["assembled_request_chars"] > telemetry["message_chars"]
+    assert telemetry["max_output_tokens"] == 12288
+    assert telemetry["thinking"] == "high"
     assert telemetry["selected"]["tokens"] > 0
     assert telemetry["selected"]["by_kind"]["diff_hunk"]["chars"] > 0
     assert "print('new')" not in json.dumps(telemetry)
+
+
+def test_context_telemetry_records_prefetch_coverage_without_source(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    events: list[tuple[EventType, str, dict[str, Any]]] = []
+    engine = InferenceEngine(
+        model_client=client,  # type: ignore[arg-type]
+        trace_event_writer=lambda event_type, phase, payload: events.append(
+            (event_type, phase, payload)
+        ),
+    )
+    loaded = "".join(f"line {number}\n" for number in range(1, 101))
+    tool_feedback = [
+        {
+            "tool_call": {
+                "id": "prefetch-read-file-0",
+                "type": "function",
+                "synthetic_context": True,
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"file_path":"src/app.py"}',
+                },
+            },
+            "result": ToolResult(
+                ok=True,
+                data={
+                    "file_path": "src/app.py",
+                    "content": "41: line 41\n42: line 42",
+                    "start_line": 41,
+                    "line_count": 2,
+                },
+            ),
+        }
+    ]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            file_contents={"src/app.py": loaded},
+            tool_feedback=tool_feedback,
+        )
+    )
+
+    telemetry = next(
+        payload
+        for event_type, phase, payload in events
+        if event_type == EventType.CONTEXT_TELEMETRY and phase == "analyze"
+    )
+    coverage = telemetry["prefetch_coverage"]
+    assert coverage["entry_count"] == 1
+    assert coverage["covered_entry_count"] == 1
+    assert coverage["entries"][0] == {
+        "file": "src/app.py",
+        "start_line": 41,
+        "end_line": 42,
+        "prefetch_content_chars": 23,
+        "loaded_file_chars": len(loaded),
+        "loaded_complete_lines": 100,
+        "covered_by_file_context": True,
+    }
+    assert "line 41" not in json.dumps(telemetry)
 
 
 def test_normalize_review_payload_canonicalizes_location() -> None:

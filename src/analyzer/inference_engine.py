@@ -249,17 +249,6 @@ class InferenceEngine:
             if submit_only
             else tool_schemas or []
         )
-        self._record_context_telemetry(
-            context_telemetry=context_telemetry,
-            messages=messages,
-            tools=tools,
-            iteration=iteration,
-            prompt_input_token_budget=total_prompt_budget,
-            base_context_token_budget=budget,
-            final_submit_feedback_token_budget=final_feedback_budget,
-            final_evidence_telemetry=final_evidence_telemetry,
-            force_submit=submit_only,
-        )
         config = None
         if submit_only:
             config = self._build_submit_config(request)
@@ -289,6 +278,22 @@ class InferenceEngine:
         else:
             conversation_history_start = len(messages)
             messages.extend(conversation_messages)
+        self._record_context_telemetry(
+            context_telemetry=context_telemetry,
+            messages=messages,
+            tools=tools,
+            config=config,
+            policy=policy,
+            file_contents=file_contents,
+            tool_feedback=tool_feedback or [],
+            conversation_history_count=conversation_history_count,
+            iteration=iteration,
+            prompt_input_token_budget=total_prompt_budget,
+            base_context_token_budget=budget,
+            final_submit_feedback_token_budget=final_feedback_budget,
+            final_evidence_telemetry=final_evidence_telemetry,
+            force_submit=submit_only,
+        )
         response = await self._model_client.chat(
             messages=messages,
             config=config,
@@ -1221,6 +1226,11 @@ class InferenceEngine:
         context_telemetry: dict[str, Any],
         messages: list[Message],
         tools: list[dict[str, Any]],
+        config: ModelConfig,
+        policy: ModelCallPolicy,
+        file_contents: dict[str, str],
+        tool_feedback: list[dict[str, Any]],
+        conversation_history_count: int,
         iteration: int,
         prompt_input_token_budget: int,
         base_context_token_budget: int,
@@ -1232,8 +1242,48 @@ class InferenceEngine:
             return
         builder = ContextBuilder()
         message_tokens = sum(builder.estimate_tokens(item.content) for item in messages)
-        tool_schema_tokens = builder.estimate_tokens(
-            json.dumps(tools, ensure_ascii=True)
+        tool_schema_json = json.dumps(tools, ensure_ascii=True, sort_keys=True)
+        tool_schema_tokens = builder.estimate_tokens(tool_schema_json)
+        message_shapes = [
+            {
+                "index": index,
+                "role": item.role,
+                "chars": len(item.content),
+                "estimated_tokens": builder.estimate_tokens(item.content),
+                "component": self._message_component(item),
+            }
+            for index, item in enumerate(messages)
+        ]
+        role_counts = {
+            role: sum(item.role == role for item in messages)
+            for role in ("system", "user", "assistant", "tool")
+        }
+        role_chars = {
+            role: sum(len(item.content) for item in messages if item.role == role)
+            for role in role_counts
+        }
+        tool_shapes = [self._tool_schema_shape(item, builder) for item in tools]
+        assembled_request_chars = len(
+            json.dumps(
+                {
+                    "model": config.model,
+                    "messages": [
+                        item.model_dump(mode="json", exclude_none=True)
+                        for item in messages
+                    ],
+                    "temperature": config.temperature,
+                    "max_tokens": config.max_tokens,
+                    "top_p": config.top_p,
+                    "tools": tools,
+                    "thinking": policy.thinking,
+                    "forced_tool": policy.forced_tool,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+        )
+        prefetch_coverage = self._measure_prefetch_coverage(
+            file_contents, tool_feedback
         )
         self._trace_event_writer(
             EventType.CONTEXT_TELEMETRY,
@@ -1248,12 +1298,121 @@ class InferenceEngine:
                 "estimated_message_tokens": message_tokens,
                 "estimated_tool_schema_tokens": tool_schema_tokens,
                 "estimated_prompt_tokens": message_tokens + tool_schema_tokens,
+                "message_count": len(messages),
+                "message_count_by_role": role_counts,
+                "message_chars": sum(len(item.content) for item in messages),
+                "message_chars_by_role": role_chars,
+                "message_shapes": message_shapes,
+                "conversation_history_count": conversation_history_count,
+                "tool_schema_chars": len(tool_schema_json),
+                "tool_schema_shapes": tool_shapes,
+                "assembled_request_chars": assembled_request_chars,
+                "max_output_tokens": config.max_tokens,
+                "thinking": policy.thinking,
+                "forced_tool": policy.forced_tool or "none",
+                "prefetch_coverage": prefetch_coverage,
                 "force_submit": force_submit,
                 "final_submit_evidence": final_evidence_telemetry,
                 "tool_schema_count": len(tools),
                 **context_telemetry,
             },
         )
+
+    @staticmethod
+    def _message_component(message: Message) -> str:
+        if message.role == "system":
+            return "system"
+        content = message.content
+        if "prefetched_tool_context:" in content:
+            return "prefetch_context"
+        if content.startswith("Do not call submit_review yet."):
+            return "defer_submit_notice"
+        if content.startswith("final_submit_evidence_summary:"):
+            return "final_submit_evidence"
+        if content.startswith("FINAL CALL"):
+            return "finalize_notice"
+        if content.startswith("Review the payload"):
+            return "review_payload"
+        if content.startswith("Return tool calls if needed"):
+            return "debug_payload"
+        return "conversation_or_feedback"
+
+    @staticmethod
+    def _tool_schema_shape(
+        schema: dict[str, Any], builder: ContextBuilder
+    ) -> dict[str, Any]:
+        serialized = json.dumps(schema, ensure_ascii=True, sort_keys=True)
+        function = schema.get("function", {})
+        name = (
+            function.get("name", "unknown") if isinstance(function, dict) else "unknown"
+        )
+        return {
+            "name": str(name),
+            "chars": len(serialized),
+            "estimated_tokens": builder.estimate_tokens(serialized),
+        }
+
+    @classmethod
+    def _measure_prefetch_coverage(
+        cls,
+        file_contents: dict[str, str],
+        tool_feedback: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        entries: list[dict[str, Any]] = []
+        for item in tool_feedback:
+            raw_call = item.get("tool_call")
+            if (
+                not isinstance(raw_call, dict)
+                or raw_call.get("synthetic_context") is not True
+            ):
+                continue
+            function = raw_call.get("function")
+            if not isinstance(function, dict) or function.get("name") != "read_file":
+                continue
+            try:
+                arguments = json.loads(str(function.get("arguments", "{}")))
+            except json.JSONDecodeError:
+                arguments = {}
+            path = str(arguments.get("file_path", "")).replace("\\", "/")
+            while path.startswith("./"):
+                path = path[2:]
+            path = path.lstrip("/")
+            result_payload = cls._tool_result_payload(item.get("result"))
+            data = result_payload.get("data")
+            if not isinstance(data, dict):
+                data = {}
+            start_line = int(data.get("start_line", 0) or 0)
+            line_count = int(data.get("line_count", 0) or 0)
+            end_line = start_line + line_count - 1 if start_line and line_count else 0
+            loaded = file_contents.get(path, "")
+            loaded_complete_lines = loaded.count("\n")
+            covered = bool(end_line and end_line <= loaded_complete_lines)
+            content = data.get("content")
+            entries.append(
+                {
+                    "file": path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "prefetch_content_chars": len(content)
+                    if isinstance(content, str)
+                    else 0,
+                    "loaded_file_chars": len(loaded),
+                    "loaded_complete_lines": loaded_complete_lines,
+                    "covered_by_file_context": covered,
+                }
+            )
+        return {
+            "entry_count": len(entries),
+            "covered_entry_count": sum(
+                bool(item["covered_by_file_context"]) for item in entries
+            ),
+            "covered_prefetch_content_chars": sum(
+                int(item["prefetch_content_chars"])
+                for item in entries
+                if item["covered_by_file_context"]
+            ),
+            "entries": entries,
+        }
 
     def _record_length_finish(
         self,
