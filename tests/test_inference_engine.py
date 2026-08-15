@@ -1000,7 +1000,7 @@ def test_force_submit_review_forces_submit_tool_and_disables_deepseek_thinking(
     )
 
     config = client.configs[-1]
-    assert config.max_tokens == 2048
+    assert config.max_tokens == 4096
     assert client.policies[-1].forced_tool == "submit_review"
     assert client.policies[-1].thinking == "off"
     assert any(
@@ -1359,7 +1359,7 @@ def test_near_last_review_iteration_switches_to_submit_only_forced_mode(
     )
 
     config = client.configs[-1]
-    assert config.max_tokens == 2048
+    assert config.max_tokens == 4096
     assert client.policies[-1].forced_tool == "submit_review"
     assert [tool["function"]["name"] for tool in client.tools[-1]] == ["submit_review"]
 

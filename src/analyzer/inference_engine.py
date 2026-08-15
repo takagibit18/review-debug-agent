@@ -45,7 +45,7 @@ from src.models.schemas import (
 from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
-_SUBMIT_MAX_TOKENS = 2048
+_SUBMIT_MAX_TOKENS = 4096
 _EXPLORATION_MAX_TOKENS = 12288
 _SYNTHETIC_CONTEXT_MAX_CHARS = 3600
 _FINAL_EVIDENCE_ENTRY_MAX_CHARS = 2400
