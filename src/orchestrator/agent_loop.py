@@ -1466,10 +1466,15 @@ class AgentOrchestrator:
                     and self._iteration < self._review_min_tool_iterations
                     and self._permission_mode != "plan"
                 )
+                active_tool_specs = self._review_tool_specs_for_stage(
+                    tool_specs,
+                    request=request,
+                    defer_submit=defer_review_submit,
+                )
                 if force_submit:
                     serialized_tools = build_submit_tool_schemas()
                 else:
-                    serialized_tools = build_tool_schemas(tool_specs)
+                    serialized_tools = build_tool_schemas(active_tool_specs)
                     if (
                         isinstance(request, ReviewRequest)
                         and self._permission_mode != "plan"
@@ -1480,7 +1485,7 @@ class AgentOrchestrator:
                 result, usage = await engine.analyze(
                     state=state,
                     request=request,
-                    tool_specs=tool_specs,
+                    tool_specs=active_tool_specs,
                     tool_schemas=serialized_tools,
                     diff_text=diff_text,
                     error_log=error_log_text,
@@ -1574,6 +1579,21 @@ class AgentOrchestrator:
             },
         )
         return result
+
+    def _review_tool_specs_for_stage(
+        self,
+        tool_specs: list[ToolSpec],
+        *,
+        request: ReviewRequest | DebugRequest,
+        defer_submit: bool,
+    ) -> list[ToolSpec]:
+        """Hide submit-adjacent validation until a review candidate can exist."""
+
+        if not isinstance(request, ReviewRequest):
+            return tool_specs
+        if not defer_submit or self._draft_finding_store.all():
+            return tool_specs
+        return [spec for spec in tool_specs if spec.name != "validate_review_draft"]
 
     async def execute_tools(
         self,

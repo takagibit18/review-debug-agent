@@ -22,6 +22,47 @@ def test_build_tool_schemas_from_tool_specs() -> None:
     assert schemas[0]["function"]["name"] == "read_file"
 
 
+def test_build_tool_schemas_removes_only_nonsemantic_generated_metadata() -> None:
+    parameters = {
+        "title": "LookupInput",
+        "type": "object",
+        "properties": {
+            "mode": {
+                "title": "Mode",
+                "type": "string",
+                "enum": ["definition", "all"],
+                "default": "all",
+            },
+            "line": {
+                "title": "Line",
+                "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
+                "default": None,
+            },
+            "summary": {"type": "string", "default": ""},
+            "issues": {"type": "array", "items": {"type": "object"}, "default": []},
+        },
+        "required": ["mode"],
+    }
+    spec = ToolSpec(
+        name="lookup",
+        description="Lookup",
+        parameters=parameters,
+        safety=ToolSafety.READONLY,
+    )
+
+    schema = build_tool_schemas([spec])[0]["function"]["parameters"]
+
+    assert "title" not in str(schema)
+    assert schema["properties"]["mode"]["default"] == "all"
+    assert "default" not in schema["properties"]["line"]
+    assert "default" not in schema["properties"]["summary"]
+    assert "default" not in schema["properties"]["issues"]
+    assert schema["properties"]["mode"]["enum"] == ["definition", "all"]
+    assert schema["properties"]["line"]["anyOf"][0]["minimum"] == 1
+    assert schema["required"] == ["mode"]
+    assert parameters["title"] == "LookupInput"
+
+
 def test_build_submit_tool_schemas_contains_expected_submit_tools() -> None:
     schemas = build_submit_tool_schemas()
     names = {schema["function"]["name"] for schema in schemas}
