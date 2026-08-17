@@ -684,6 +684,10 @@ class InferenceEngine:
         self, payload: dict[str, Any], request: ReviewRequest | DebugRequest
     ) -> AnalysisPlan | None:
         if isinstance(request, ReviewRequest):
+            payload_error = self._validate_submit_review_payload(payload)
+            if payload_error:
+                logger.warning("Invalid fallback review JSON ignored: %s", payload_error)
+                return None
             normalized_payload, _ = self._normalize_review_payload(payload)
             try:
                 report = ReviewReport.model_validate(normalized_payload)
@@ -756,6 +760,12 @@ class InferenceEngine:
                 "Invalid submit_review payload: issues must be a list, "
                 f"got {type(payload['issues']).__name__}"
             )
+        for index, issue in enumerate(payload["issues"]):
+            if isinstance(issue, dict) and "confidence" not in issue:
+                return (
+                    "Invalid submit_review payload: "
+                    f"issues[{index}] missing required confidence"
+                )
         if (
             isinstance(summary, str)
             and not payload["issues"]

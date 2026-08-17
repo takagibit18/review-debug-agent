@@ -1,0 +1,51 @@
+experiment_id: graph-ab-python-real-relaxed-budget-replication
+formal_graph_ab: false
+held_out_executed: false
+runtime_contract_source: current
+seed: 20260816
+
+# Corrected replication: the relaxed development contract is now propagated to
+# the real runtime (get_settings() is env-driven; _apply_runtime_contract
+# writes these values into the environment).  Only the two real Python
+# Graph-sensitive fixtures run; no business-logic changes.
+shared:
+  model: deepseek-v4-flash
+  temperature: 0.0
+  max_output_tokens: 4096
+  prompt_input_token_budget: 12000
+  token_budget: 60000
+  token_hard_budget: 80000
+  final_submit_reserve_tokens: 12000
+  final_submit_prompt_token_budget: 4000
+  final_submit_feedback_token_budget: 1200
+  # Requested 3; effective cap stays 2 (EVAL_REVIEW_MAX_ITERATIONS_CAP=2).
+  max_iterations: 3
+  tool_budget: 64
+  model_request_timeout_seconds: 180.0
+  tool_timeout_seconds: 30.0
+  run_timeout_seconds: 600.0
+
+variants:
+  - id: A-agent-search
+    context_mode: agent_search
+    graph_cache_mode: disabled
+    samples: 3
+  - id: B2-graph-hybrid-warm
+    context_mode: graph_hybrid
+    graph_cache_mode: warm
+    requires_priming: true
+    samples: 3
+
+fixtures:
+  - phase: validation
+    path: eval/fixtures/golden_deepset-ai_haystack_pr12257_reverse.json
+    types:
+      - direct-cross-file
+      - graph-sensitive
+      - positive-sample
+  - phase: validation
+    path: eval/fixtures/golden_deepset-ai_haystack_pr12162_reverse.json
+    types:
+      - multi-hop
+      - graph-sensitive
+      - positive-sample
