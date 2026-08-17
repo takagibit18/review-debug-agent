@@ -1488,6 +1488,75 @@ def test_submit_review_payload_requires_explicit_issues_list() -> None:
     assert "issues" in parse_meta["submit_review_validation_error"]
 
 
+def test_submit_review_rejects_issue_missing_confidence() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    plan, parse_meta = engine._parse_tool_calls(  # noqa: SLF001
+        [
+            {
+                "function": {
+                    "name": "submit_review",
+                    "arguments": json.dumps(
+                        {
+                            "summary": "found one issue",
+                            "issues": [
+                                {
+                                    "severity": "warning",
+                                    "location": "src/x.py:10",
+                                    "evidence": "+ changed",
+                                    "suggestion": "preserve the value",
+                                }
+                            ],
+                        }
+                    ),
+                }
+            }
+        ],
+        ReviewRequest(repo_path="."),
+        force_submit=True,
+    )
+
+    assert plan.draft_review is None
+    assert "missing required confidence" in parse_meta["submit_review_validation_error"]
+
+
+def test_fallback_review_json_cannot_bypass_missing_confidence() -> None:
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    request = ReviewRequest(repo_path=".")
+
+    missing = {
+        "summary": "found one issue",
+        "issues": [
+            {
+                "severity": "warning",
+                "location": "src/x.py:10",
+                "evidence": "+ changed",
+                "suggestion": "preserve the value",
+            }
+        ],
+    }
+    assert engine._try_parse_submit_payload_from_json(missing, request) is None  # noqa: SLF001
+
+    present = {
+        "summary": "found one issue",
+        "issues": [
+            {
+                "severity": "warning",
+                "location": "src/x.py:10",
+                "evidence": "+ changed",
+                "suggestion": "preserve the value",
+                "confidence": 0.9,
+            }
+        ],
+    }
+    parsed = engine._try_parse_submit_payload_from_json(present, request)  # noqa: SLF001
+    assert parsed is not None
+    assert parsed.draft_review is not None
+    assert parsed.draft_review.issues[0].confidence == 0.9
+
+
 def test_submit_review_rejects_dsml_issues_parameter_leak_in_summary() -> None:
     client = RecordingFakeModelClient()
     engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
@@ -1599,6 +1668,92 @@ def test_invalid_submit_review_payload_gets_repair_retry(monkeypatch) -> None:
         "directly contain top-level summary and issues" in message.content
         for message in client.calls[1]
     )
+
+
+def test_missing_confidence_submit_gets_repair_retry(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+
+    class MissingConfidenceThenValidClient(RecordingFakeModelClient):
+        async def chat(  # type: ignore[override]
+            self, messages, config=None, tools=None, policy=None, conversation=None
+        ):
+            self.calls.append(messages)
+            self.configs.append(config)
+            self.tools.append(tools)
+            if len(self.calls) == 1:
+                return ModelResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "function": {
+                                "name": "submit_review",
+                                "arguments": json.dumps(
+                                    {
+                                        "summary": "found issue",
+                                        "issues": [
+                                            {
+                                                "severity": "warning",
+                                                "location": "src/x.py:10",
+                                                "evidence": "+ changed",
+                                                "suggestion": "preserve the value",
+                                            }
+                                        ],
+                                    }
+                                ),
+                            }
+                        }
+                    ],
+                    usage=TokenUsage(total_tokens=11),
+                    model="fake-model",
+                    finish_reason="tool_calls",
+                )
+            return ModelResponse(
+                content="",
+                tool_calls=[
+                    {
+                        "function": {
+                            "name": "submit_review",
+                            "arguments": json.dumps(
+                                {
+                                    "summary": "found issue",
+                                    "issues": [
+                                        {
+                                            "severity": "warning",
+                                            "location": "src/x.py:10",
+                                            "evidence": "+ changed",
+                                            "suggestion": "preserve the value",
+                                            "confidence": 0.9,
+                                        }
+                                    ],
+                                }
+                            ),
+                        }
+                    }
+                ],
+                usage=TokenUsage(total_tokens=13),
+                model="fake-model",
+                finish_reason="tool_calls",
+            )
+
+    client = MissingConfidenceThenValidClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    state = ContextState(goal="Run structured code review")
+    request = ReviewRequest(repo_path=".")
+
+    plan, usage = asyncio.run(
+        engine.analyze(
+            state=state,
+            request=request,
+            tool_specs=[],
+            tool_schemas=[{"type": "function", "function": {"name": "submit_review"}}],
+        )
+    )
+
+    assert len(client.calls) == 2
+    assert plan.draft_review is not None
+    assert plan.draft_review.issues[0].confidence == 0.9
+    assert plan.draft_review.issues[0].location == "src/x.py:10"
+    assert plan.draft_review.issues[0].evidence == "+ changed"
 
 
 def test_length_invalid_submit_defers_to_length_recovery_without_schema_repair(

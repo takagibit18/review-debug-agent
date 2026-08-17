@@ -40,6 +40,7 @@ docker-data/
 # AI tool artifacts (screenshots, browser profiles, etc.)
 artifacts/
 .codex-artifacts/
+.workbuddy/
 
 # Frontend
 node_modules/
@@ -48,6 +49,7 @@ node_modules/
 # Python caches (supplement)
 .mypy_cache/
 .mypy_cache_temp/
+.pytest_cache/
 
 # Project-specific
 eval/outputs/

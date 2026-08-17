@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
+import os
 import random
 import re
 import shutil
@@ -337,13 +339,25 @@ async def run_single_lifecycle(
     review_max_iterations: int,
     agent_run_timeout_seconds: float | None = None,
     diagnostic_artifact_dir: Path | None = None,
+    defer_workspace_cleanup: bool = False,
+    deferred_workspace_dir: Path | None = None,
 ) -> tuple[EvalResult, dict[str, Any]]:
     """Run the frozen eval pipeline with phase-two-owned index lifecycle."""
     expected_count = len(fixture.expected.issues)
     stage_timings: dict[str, float] = {}
     lifecycle: dict[str, Any] = {}
+    if defer_workspace_cleanup and deferred_workspace_dir is not None:
+        # Development-only teardown deferral: keep the isolated workspace on
+        # disk after the run so checkpoint append is not blocked by a slow
+        # Windows rmtree of the full Haystack worktree.  The workspace is still
+        # created fresh from the cache for every attempt; only post-run
+        # deletion is postponed.  It has no effect on the A/B treatment.
+        deferred_workspace_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir_ctx: Any = contextlib.nullcontext(str(deferred_workspace_dir))
+    else:
+        tmp_dir_ctx = tempfile.TemporaryDirectory(prefix="eval-fixture-")
     try:
-        with tempfile.TemporaryDirectory(prefix="eval-fixture-") as tmp_dir:
+        with tmp_dir_ctx as tmp_dir:
             stage_started = perf_counter()
             repo_root = await asyncio.to_thread(
                 base_runner._prepare_fixture_workspace,
@@ -650,7 +664,17 @@ def _variants(config: dict[str, Any]) -> dict[str, EvalVariant]:
         )
         for item in config.get("variants", [])
     }
-    if tuple(variants) != VARIANT_IDS:
+    unknown = set(variants) - set(VARIANT_IDS)
+    if unknown:
+        raise ValueError(f"Unknown pilot variants: {sorted(unknown)}")
+    if not variants:
+        raise ValueError("Pilot variants must not be empty")
+    # Development matrices (runtime_contract_source=current) may declare a
+    # subset of the three pilot variants; frozen phase-two configs keep the
+    # strict three-variant contract.
+    if config.get("runtime_contract_source") != "current" and tuple(
+        variants
+    ) != VARIANT_IDS:
         raise ValueError(f"Pilot variants must be exactly {VARIANT_IDS}")
     return variants
 
@@ -698,10 +722,38 @@ def _frozen_contract(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_runtime_contract(config: dict[str, Any]) -> None:
-    """Apply an explicit development-run contract to the shared runtime settings."""
+    """Apply an explicit development-run contract to the shared runtime settings.
+
+    `get_settings()` builds a fresh Settings instance from the environment on
+    every call, so mutating a single instance does not propagate to the
+    orchestrator / graph strategy / inference engine / model client.  For
+    development configs (runtime_contract_source=current) we therefore write
+    the contract values into the environment first: every later
+    ``get_settings()`` then materialises the same effective values.  This
+    keeps the change inside the eval harness and leaves production settings
+    untouched.
+    """
     if config.get("runtime_contract_source") != "current":
         return
     shared = config.get("shared", {})
+    env_map = {
+        "model": "MODEL_NAME",
+        "max_output_tokens": "MODEL_MAX_TOKENS",
+        "tool_budget": "AGENT_MAX_TOOL_CALLS",
+        "model_request_timeout_seconds": "MODEL_REQUEST_TIMEOUT_SECONDS",
+        "tool_timeout_seconds": "AGENT_TOOL_TIMEOUT_SECONDS",
+        "run_timeout_seconds": "AGENT_RUN_TIMEOUT_SECONDS",
+        "prompt_input_token_budget": "PROMPT_INPUT_TOKEN_BUDGET",
+        "token_budget": "TOKEN_BUDGET",
+        "token_hard_budget": "TOKEN_HARD_BUDGET",
+        "final_submit_reserve_tokens": "FINAL_SUBMIT_RESERVE_TOKENS",
+        "final_submit_prompt_token_budget": "FINAL_SUBMIT_PROMPT_TOKEN_BUDGET",
+        "final_submit_feedback_token_budget": "FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET",
+        "max_iterations": "REVIEW_MAX_ITERATIONS",
+    }
+    for config_key, env_key in env_map.items():
+        if config_key in shared:
+            os.environ[env_key] = str(shared[config_key])
     settings = get_settings()
     field_map = {
         "model": "model_name",
@@ -847,6 +899,7 @@ async def run_pilot(
     resume: bool = True,
     retry_invalid: bool = True,
     stop_after_measured: int | None = None,
+    defer_workspace_cleanup: bool = False,
 ) -> dict[str, Any]:
     config = _load_config(config_path)
     _apply_runtime_contract(config)
@@ -889,7 +942,8 @@ async def run_pilot(
             order = [
                 variant_id
                 for variant_id in variant_order(seed, fixture_index, sample)
-                if sample < sample_counts[variant_id]
+                if variant_id in sample_counts
+                and sample < sample_counts[variant_id]
             ]
             for order_index, variant_id in enumerate(order):
                 variant = variants[variant_id]
@@ -938,6 +992,20 @@ async def run_pilot(
                     diagnostic_artifact_dir=(
                         checkpoint_path.parent / "run_journals"
                         if checkpoint_path is not None
+                        else None
+                    ),
+                    defer_workspace_cleanup=defer_workspace_cleanup,
+                    deferred_workspace_dir=(
+                        (
+                            checkpoint_path.parent
+                            / "deferred_workspaces"
+                            / hashlib.sha1(
+                                f"{fixture.id}:{variant_id}:{sample + 1}".encode(
+                                    "utf-8"
+                                )
+                            ).hexdigest()[:8]
+                        )
+                        if defer_workspace_cleanup and checkpoint_path is not None
                         else None
                     ),
                 )
@@ -1358,6 +1426,17 @@ def main() -> None:
         help="Controlled interruption hook after N durable measured attempts.",
     )
     parser.add_argument(
+        "--defer-workspace-cleanup",
+        action="store_true",
+        help=(
+            "Development-only: keep each isolated workspace on disk under "
+            "outputs/<experiment>/deferred_workspaces instead of synchronously "
+            "rmtree'ing it after the run, so checkpoint append is not blocked by "
+            "slow Windows deletion of the full worktree.  Does not alter the A/B "
+            "treatment; workspaces are still materialized fresh per attempt."
+        ),
+    )
+    parser.add_argument(
         "--summarize-only",
         type=Path,
         default=None,
@@ -1377,6 +1456,7 @@ def main() -> None:
                 resume=not args.no_resume,
                 retry_invalid=args.retry_invalid,
                 stop_after_measured=args.stop_after_measured,
+                defer_workspace_cleanup=args.defer_workspace_cleanup,
             )
         )
     summary = compact_summary(payload)

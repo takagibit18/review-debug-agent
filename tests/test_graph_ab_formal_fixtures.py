@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATHS = (
     ROOT / "eval/fixtures/golden_vybestack_llxprt-code_pr3012_reverse.json",
     ROOT / "eval/fixtures/golden_deepset-ai_haystack_pr12208_reverse.json",
+    ROOT / "eval/fixtures/golden_deepset-ai_haystack_pr12162_reverse.json",
+    ROOT / "eval/fixtures/golden_deepset-ai_haystack_pr12257_reverse.json",
 )
 PREFLIGHT_FIXTURE_PATHS = (
     ROOT / "eval/fixtures/golden_pydantic_pydantic_pr12568.json",
@@ -29,6 +31,12 @@ EXPECTED_MERGE_COMMIT_SHAS = {
     "golden_vybestack_llxprt-code_pr3012_reverse": "",
     "golden_deepset-ai_haystack_pr12208_reverse": (
         "14535047214b8d0e1345bdcd800c9522ae445501"
+    ),
+    "golden_deepset-ai_haystack_pr12162_reverse": (
+        "66fb9d0dedeec1848aca56ef7651ec9afcc090a4"
+    ),
+    "golden_deepset-ai_haystack_pr12257_reverse": (
+        "49f8d2d54999cd4b59c0e98694fbb4fd9f9ac1f0"
     ),
 }
 
@@ -133,7 +141,44 @@ def test_reverse_fixture_regression_tests_are_not_reversed() -> None:
     assert "test/components/converters/test_json.py" not in haystack.input.diff_text
 
 
-def test_manifest_indexes_both_reverse_fixtures_once() -> None:
+def test_reverse_fixture_production_only_diffs() -> None:
+    haystack_12257 = Fixture.model_validate_json(
+        FIXTURE_PATHS[3].read_text(encoding="utf-8")
+    )
+    assert "test/" not in haystack_12257.input.diff_text
+    assert "releasenotes/" not in haystack_12257.input.diff_text
+    assert "diff --git a/haystack/utils/filters.py" in haystack_12257.input.diff_text
+    assert (
+        "diff --git a/haystack/components/routers/metadata_router.py"
+        in haystack_12257.input.diff_text
+    )
+    assert (
+        "diff --git a/haystack/document_stores/in_memory/document_store.py"
+        in haystack_12257.input.diff_text
+    )
+
+    haystack_12162 = Fixture.model_validate_json(
+        FIXTURE_PATHS[2].read_text(encoding="utf-8")
+    )
+    assert "test/" not in haystack_12162.input.diff_text
+    assert "releasenotes/" not in haystack_12162.input.diff_text
+    # The independent _NoOutputProduced sentinel regression must not be folded
+    # into the snapshot/resume gold: none of its production files may be reversed.
+    assert (
+        "diff --git a/haystack/core/pipeline/component_checks.py"
+        not in haystack_12162.input.diff_text
+    )
+    assert (
+        "diff --git a/haystack/core/component/types.py"
+        not in haystack_12162.input.diff_text
+    )
+    assert (
+        "diff --git a/haystack/core/pipeline/base.py"
+        not in haystack_12162.input.diff_text
+    )
+
+
+def test_manifest_indexes_all_reverse_fixtures_once() -> None:
     manifest = json.loads(
         (ROOT / "eval/fixtures/manifest.json").read_text(encoding="utf-8")
     )

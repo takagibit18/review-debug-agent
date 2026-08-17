@@ -129,6 +129,11 @@ AGENT_SEARCH_POLICY = (
 GRAPH_CONTEXT_POLICY = (
     "Context policy: graph_hybrid. Candidate context manifests are first-pass navigation context, not a "
     "complete world model. A graph edge indicates only its named structural relation and is not runtime fact. "
+    "When related manifest spans participate in the same behavior, state, or data flow, "
+    "do not review them only in isolation. Before finalizing a finding, identify what behavior or "
+    "information should remain consistent across those locations and compare the relevant code against "
+    "that expectation. Treat this as an investigation hypothesis, not evidence, and verify it from code. "
+    "An early local draft is not yet the root cause. "
     "Before requesting read or grep tools, use exact visible manifest spans when they already cover the question. "
     "Do not re-read or grep solely to rediscover the same file/span; use tools only for a specific evidence gap "
     "that the supplied diff and manifests do not cover. "

@@ -155,6 +155,26 @@ def test_prompt_core_is_shared_and_mode_policy_isolated() -> None:
     assert agent_policy not in review_system_prompt("graph_hybrid")
 
 
+def test_graph_policy_guides_joint_analysis_of_related_spans() -> None:
+    agent_common, agent_policy = review_prompt_parts("agent_search")
+    _, graph_policy = review_prompt_parts("graph_hybrid")
+
+    joint_guidance = (
+        "do not review them only in isolation",
+        "An early local draft is not yet the root cause",
+    )
+
+    # Graph-specific joint-analysis guidance lives only in the graph policy.
+    for phrase in joint_guidance:
+        assert phrase in graph_policy
+        # It must not leak into the agent_search policy...
+        assert phrase not in agent_policy
+        # ...nor into the shared common prompt core (unchanged by this change)...
+        assert phrase not in agent_common
+        # ...nor into the assembled agent_search system prompt.
+        assert phrase not in review_system_prompt("agent_search")
+
+
 def test_agent_search_end_to_end_uses_tool_verifier_and_consolidator(
     tmp_path: Path,
     monkeypatch,

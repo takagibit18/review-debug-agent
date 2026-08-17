@@ -276,6 +276,7 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                     "location",
                                     "evidence",
                                     "suggestion",
+                                    "confidence",
                                     "schema_version",
                                     "finding_id",
                                     "primary_anchor",

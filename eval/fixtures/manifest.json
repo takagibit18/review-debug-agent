@@ -11,6 +11,24 @@
       "reviewed": false
     },
     {
+      "fixture_id": "golden_deepset-ai_haystack_pr12162_reverse",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "deepset-ai/haystack",
+      "pr_number": 12162,
+      "path": "eval/fixtures/golden_deepset-ai_haystack_pr12162_reverse.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_deepset-ai_haystack_pr12257_reverse",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "deepset-ai/haystack",
+      "pr_number": 12257,
+      "path": "eval/fixtures/golden_deepset-ai_haystack_pr12257_reverse.json",
+      "reviewed": true
+    },
+    {
       "fixture_id": "golden_vybestack_llxprt-code_pr3012_reverse",
       "suite": "golden",
       "fixture_type": "review",

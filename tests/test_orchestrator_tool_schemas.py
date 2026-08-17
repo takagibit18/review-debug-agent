@@ -109,6 +109,18 @@ def test_submit_review_schema_requires_explicit_issues_array() -> None:
     )
 
 
+def test_submit_review_issue_requires_explicit_confidence() -> None:
+    schemas = build_submit_tool_schemas()
+    review_schema = next(
+        schema for schema in schemas if schema["function"]["name"] == "submit_review"
+    )
+    issue_schema = review_schema["function"]["parameters"]["properties"]["issues"]["items"]
+    required = issue_schema["required"]
+    assert "confidence" in required
+    for field in ("severity", "location", "evidence", "suggestion", "finding_id"):
+        assert field in required
+
+
 def test_build_tool_schemas_from_default_registry_is_complete() -> None:
     schemas = build_tool_schemas(create_default_registry().list_specs())
 
