@@ -246,22 +246,34 @@ class ModelClient:
             )
 
         updated = config.model_copy(deep=True)
-        if effective.forced_tool:
+        # When the model mandates thinking ON (force_enable_thinking) it rejects
+        # the object/required tool_choice form in thinking mode, so a forced tool
+        # call cannot be expressed as a fixed tool_choice. Drop the forced
+        # tool_choice and let the model select the tool itself (the tools list is
+        # still sent). This only affects submit-style calls on such models; every
+        # other model keeps its current behaviour unchanged.
+        if effective.forced_tool and not profile.compat.force_enable_thinking:
             updated.tool_choice = {
                 "type": "function",
                 "function": {"name": effective.forced_tool},
             }
         if profile.compat.thinking_format == "deepseek":
+            thinking_enabled = (
+                effective.thinking == "high" or profile.compat.force_enable_thinking
+            )
             updated.extra_body = {
                 **(updated.extra_body or {}),
                 "thinking": {
-                    "type": "enabled" if effective.thinking == "high" else "disabled"
+                    "type": "enabled" if thinking_enabled else "disabled"
                 },
             }
         elif profile.compat.thinking_format == "dashscope":
             updated.extra_body = {
                 **(updated.extra_body or {}),
-                "enable_thinking": effective.thinking == "high",
+                "enable_thinking": (
+                    effective.thinking == "high"
+                    or profile.compat.force_enable_thinking
+                ),
             }
         return updated, effective
 

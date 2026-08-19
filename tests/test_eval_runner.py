@@ -510,14 +510,20 @@ def test_read_event_log_stats_counts_phase_end_budget_exhaustion(
     assert stats["budget_exhausted"] is True
 
 
-def test_effective_review_max_iterations_caps_unstable_eval_rounds(
+def test_effective_review_max_iterations_keeps_requested_rounds_below_guard(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("EVAL_REVIEW_MAX_ITERATIONS", raising=False)
     monkeypatch.delenv("EVAL_REVIEW_MAX_ITERATIONS_CAP", raising=False)
     monkeypatch.delenv("EVAL_REVIEW_MIN_TOOL_ITERATIONS", raising=False)
 
-    assert _effective_review_max_iterations(3) == 2
+    assert _effective_review_max_iterations(3) == 3
+
+
+def test_effective_review_max_iterations_enforces_safety_guard(monkeypatch) -> None:
+    monkeypatch.setenv("EVAL_REVIEW_MAX_ITERATIONS_CAP", "16")
+
+    assert _effective_review_max_iterations(32) == 16
 
 
 def test_effective_review_max_iterations_allows_explicit_eval_cap_override(

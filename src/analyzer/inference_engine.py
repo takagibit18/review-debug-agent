@@ -213,10 +213,12 @@ class InferenceEngine:
                 Message(
                     role="user",
                     content=(
-                        "Do not call submit_review yet. This evaluation run requires "
-                        "one context-gathering round before final review. Use the "
-                        "available read-only tools to inspect the most relevant changed "
-                        "file, test, snapshot, or adjacent implementation context."
+                        "Do not call submit_review yet. Submission is temporarily "
+                        "unavailable during the initial exploration stage. Use the "
+                        "available read-only tools to resolve the most important evidence "
+                        "gap. Do not assume this is the only exploration round. In later "
+                        "rounds, continue targeted investigation whenever material "
+                        "evidence gaps remain."
                     ),
                 )
             )

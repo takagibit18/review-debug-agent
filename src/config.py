@@ -178,7 +178,7 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"),
     )
     review_max_iterations: int = Field(
-        default_factory=lambda: int(os.getenv("REVIEW_MAX_ITERATIONS", "1")),
+        default_factory=lambda: int(os.getenv("REVIEW_MAX_ITERATIONS", "16")),
         ge=1,
     )
     debug_max_iterations: int = Field(
@@ -412,7 +412,7 @@ class Settings(BaseModel):
     )
     pre_budget_submit_token_ratio: float = Field(
         default_factory=lambda: float(
-            os.getenv("PRE_BUDGET_SUBMIT_TOKEN_RATIO", "0.40")
+            os.getenv("PRE_BUDGET_SUBMIT_TOKEN_RATIO", "0.80")
         ),
         ge=0.1,
         le=0.9,
@@ -491,11 +491,11 @@ class Settings(BaseModel):
         ge=1,
     )
     eval_review_max_iterations: int = Field(
-        default_factory=lambda: int(os.getenv("EVAL_REVIEW_MAX_ITERATIONS", "2")),
+        default_factory=lambda: int(os.getenv("EVAL_REVIEW_MAX_ITERATIONS", "16")),
         ge=1,
     )
     eval_review_max_iterations_cap: int = Field(
-        default_factory=lambda: int(os.getenv("EVAL_REVIEW_MAX_ITERATIONS_CAP", "2")),
+        default_factory=lambda: int(os.getenv("EVAL_REVIEW_MAX_ITERATIONS_CAP", "16")),
         ge=1,
     )
     eval_review_min_tool_iterations: int = Field(
