@@ -1,0 +1,141 @@
+========================================================================
+PREFLIGHT RUNTIME AUDIT — graph-ab-qwen-joint-analysis
+========================================================================
+repo root:              E:\PycharmProjects\MergeWarden-recovered
+experiment_id:          graph-ab-qwen-joint-analysis
+runtime_contract_source:current
+formal_graph_ab:        False
+held_out_executed:      False
+
+--- A. .env provider connection params (sanitized) ---
+  MODEL_PROVIDER='dashscope'
+  MODEL_NAME='qwen3.7-max-2026-05-20'
+  OPENAI_BASE_URL='https://ws-b4i3pz0xj40b9grr.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
+  OPENAI_API_KEY=present
+
+--- B. .env conflicting runtime-contract overrides (task H) ---
+  (no conflicting overrides present in .env;
+   _apply_runtime_contract will set them cleanly at launch)
+
+--- C. Applying runtime contract via _apply_runtime_contract(config) ---
+  _apply_runtime_contract() returned without raising.
+
+--- D. os.environ after _apply_runtime_contract ---
+  MODEL_NAME: expected='qwen3.6-flash' actual='qwen3.6-flash' [OK]
+  MODEL_MAX_TOKENS: expected='4096' actual='4096' [OK]
+  PROMPT_INPUT_TOKEN_BUDGET: expected='12000' actual='12000' [OK]
+  TOKEN_BUDGET: expected='60000' actual='60000' [OK]
+  TOKEN_HARD_BUDGET: expected='80000' actual='80000' [OK]
+  FINAL_SUBMIT_RESERVE_TOKENS: expected='12000' actual='12000' [OK]
+  FINAL_SUBMIT_PROMPT_TOKEN_BUDGET: expected='4000' actual='4000' [OK]
+  FINAL_SUBMIT_FEEDBACK_TOKEN_BUDGET: expected='1200' actual='1200' [OK]
+  REVIEW_MAX_ITERATIONS: expected='3' actual='3' [OK]
+  AGENT_MAX_TOOL_CALLS: expected='64' actual='64' [OK]
+  MODEL_REQUEST_TIMEOUT_SECONDS: expected='180.0' actual='180.0' [OK]
+  AGENT_TOOL_TIMEOUT_SECONDS: expected='30.0' actual='30.0' [OK]
+  AGENT_RUN_TIMEOUT_SECONDS: expected='600.0' actual='600.0' [OK]
+
+--- E. Explicit REVIEW_MAX_ITERATIONS check (task G) ---
+  os.environ['REVIEW_MAX_ITERATIONS'] = '3'
+  == '3' ? YES
+
+--- F. Fresh get_settings() effective values (task F) ---
+  settings.model_name: expected='qwen3.6-flash' actual='qwen3.6-flash' [OK]
+  settings.model_max_tokens: expected=4096 actual=4096 [OK]
+  settings.prompt_input_token_budget: expected=12000 actual=12000 [OK]
+  settings.token_budget: expected=60000 actual=60000 [OK]
+  settings.token_hard_budget: expected=80000 actual=80000 [OK]
+  settings.final_submit_reserve_tokens: expected=12000 actual=12000 [OK]
+  settings.final_submit_prompt_token_budget: expected=4000 actual=4000 [OK]
+  settings.final_submit_feedback_token_budget: expected=1200 actual=1200 [OK]
+  settings.review_max_iterations: expected=3 actual=3 [OK]
+  settings.agent_max_tool_calls: expected=64 actual=64 [OK]
+  settings.model_request_timeout_seconds: expected=180.0 actual=180.0 [OK]
+  settings.agent_tool_timeout_seconds: expected=30.0 actual=30.0 [OK]
+  settings.agent_run_timeout_seconds: expected=600.0 actual=600.0 [OK]
+
+--- G. Provider resolution via resolve_model_profile ---
+  settings.model_provider = 'dashscope'
+  resolved provider        = 'dashscope'
+  resolved model           = 'qwen3.6-flash'
+  thinking_format          = 'dashscope'
+  openai_base_url          = 'https://ws-b4i3pz0xj40b9grr.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
+  base_url points to DashScope/Bailian endpoint: True
+  base_url points to deepseek endpoint:          False
+  api_key_present          = True
+  api_key looks_like_url   = False
+  api_key == base_url      = False
+
+--- H. Launcher entry point (task I) ---
+  eval/graph_ab_pilot.run_pilot calls _apply_runtime_contract(config): YES
+  (line 905 of eval/graph_ab_pilot.py, before orchestrator construction)
+
+--- I. Output-token behavior in InferenceEngine (task K, read-only) ---
+  _SUBMIT_MAX_TOKENS       = 4096
+  _EXPLORATION_MAX_TOKENS  = 12288
+  settings.model_max_tokens (default ModelConfig) = 4096
+  NOTE: exploration call uses _EXPLORATION_MAX_TOKENS=12288 (3x larger than
+        MODEL_MAX_TOKENS=4096); final submit call uses _SUBMIT_MAX_TOKENS=4096.
+        This is the historical design — per task K, NOT modifying in this preflight.
+        No override performed; only recording effective values.
+
+========================================================================
+SANITIZED PREFLIGHT RUNTIME AUDIT
+========================================================================
+
+Provider:
+  provider:          dashscope
+  model:             qwen3.6-flash
+  base_url_present:  True
+  api_key_present:   True
+  api_key_looks_like_url: False
+
+Declared experiment contract (YAML shared:):
+  prompt_input_token_budget:        12000
+  token_budget:                     60000
+  token_hard_budget:                80000
+  model_max_tokens:                 4096
+  final_submit_reserve_tokens:      12000
+  final_submit_prompt_token_budget: 4000
+  final_submit_feedback_token_budget:1200
+  review_max_iterations:            3
+  agent_max_tool_calls:             64
+  model_request_timeout_seconds:    180.0
+  agent_tool_timeout_seconds:       30.0
+  agent_run_timeout_seconds:        600.0
+
+Effective fresh Settings (after _apply_runtime_contract + get_settings):
+  model_name: qwen3.6-flash
+  model_max_tokens: 4096
+  prompt_input_token_budget: 12000
+  token_budget: 60000
+  token_hard_budget: 80000
+  final_submit_reserve_tokens: 12000
+  final_submit_prompt_token_budget: 4000
+  final_submit_feedback_token_budget: 1200
+  review_max_iterations: 3
+  agent_max_tool_calls: 64
+  model_request_timeout_seconds: 180.0
+  agent_tool_timeout_seconds: 30.0
+  agent_run_timeout_seconds: 600.0
+
+Output-token behavior (informational, not gating):
+  exploration max_tokens (hardcoded): 12288
+  final submit max_tokens (hardcoded): 4096
+  default config model_max_tokens:    4096
+
+Runtime-contract propagation (env + fresh Settings):
+  env propagation failures:  0
+  fresh settings failures:    0
+
+Provider connectivity (gating):
+  model_provider == 'dashscope' (explicit):       YES
+  OPENAI_BASE_URL is DashScope/Bailian endpoint:  YES
+  OPENAI_BASE_URL still DeepSeek endpoint:        NO
+  api_key_present:                                True
+  api_key structurally a real key (not a URL):    YES
+
+Contract status:
+  PASS
+
+EXPERIMENT_RUNTIME_PREFLIGHT=PASS
