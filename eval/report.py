@@ -132,6 +132,13 @@ def render_report(
     detail.add_column("valid")
     detail.add_column("placeholder")
     detail.add_column("budget")
+    detail.add_column("termination")
+    detail.add_column("iterations")
+    detail.add_column("tool_iters")
+    detail.add_column("submit@")
+    detail.add_column("natural")
+    detail.add_column("guard")
+    detail.add_column("pre_budget")
     detail.add_column("matched/expected")
     detail.add_column("false_pos")
     detail.add_column("pass@k")
@@ -151,6 +158,17 @@ def render_report(
             "yes" if item.schema_valid else "no",
             "yes" if item.placeholder_summary else "no",
             item.budget_state,
+            item.process_metrics.termination_reason or "unknown",
+            str(item.process_metrics.actual_review_iterations),
+            str(item.process_metrics.tool_bearing_iterations),
+            (
+                str(item.process_metrics.submit_iteration)
+                if item.process_metrics.submit_iteration is not None
+                else "-"
+            ),
+            "yes" if item.process_metrics.natural_completion else "no",
+            "yes" if item.process_metrics.iteration_guard_hit else "no",
+            "yes" if item.process_metrics.pre_budget_submit_triggered else "no",
             f"{item.matched_count}/{item.expected_count}",
             str(item.false_positive_count),
             pass_at_k,

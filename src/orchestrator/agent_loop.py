@@ -120,6 +120,7 @@ class AgentOrchestrator:
         self._feedback_digest_index: dict[str, dict[str, Any]] = {}
         self._tool_dedup_cache: dict[str, ToolResult] = {}
         self._submit_review_seen_any = False
+        self._submit_iteration: int | None = None
         self._submit_debug_seen_any = False
         self._latest_tokens = 0
         self._model_conversation = ModelConversation()
@@ -131,6 +132,10 @@ class AgentOrchestrator:
         self._budget_state: str = "none"
         self._model_completed = False
         self._last_decision_reason: str = ""
+        self._iteration_guard_hit = False
+        self._run_timeout_hit = False
+        self._provider_error_seen = False
+        self._tool_bearing_iterations: set[int] = set()
         self._workspace_root: Path | None = None
         self._run_started_at = 0.0
         effective_run_timeout = (
@@ -249,6 +254,7 @@ class AgentOrchestrator:
             )
             plan = await self.analyze(state, request, tool_specs)
             self._last_plan = plan
+            self._observe_review_submission(plan)
             self._observe_incomplete_plan(plan, state)
             tool_results = await self.execute_tools(plan, self._registry, state)
             self._observe_workflow_tools(plan, tool_results)
@@ -262,6 +268,7 @@ class AgentOrchestrator:
                     state, request, tool_specs=[], force_submit=True
                 )
                 self._last_plan = submit_plan
+                self._observe_review_submission(submit_plan)
                 self._observe_incomplete_plan(submit_plan, state)
                 response = self.format_result(state, tool_results=[])
                 self._record_pre_budget_submit("completed", state, submit_plan)
@@ -1244,6 +1251,7 @@ class AgentOrchestrator:
             state, request, tool_specs=[], force_submit=True
         )
         self._last_plan = finalize_plan
+        self._observe_review_submission(finalize_plan)
         self._observe_incomplete_plan(finalize_plan, state)
         formatted = self.format_result(state, tool_results=[])
         assert isinstance(formatted, ReviewResponse)
@@ -1307,6 +1315,7 @@ class AgentOrchestrator:
             force_submit=True,
         )
         self._last_plan = finalize_plan
+        self._observe_review_submission(finalize_plan)
         self._observe_incomplete_plan(finalize_plan, state)
         formatted = self.format_result(state, tool_results=[])
         assert isinstance(formatted, ReviewResponse)
@@ -1458,6 +1467,7 @@ class AgentOrchestrator:
 
         engine = self._build_engine()
         if engine is None:
+            self._provider_error_seen = True
             state.errors.append(
                 ErrorDetail(
                     file=request.repo_path,
@@ -1516,6 +1526,7 @@ class AgentOrchestrator:
                 if result.draft_debug is not None:
                     self._submit_debug_seen_any = True
             except ModelClientError as exc:
+                self._provider_error_seen = True
                 if isinstance(exc, ModelTimeoutError):
                     self._model_timeout_seen = True
                 state.errors.append(
@@ -1984,6 +1995,7 @@ class AgentOrchestrator:
         )
         reached_limit = (self._iteration + 1) >= self._max_iterations
         run_timed_out = self._run_timeout_exceeded()
+        self._run_timeout_hit = self._run_timeout_hit or run_timed_out
 
         stop = (
             self._model_incomplete_seen
@@ -2017,13 +2029,19 @@ class AgentOrchestrator:
             reason = "model_incomplete"
         elif run_timed_out:
             reason = "run_timeout"
-        elif reached_limit:
-            reason = "max_iterations"
         elif self._model_completed:
             reason = "model_completed"
+        elif reached_limit:
+            reason = "max_iterations"
         else:
             reason = "continue"
         self._last_decision_reason = reason
+        # `iteration_guard_hit` must mean "the guard actually terminated the
+        # run", not "the iteration index reached the configured ceiling".
+        # Only the terminating decision can carry reason == "max_iterations",
+        # so record the guard hit exclusively from that final reason.
+        if reason == "max_iterations":
+            self._iteration_guard_hit = True
         state.decisions.append(
             DecisionStep(
                 phase="continue",
@@ -2080,6 +2098,7 @@ class AgentOrchestrator:
         self._feedback_digest_index = {}
         self._tool_dedup_cache = {}
         self._submit_review_seen_any = False
+        self._submit_iteration = None
         self._submit_debug_seen_any = False
         self._latest_tokens = 0
         self._model_conversation = ModelConversation()
@@ -2091,6 +2110,10 @@ class AgentOrchestrator:
         self._budget_state = "none"
         self._model_completed = False
         self._last_decision_reason = ""
+        self._iteration_guard_hit = False
+        self._run_timeout_hit = False
+        self._provider_error_seen = False
+        self._tool_bearing_iterations = set()
         self._run_started_at = perf_counter()
         self._run_timeout_seconds = self._agent_run_timeout_seconds
         self._model_timeout_seen = False
@@ -2628,6 +2651,8 @@ class AgentOrchestrator:
             tool=tool,
             args=args,
         )
+        if not bool(raw_call.get("synthetic_context")):
+            self._tool_bearing_iterations.add(self._iteration)
         self._journal_tool_result(plan, raw_call, result)
         return result, error_detail, elapsed_ms
 
@@ -2655,15 +2680,53 @@ class AgentOrchestrator:
                 payload["error_type"] = error_type
         return payload
 
+    def _observe_review_submission(self, plan: AnalysisPlan) -> None:
+        """Record the first valid submit_review on its 0-based loop iteration."""
+
+        if plan.draft_review is not None and self._submit_iteration is None:
+            self._submit_iteration = self._iteration
+
+    def _termination_reason(self) -> str:
+        """Normalize the final loop outcome into one stable primary reason."""
+
+        if self._model_timeout_seen:
+            return "provider_timeout"
+        if self._run_timeout_hit:
+            return "run_timeout"
+        if self._last_decision_reason == "budget_hard_capped":
+            return "token_hard_limit"
+        if self._last_decision_reason == "budget_soft_capped":
+            return "token_soft_limit"
+        if self._length_recovery_failed:
+            return "length_recovery_failed"
+        if self._model_incomplete_seen:
+            return "model_incomplete"
+        if self._iteration_guard_hit:
+            return "iteration_guard"
+        if self._pre_budget_submit_attempted:
+            return "pre_budget_submit"
+        if self._blocking_error or self._provider_error_seen:
+            return "blocking_error"
+        if self._last_decision_reason == "model_completed" or self._model_completed:
+            return "natural_model_stop"
+        return "other"
+
     def _record_review_telemetry(self, state: ContextState) -> None:
         """Emit one complete, mode-aware review telemetry envelope."""
 
         graph = dict(state.relation_graph_summary)
+        termination_reason = self._termination_reason()
         payload: dict[str, Any] = {
             "context_mode": state.context_mode,
             "model": self._settings.model_name,
             "review_iterations": self._iteration + 1,
             "tool_call_count": self._tool_call_count,
+            "tool_bearing_iterations": len(self._tool_bearing_iterations),
+            "submit_iteration": self._submit_iteration,
+            "natural_completion": termination_reason == "natural_model_stop",
+            "iteration_guard_hit": self._iteration_guard_hit,
+            "pre_budget_submit_triggered": self._pre_budget_submit_attempted,
+            "termination_reason": termination_reason,
             "model_response_journal_writes": self._model_response_journal_writes,
             "tool_result_journal_writes": self._tool_result_journal_writes,
             "draft_findings_created": self._draft_findings_created,

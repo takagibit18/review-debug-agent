@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from statistics import mean, pstdev
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from src.analyzer.context_mode import ReviewContextMode
 from src.analyzer.finding_funnel import FindingFunnel
@@ -298,6 +298,12 @@ class ReviewProcessMetrics(BaseModel):
     model: str = ""
     review_iterations: int = Field(default=0, ge=0)
     tool_call_count: int = Field(default=0, ge=0)
+    tool_bearing_iterations: int = Field(default=0, ge=0)
+    submit_iteration: int | None = Field(default=None, ge=0)
+    natural_completion: bool = False
+    iteration_guard_hit: bool = False
+    pre_budget_submit_triggered: bool = False
+    termination_reason: str = ""
     model_response_journal_writes: int = Field(default=0, ge=0)
     draft_findings_created: int = Field(default=0, ge=0)
     length_recoveries_attempted: int = Field(default=0, ge=0)
@@ -365,6 +371,13 @@ class ReviewProcessMetrics(BaseModel):
     finding_inflation_ratio: float = Field(default=0.0, ge=0.0)
     event_log_status: Literal["ok", "missing", "parse_error"] = "missing"
     finding_funnel: FindingFunnel = Field(default_factory=FindingFunnel)
+
+    @computed_field(return_type=int)
+    @property
+    def actual_review_iterations(self) -> int:
+        """Canonical observability name for the existing review_iterations field."""
+
+        return self.review_iterations
 
     @property
     def evidence_binding_rate(self) -> float:
@@ -440,6 +453,43 @@ class EvalResult(BaseModel):
     workflow_invalid: bool = Field(default=False)
     workflow_missing_steps: list[str] = Field(default_factory=list)
     process_metrics: ReviewProcessMetrics = Field(default_factory=ReviewProcessMetrics)
+
+    @computed_field
+    @property
+    def actual_review_iterations(self) -> int:
+        """Expose the normalized iteration name without duplicating storage."""
+
+        return self.process_metrics.review_iterations
+
+    @computed_field
+    @property
+    def tool_bearing_iterations(self) -> int:
+        return self.process_metrics.tool_bearing_iterations
+
+    @computed_field
+    @property
+    def submit_iteration(self) -> int | None:
+        return self.process_metrics.submit_iteration
+
+    @computed_field
+    @property
+    def natural_completion(self) -> bool:
+        return self.process_metrics.natural_completion
+
+    @computed_field
+    @property
+    def iteration_guard_hit(self) -> bool:
+        return self.process_metrics.iteration_guard_hit
+
+    @computed_field
+    @property
+    def pre_budget_submit_triggered(self) -> bool:
+        return self.process_metrics.pre_budget_submit_triggered
+
+    @computed_field
+    @property
+    def termination_reason(self) -> str:
+        return self.process_metrics.termination_reason
 
 
 class SampledFixtureResult(BaseModel):

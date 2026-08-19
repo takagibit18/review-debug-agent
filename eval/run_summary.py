@@ -56,6 +56,20 @@ def extract_review_process_metrics(
             return metrics
         payload = event.get("payload", {}) or {}
         event_type = str(event.get("event_type", ""))
+        phase = str(event.get("phase", ""))
+        if event_type == "decision" and phase == "continue":
+            reason = str(payload.get("reason", "") or "").strip()
+            normalized = _normalize_termination_reason(reason)
+            if normalized:
+                metrics.termination_reason = normalized
+                if normalized == "natural_model_stop":
+                    metrics.natural_completion = True
+            if payload.get("reached_limit") is True:
+                metrics.iteration_guard_hit = True
+        if event_type == "decision" and phase == "pre_budget_submit":
+            metrics.pre_budget_submit_triggered = True
+        if payload.get("pre_budget_submit_triggered") is True:
+            metrics.pre_budget_submit_triggered = True
         if event_type == "finding_funnel_completed":
             metrics.finding_funnel = FindingFunnel.model_validate(payload)
         elif event_type == "finding_candidates_built":
@@ -204,7 +218,7 @@ def extract_review_process_metrics(
                 metrics.duplicate_tool_call_count += 1
         elif (
             event_type == "phase_end"
-            and str(event.get("phase", "")) == "review_complete"
+            and phase == "review_complete"
         ):
             mode = str(payload.get("context_mode", "graph_hybrid"))
             metrics.context_mode = (
@@ -212,9 +226,30 @@ def extract_review_process_metrics(
             )
             metrics.model = str(payload.get("model", ""))
             metrics.review_iterations = _non_negative_int(
-                payload.get("review_iterations")
+                payload.get(
+                    "review_iterations", payload.get("actual_review_iterations")
+                )
             )
             metrics.tool_call_count = _non_negative_int(payload.get("tool_call_count"))
+            metrics.tool_bearing_iterations = _non_negative_int(
+                payload.get("tool_bearing_iterations")
+            )
+            metrics.submit_iteration = _optional_non_negative_int(
+                payload.get("submit_iteration")
+            )
+            if isinstance(payload.get("natural_completion"), bool):
+                metrics.natural_completion = payload["natural_completion"]
+            if isinstance(payload.get("iteration_guard_hit"), bool):
+                metrics.iteration_guard_hit = payload["iteration_guard_hit"]
+            if isinstance(payload.get("pre_budget_submit_triggered"), bool):
+                metrics.pre_budget_submit_triggered = payload[
+                    "pre_budget_submit_triggered"
+                ]
+            termination_reason = str(
+                payload.get("termination_reason", "") or ""
+            ).strip()
+            if termination_reason:
+                metrics.termination_reason = termination_reason
             metrics.model_response_journal_writes = _non_negative_int(
                 payload.get("model_response_journal_writes")
             )
@@ -290,6 +325,21 @@ def _optional_non_negative_int(value: object) -> int | None:
     if value is None:
         return None
     return _non_negative_int(value)
+
+
+def _normalize_termination_reason(reason: str) -> str:
+    """Map legacy decision labels to the normalized observability enum."""
+
+    return {
+        "model_completed": "natural_model_stop",
+        "completed": "natural_model_stop",
+        "max_iterations": "iteration_guard",
+        "budget_soft_capped": "token_soft_limit",
+        "budget_hard_capped": "token_hard_limit",
+        "run_timeout": "run_timeout",
+        "model_timeout": "provider_timeout",
+        "pre_budget_submit_attempted": "pre_budget_submit",
+    }.get(reason, "")
 
 
 def _non_negative_float(value: object) -> float:
