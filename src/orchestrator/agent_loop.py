@@ -1995,7 +1995,6 @@ class AgentOrchestrator:
         )
         reached_limit = (self._iteration + 1) >= self._max_iterations
         run_timed_out = self._run_timeout_exceeded()
-        self._iteration_guard_hit = self._iteration_guard_hit or reached_limit
         self._run_timeout_hit = self._run_timeout_hit or run_timed_out
 
         stop = (
@@ -2030,13 +2029,19 @@ class AgentOrchestrator:
             reason = "model_incomplete"
         elif run_timed_out:
             reason = "run_timeout"
-        elif reached_limit:
-            reason = "max_iterations"
         elif self._model_completed:
             reason = "model_completed"
+        elif reached_limit:
+            reason = "max_iterations"
         else:
             reason = "continue"
         self._last_decision_reason = reason
+        # `iteration_guard_hit` must mean "the guard actually terminated the
+        # run", not "the iteration index reached the configured ceiling".
+        # Only the terminating decision can carry reason == "max_iterations",
+        # so record the guard hit exclusively from that final reason.
+        if reason == "max_iterations":
+            self._iteration_guard_hit = True
         state.decisions.append(
             DecisionStep(
                 phase="continue",

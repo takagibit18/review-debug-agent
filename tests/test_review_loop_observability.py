@@ -95,6 +95,49 @@ def test_natural_stop_records_review_and_tool_bearing_iterations(
     assert telemetry["termination_reason"] == "natural_model_stop"
 
 
+def test_natural_stop_on_final_allowed_iteration_is_not_iteration_guard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Boundary: natural stop on the last allowed iteration is not a guard hit.
+
+    With review_max_iterations=2 the run is allowed exactly 2 iterations.
+    Iteration 0 explores (readonly tool); iteration 1 completes naturally.
+    The guard never truncated anything, so telemetry must report a natural
+    model stop even though the iteration index reached the configured ceiling.
+    """
+    registry = ToolRegistry()
+    registry.register(_EchoTool())
+    orchestrator = _orchestrator(registry, review_max_iterations=2)
+    calls = 0
+
+    async def _analyze(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        del state, request, tool_specs, kwargs
+        calls += 1
+        if calls == 1:
+            return AnalysisPlan(
+                needs_tools=True,
+                tool_calls=[
+                    {"function": {"name": "echo_tool", "arguments": "{}"}}
+                ],
+            )
+        orchestrator._submit_review_seen_any = True  # noqa: SLF001
+        return AnalysisPlan(draft_review=ReviewReport(summary="complete"))
+
+    monkeypatch.setattr(orchestrator, "analyze", _analyze)
+    response = asyncio.run(
+        orchestrator.run_review(ReviewRequest(repo_path=str(tmp_path)))
+    )
+
+    telemetry = _telemetry(tmp_path, response.run_id)
+    assert telemetry["review_iterations"] == 2
+    assert telemetry["tool_bearing_iterations"] == 1
+    assert telemetry["submit_iteration"] == 1
+    assert telemetry["termination_reason"] == "natural_model_stop"
+    assert telemetry["natural_completion"] is True
+    assert telemetry["iteration_guard_hit"] is False
+
+
 def test_iteration_guard_is_distinguished_from_natural_stop(
     tmp_path: Path, monkeypatch
 ) -> None:
