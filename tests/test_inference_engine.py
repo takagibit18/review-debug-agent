@@ -302,6 +302,33 @@ def test_analyze_does_not_rebuild_provider_turns_from_business_feedback(
     assert "tool" not in roles
 
 
+def test_defer_submit_prompt_allows_open_ended_exploration(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "false")
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+
+    asyncio.run(
+        engine.analyze(
+            state=ContextState(goal="Run structured code review"),
+            request=ReviewRequest(repo_path="."),
+            tool_specs=[],
+            defer_submit=True,
+        )
+    )
+
+    defer_messages = [
+        message.content
+        for message in client.calls[-1]
+        if message.role == "user" and message.content.startswith("Do not call submit_review yet.")
+    ]
+    assert len(defer_messages) == 1
+    prompt = defer_messages[0].lower()
+    assert "one context-gathering round" not in prompt
+    assert "one round before final review" not in prompt
+    assert "do not assume this is the only exploration round" in prompt
+    assert "later rounds" in prompt
+
+
 def test_analyze_injects_synthetic_prefetch_feedback_as_user_context(
     monkeypatch,
 ) -> None:

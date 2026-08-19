@@ -184,6 +184,70 @@ def test_review_min_tool_iterations_defers_first_round_submit(
     assert continue_steps[-1].result == "stop:max_iterations"
 
 
+def test_review_naturally_stops_after_minimum_exploration(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = AgentOrchestrator(
+        review_max_iterations=16,
+        review_min_tool_iterations=1,
+    )
+    analyze_calls = 0
+
+    async def _returns_no_more_tools(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal analyze_calls
+        analyze_calls += 1
+        return AnalysisPlan(
+            needs_tools=False,
+            tool_calls=[],
+            draft_review=ReviewReport(summary="draft", issues=[]),
+        )
+
+    monkeypatch.setattr(orchestrator, "analyze", _returns_no_more_tools)
+
+    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+
+    continue_steps = [
+        step for step in response.context.decisions if step.phase == "continue"
+    ]
+    assert analyze_calls == 2
+    assert continue_steps[0].result == "continue"
+    assert continue_steps[-1].result == "stop:model_completed"
+
+
+def test_initial_review_stage_hides_submit_review_but_keeps_readonly_tools(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    orchestrator = AgentOrchestrator(
+        review_max_iterations=3,
+        review_min_tool_iterations=1,
+    )
+    captured_calls: list[dict[str, object]] = []
+
+    class _CaptureEngine:
+        async def analyze(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured_calls.append(kwargs)
+            return AnalysisPlan(needs_tools=False, tool_calls=[]), TokenUsage(total_tokens=0)
+
+    monkeypatch.setattr(orchestrator, "_build_engine", lambda: _CaptureEngine())
+
+    asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+
+    assert len(captured_calls) >= 2
+
+    def tool_names(call: dict[str, object]) -> list[str]:
+        schemas = call["tool_schemas"]
+        assert isinstance(schemas, list)
+        return [schema["function"]["name"] for schema in schemas]
+
+    initial_tools = tool_names(captured_calls[0])
+    later_tools = tool_names(captured_calls[1])
+    assert "read_file" in initial_tools
+    assert "submit_review" not in initial_tools
+    assert "submit_review" in later_tools
+
+
 def test_review_validator_tool_is_disclosed_only_when_actionable(tmp_path) -> None:
     orchestrator = AgentOrchestrator()
     specs = [

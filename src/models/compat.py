@@ -22,6 +22,12 @@ class ProviderCompat(BaseModel):
     supports_tool_choice_with_thinking: bool = True
     requires_reasoning_replay_for_tool_calls: bool = False
     requires_assistant_content_for_tool_calls: bool = False
+    # Some dated model snapshots (e.g. qwen3.7-max-2026-05-17) reject ANY request
+    # whose wire-level thinking switch is off ("enable_thinking" must be True).
+    # When set, the client forces the thinking switch ON at the wire layer for
+    # every call, regardless of the per-call reasoning policy. Default off so
+    # behaviour for all other models is unchanged.
+    force_enable_thinking: bool = False
 
 
 class ModelProfile(BaseModel):
@@ -70,6 +76,13 @@ def resolve_model_profile(settings: Settings, model: str) -> ModelProfile:
     else:
         provider = provider or "openai"
         compat = ProviderCompat()
+    # Dated qwen3.7-max snapshots mandate enable_thinking=True on every request;
+    # the framework default submit policy sends it off and is rejected (HTTP 400).
+    # Scope the override to the exact dated snapshot family so other models
+    # (including the undated qwen3.7-max) keep their current behaviour.
+    normalized_model = model.strip().lower()
+    if normalized_model.startswith("qwen3.7-max-2026-"):
+        compat = compat.model_copy(update={"force_enable_thinking": True})
     return ModelProfile(provider=provider, model=model, compat=compat)
 
 

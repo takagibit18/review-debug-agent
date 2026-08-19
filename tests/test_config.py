@@ -90,6 +90,8 @@ def test_eval_workspace_cache_root_is_configurable(monkeypatch) -> None:
 def test_eval_performance_defaults_are_bounded(monkeypatch) -> None:
     monkeypatch.delenv("EVAL_CONCURRENCY", raising=False)
     monkeypatch.delenv("EVAL_FIXTURE_CONCURRENCY", raising=False)
+    monkeypatch.delenv("REVIEW_MAX_ITERATIONS", raising=False)
+    monkeypatch.delenv("PRE_BUDGET_SUBMIT_TOKEN_RATIO", raising=False)
     monkeypatch.delenv("EVAL_REVIEW_MAX_ITERATIONS", raising=False)
     monkeypatch.delenv("EVAL_REVIEW_MAX_ITERATIONS_CAP", raising=False)
     monkeypatch.delenv("EVAL_REVIEW_MIN_TOOL_ITERATIONS", raising=False)
@@ -98,9 +100,11 @@ def test_eval_performance_defaults_are_bounded(monkeypatch) -> None:
 
     assert settings.eval_concurrency == 1
     assert settings.eval_fixture_concurrency == 3
-    assert settings.eval_review_max_iterations == 2
-    assert settings.eval_review_max_iterations_cap == 2
+    assert settings.review_max_iterations == 16
+    assert settings.eval_review_max_iterations == 16
+    assert settings.eval_review_max_iterations_cap == 16
     assert settings.eval_review_min_tool_iterations == 1
+    assert settings.pre_budget_submit_token_ratio == 0.80
 
 
 def test_token_hard_budget_is_not_below_soft_budget(monkeypatch) -> None:
