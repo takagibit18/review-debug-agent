@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from src.analyzer.finding_funnel import FindingFunnel
 
@@ -22,6 +22,13 @@ class RunSummary(BaseModel):
     event_log_status: EventLogStatus = "ok"
     parse_error: str = ""
     finish_reasons: list[str] = Field(default_factory=list)
+    review_iterations: int = Field(default=0, ge=0)
+    tool_bearing_iterations: int = Field(default=0, ge=0)
+    submit_iteration: int | None = Field(default=None, ge=0)
+    natural_completion: bool = False
+    iteration_guard_hit: bool = False
+    pre_budget_submit_triggered: bool = False
+    termination_reason: str = ""
     budget_state: str = "none"
     submit_review_seen: bool = False
     submit_debug_seen: bool = False
@@ -63,6 +70,13 @@ class RunSummary(BaseModel):
     final_effective_issue_count: int = 0
     workflow_invalid: bool = False
     finding_funnel: FindingFunnel = Field(default_factory=FindingFunnel)
+
+    @computed_field(return_type=int)
+    @property
+    def actual_review_iterations(self) -> int:
+        """Canonical observability name for the existing review_iterations field."""
+
+        return self.review_iterations
 
 
 class RunArtifactSummary(BaseModel):
@@ -205,8 +219,44 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         reason = str(payload.get("reason", "") or "").strip()
         if reason and reason not in summary.finish_reasons:
             summary.finish_reasons.append(reason)
+        if reason:
+            normalized = _normalize_termination_reason(reason)
+            if normalized:
+                summary.termination_reason = normalized
+                if normalized == "natural_model_stop":
+                    summary.natural_completion = True
+        if payload.get("reached_limit") is True:
+            summary.iteration_guard_hit = True
+
+    if event_type == "decision" and phase == "pre_budget_submit":
+        summary.pre_budget_submit_triggered = True
+
+    if payload.get("pre_budget_submit_triggered") is True:
+        summary.pre_budget_submit_triggered = True
 
     if event_type == "phase_end" and phase == "review_complete":
+        review_iterations = _non_negative_int(
+            payload.get("review_iterations", payload.get("actual_review_iterations"))
+        )
+        if review_iterations:
+            summary.review_iterations = review_iterations
+        summary.tool_bearing_iterations = _non_negative_int(
+            payload.get("tool_bearing_iterations")
+        )
+        submit_iteration = payload.get("submit_iteration")
+        if submit_iteration is not None:
+            summary.submit_iteration = _optional_non_negative_int(submit_iteration)
+        if isinstance(payload.get("natural_completion"), bool):
+            summary.natural_completion = payload["natural_completion"]
+        if isinstance(payload.get("iteration_guard_hit"), bool):
+            summary.iteration_guard_hit = payload["iteration_guard_hit"]
+        if isinstance(payload.get("pre_budget_submit_triggered"), bool):
+            summary.pre_budget_submit_triggered = payload[
+                "pre_budget_submit_triggered"
+            ]
+        termination_reason = str(payload.get("termination_reason", "") or "").strip()
+        if termination_reason:
+            summary.termination_reason = termination_reason
         summary.submit_review_seen = summary.submit_review_seen or bool(
             payload.get("submit_review_seen_any")
         )
@@ -322,3 +372,31 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
             payload.get("final_effective_issue_count", 0) or 0
         )
         summary.workflow_invalid = bool(payload.get("workflow_invalid", False))
+
+
+def _non_negative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _optional_non_negative_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value)
+
+
+def _normalize_termination_reason(reason: str) -> str:
+    """Map legacy decision labels to the normalized observability enum."""
+
+    return {
+        "model_completed": "natural_model_stop",
+        "completed": "natural_model_stop",
+        "max_iterations": "iteration_guard",
+        "budget_soft_capped": "token_soft_limit",
+        "budget_hard_capped": "token_hard_limit",
+        "run_timeout": "run_timeout",
+        "model_timeout": "provider_timeout",
+        "pre_budget_submit_attempted": "pre_budget_submit",
+    }.get(reason, "")

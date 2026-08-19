@@ -1,0 +1,64 @@
+# =============================================================================
+# Held-out final validation — Qwen relaxed runtime contract (4-ITER CEILING)
+# -----------------------------------------------------------------------------
+# runtime_contract_source: current  -> _apply_runtime_contract() writes the
+# `shared` block into os.environ, so every later fresh get_settings() reflects
+# the EXACT relaxed budget previously verified on the Qwen development matrix.
+#
+# SINGLE treatment-level change vs graph-ab-qwen-heldout.yaml:
+#   review iteration ceiling  2 -> 4
+#     requested = 4  (max_iterations: 4)
+#     effective = 4 (EVAL_REVIEW_MAX_ITERATIONS_CAP=4, set eval-only in the
+#                    driver/audit scripts — NOT in production config.py)
+#
+# Every other field is byte-for-byte the previously verified held-out contract:
+#   60k token_budget / 80k hard / 12k prompt / 4k out / 64 tools /
+#   180-30-600 timeouts / temperature 0.0 / model qwen3.7-max-2026-05-17.
+#
+# WHY the YAML key alone is not enough (historical trap):
+#   _apply_runtime_contract maps max_iterations -> REVIEW_MAX_ITERATIONS, but
+#   the REAL clamp lives in base_runner._effective_review_max_iterations(),
+#   which floors the requested value at settings.eval_review_max_iterations_cap
+#   (env EVAL_REVIEW_MAX_ITERATIONS_CAP, DEFAULT 2). With the default cap, even
+#   max_iterations: 4 would still be clamped to effective=2. The experiment
+#   driver therefore also sets os.environ["EVAL_REVIEW_MAX_ITERATIONS_CAP"]="4"
+#   (eval-only) so the effective ceiling is genuinely 4. This leaves the
+#   production default (2) untouched.
+# =============================================================================
+runtime_contract_source: current
+
+shared:
+  # --- provider / model -----------------------------------------------------
+  # FROZEN DOC SPECIFIED: qwen3.7-max-2026-05-20
+  # BUT that dated snapshot returns HTTP 403 "Free quota exhausted" on this
+  # DashScope endpoint+key (verified 2026-08-18). The prior working model was
+  # qwen3.7-max, which then began returning intermittent 403 auth_failed
+  # (provider outage). On 2026-08-18 the user switched the env model to
+  # qwen3.7-max-2026-05-17 (a different dated snapshot) to obtain a stable
+  # endpoint. Pinned here explicitly so the contract overrides env and stays
+  # reproducible. DOC/MODEL DEVIATION confirmed by the user before paid runs.
+  model: qwen3.7-max-2026-05-17
+  temperature: 0.0
+
+  # --- output token ---------------------------------------------------------
+  max_output_tokens: 4096
+
+  # --- token budgets (RELAXED, NOT production defaults) ----------------------
+  prompt_input_token_budget: 12000
+  token_budget: 60000
+  token_hard_budget: 80000
+  final_submit_reserve_tokens: 12000
+  final_submit_prompt_token_budget: 4000
+  final_submit_feedback_token_budget: 1200
+
+  # --- iteration / tool -----------------------------------------------------
+  # requested review iterations = 4.
+  # effective ceiling also = 4 via EVAL_REVIEW_MAX_ITERATIONS_CAP=4 (eval-only,
+  # set in the driver — see header note). This is the ONLY treatment change.
+  max_iterations: 4
+  tool_budget: 64
+
+  # --- timeouts -------------------------------------------------------------
+  model_request_timeout_seconds: 180.0
+  tool_timeout_seconds: 30.0
+  run_timeout_seconds: 600.0

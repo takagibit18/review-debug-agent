@@ -1,0 +1,71 @@
+{
+  "id": "golden_fastapi_fastapi_pr15077_reverse",
+  "type": "review",
+  "source": {
+    "repo_full_name": "fastapi/fastapi",
+    "pr_number": 15077,
+    "url": "https://github.com/fastapi/fastapi/pull/15077",
+    "merge_commit_sha": "ad03e117c0010a563067740c97cb7ab011cb5174",
+    "title": "Reverse fixture: include_router drops derived stream item type"
+  },
+  "input": {
+    "diff_text": "diff --git a/fastapi/routing.py b/fastapi/routing.py\nindex bf7a73c..2cecfce 100644\n--- a/fastapi/routing.py\n+++ b/fastapi/routing.py\n@@ -982,11 +982,10 @@ def _populate_api_route_state(\n         generate_unique_id\n     ),\n     strict_content_type: bool | DefaultPlaceholder = Default(True),\n-    stream_item_type: Any | None = None,\n ) -> None:\n     route.path = path\n     route.endpoint = endpoint\n-    route.stream_item_type = stream_item_type\n+    route.stream_item_type = None\n     if isinstance(response_model, DefaultPlaceholder):\n         return_annotation = get_typed_return_annotation(endpoint)\n         if lenient_issubclass(return_annotation, Response):\n@@ -1465,7 +1464,6 @@ class _EffectiveRouteContext:\n                 include_context.included_router.strict_content_type,\n                 include_context.strict_content_type,\n             ),\n-            stream_item_type=route.stream_item_type,\n         )\n         return context\n \ndiff --git a/tests/test_sse.py b/tests/test_sse.py\nindex fdc8561..6a9d669 100644\n--- a/tests/test_sse.py\n+++ b/tests/test_sse.py\n@@ -64,8 +64,7 @@ async def sse_items_event():\n \n @app.get(\"/items/stream-mixed\", response_class=EventSourceResponse)\n async def sse_items_mixed() -> AsyncIterable[Item]:\n-    for item in items:\n-        yield item\n+    yield items[0]\n     yield ServerSentEvent(data=\"custom-event\", event=\"special\")\n     yield items[1]\n \n@@ -97,12 +96,6 @@ async def stream_events():\n     yield {\"msg\": \"world\"}\n \n \n-@router.get(\"/events-typed\", response_class=EventSourceResponse)\n-async def stream_events_typed() -> AsyncIterable[Item]:\n-    for item in items:\n-        yield item\n-\n-\n app.include_router(router, prefix=\"/api\")\n \n \n@@ -281,45 +274,6 @@ def test_sse_on_router_included_in_app(client: TestClient):\n     assert len(data_lines) == 2\n \n \n-def test_sse_router_typed_stream(client: TestClient):\n-    response = client.get(\"/api/events-typed\")\n-    assert response.status_code == 200\n-    assert response.headers[\"content-type\"] == \"text/event-stream; charset=utf-8\"\n-    data_lines = [\n-        line for line in response.text.strip().split(\"\\n\") if line.startswith(\"data: \")\n-    ]\n-    assert len(data_lines) == 3\n-\n-\n-def test_sse_router_typed_openapi_schema(client: TestClient):\n-    \"\"\"Typed SSE endpoint on a router should preserve itemSchema with contentSchema.\"\"\"\n-    response = client.get(\"/openapi.json\")\n-    assert response.status_code == 200\n-    paths = response.json()[\"paths\"]\n-    sse_response = paths[\"/api/events-typed\"][\"get\"][\"responses\"][\"200\"]\n-    assert sse_response == {\n-        \"description\": \"Successful Response\",\n-        \"content\": {\n-            \"text/event-stream\": {\n-                \"itemSchema\": {\n-                    \"type\": \"object\",\n-                    \"properties\": {\n-                        \"data\": {\n-                            \"type\": \"string\",\n-                            \"contentMediaType\": \"application/json\",\n-                            \"contentSchema\": {\"$ref\": \"#/components/schemas/Item\"},\n-                        },\n-                        \"event\": {\"type\": \"string\"},\n-                        \"id\": {\"type\": \"string\"},\n-                        \"retry\": {\"type\": \"integer\", \"minimum\": 0},\n-                    },\n-                    \"required\": [\"data\"],\n-                }\n-            }\n-        },\n-    }\n-\n-\n # Keepalive ping tests\n \n \n@@ -371,97 +325,3 @@ def test_no_keepalive_when_fast(client: TestClient):\n     assert response.status_code == 200\n     # KEEPALIVE_COMMENT is \": ping\\n\\n\".\n     assert \": ping\\n\" not in response.text\n-\n-\n-# default_response_class tests\n-\n-\n-sse_schema_response = {\n-    \"description\": \"Successful Response\",\n-    \"content\": {\n-        \"text/event-stream\": {\n-            \"itemSchema\": {\n-                \"type\": \"object\",\n-                \"properties\": {\n-                    \"data\": {\n-                        \"type\": \"string\",\n-                        \"contentMediaType\": \"application/json\",\n-                        \"contentSchema\": {\"$ref\": \"#/components/schemas/Item\"},\n-                    },\n-                    \"event\": {\"type\": \"string\"},\n-                    \"id\": {\"type\": \"string\"},\n-                    \"retry\": {\"type\": \"integer\", \"minimum\": 0},\n-                },\n-                \"required\": [\"data\"],\n-            }\n-        }\n-    },\n-}\n-\n-\n-# default_response_class on app\n-\n-default_app_app = FastAPI(default_response_class=EventSourceResponse)\n-default_app_router = APIRouter()\n-\n-\n-@default_app_router.get(\"/stream\")\n-async def default_app_stream() -> AsyncIterable[Item]:\n-    for item in items:\n-        yield item\n-\n-\n-default_app_app.include_router(default_app_router, prefix=\"/api\")\n-\n-\n-def test_default_response_class_on_app_stream():\n-    with TestClient(default_app_app) as client:\n-        response = client.get(\"/api/stream\")\n-    assert response.status_code == 200\n-    assert response.headers[\"content-type\"] == \"text/event-stream; charset=utf-8\"\n-    data_lines = [\n-        line for line in response.text.strip().split(\"\\n\") if line.startswith(\"data: \")\n-    ]\n-    assert len(data_lines) == 3\n-\n-\n-def test_default_response_class_on_app_openapi_schema():\n-    assert (\n-        default_app_app.openapi()[\"paths\"][\"/api/stream\"][\"get\"][\"responses\"][\"200\"]\n-        == sse_schema_response\n-    )\n-\n-\n-# default_response_class on parent router\n-\n-default_parent_app = FastAPI()\n-parent_router = APIRouter(default_response_class=EventSourceResponse)\n-child_router = APIRouter()\n-\n-\n-@child_router.get(\"/stream\")\n-async def default_parent_stream() -> AsyncIterable[Item]:\n-    for item in items:\n-        yield item\n-\n-\n-parent_router.include_router(child_router)\n-default_parent_app.include_router(parent_router, prefix=\"/api\")\n-\n-\n-def test_default_response_class_on_parent_router_stream():\n-    with TestClient(default_parent_app) as client:\n-        response = client.get(\"/api/stream\")\n-    assert response.status_code == 200\n-    assert response.headers[\"content-type\"] == \"text/event-stream; charset=utf-8\"\n-    data_lines = [\n-        line for line in response.text.strip().split(\"\\n\") if line.startswith(\"data: \")\n-    ]\n-    assert len(data_lines) == 3\n-\n-\n-def test_default_response_class_on_parent_router_openapi_schema():\n-    assert (\n-        default_parent_app.openapi()[\"paths\"][\"/api/stream\"][\"get\"][\"responses\"][\"200\"]\n-        == sse_schema_response\n-    )\ndiff --git a/tests/test_stream_bare_type.py b/tests/test_stream_bare_type.py\nindex 3b2788a..68bd31d 100644\n--- a/tests/test_stream_bare_type.py\n+++ b/tests/test_stream_bare_type.py\n@@ -1,14 +1,13 @@\n import json\n from typing import AsyncIterable, Iterable  # noqa: UP035 to test coverage\n \n-from fastapi import APIRouter, FastAPI\n+from fastapi import FastAPI\n from fastapi.testclient import TestClient\n from pydantic import BaseModel\n \n \n class Item(BaseModel):\n     name: str\n-    optional: str | None = None\n \n \n app = FastAPI()\n@@ -24,16 +23,6 @@ def stream_bare_sync() -> Iterable:\n     yield {\"name\": \"bar\"}\n \n \n-router = APIRouter()\n-\n-\n-@router.get(\"/events-jsonl\", response_model_exclude_none=True)\n-async def stream_events_jsonl() -> AsyncIterable[Item]:\n-    yield Item(name=\"foo\")\n-\n-\n-app.include_router(router, prefix=\"/api\")\n-\n client = TestClient(app)\n \n \n@@ -51,24 +40,3 @@ def test_stream_bare_sync_iterable():\n     assert response.headers[\"content-type\"] == \"application/jsonl\"\n     lines = [json.loads(line) for line in response.text.strip().splitlines()]\n     assert lines == [{\"name\": \"bar\"}]\n-\n-\n-def test_jsonl_router_typed_stream():\n-    response = client.get(\"/api/events-jsonl\")\n-    assert response.status_code == 200\n-    assert response.headers[\"content-type\"] == \"application/jsonl\"\n-    lines = [json.loads(line) for line in response.text.strip().splitlines()]\n-    assert lines == [{\"name\": \"foo\"}]\n-\n-\n-def test_jsonl_router_typed_openapi_schema():\n-    response = client.get(\"/openapi.json\")\n-    assert response.status_code == 200\n-    paths = response.json()[\"paths\"]\n-    jsonl_response = paths[\"/api/events-jsonl\"][\"get\"][\"responses\"][\"200\"]\n-    assert jsonl_response == {\n-        \"description\": \"Successful Response\",\n-        \"content\": {\n-            \"application/jsonl\": {\"itemSchema\": {\"$ref\": \"#/components/schemas/Item\"}}\n-        },\n-    }\n",
+    "files": {},
+    "error_log": null,
+    "workspace": {
+      "kind": "git",
+      "repo_url": "https://github.com/fastapi/fastapi.git",
+      "base_sha": "bdcff30ca261b51a364d8aa55f5c6bf071cce1fa",
+      "head_sha": "98b12fe56f97107e71a20fc1cf334ccfa590efb5",
+      "checkout_sha": "98b12fe56f97107e71a20fc1cf334ccfa590efb5",
+      "diff_base_sha": "bdcff30ca261b51a364d8aa55f5c6bf071cce1fa",
+      "apply_fixture_diff": false,
+      "review_scope": "legacy"
+    }
+  },
+  "expected": {
+    "issues": [
+      {
+        "severity": "warning",
+        "location_pattern": "fastapi/routing.py",
+        "path": "fastapi/routing.py",
+        "line": 988,
+        "end_line": 988,
+        "category": "logic",
+        "description": "When include_router recreates an API route, the already-derived stream_item_type is not forwarded to the new route. The recreated route resets stream_item_type to None and can no longer rederive it from the endpoint annotation because the response model state has already changed from the initial DefaultPlaceholder. Runtime streaming continues to work, but the OpenAPI schema loses typed stream item information: SSE itemSchema loses contentSchema/contentMediaType and JSONL itemSchema degrades to empty or missing.",
+        "root_cause_id": "include-router-drops-stream-item-type",
+        "repair_unit": "propagate the already-derived stream_item_type when include_router recreates an API route instead of resetting that derived route metadata",
+        "mechanism_pattern": "include_router recreates a route without forwarding its precomputed stream_item_type; the recreated route resets it to None and can no longer rederive it from the endpoint annotation because the response model state has already changed",
+        "invariant_pattern": "route cloning and router inclusion must preserve derived route metadata required for downstream runtime/schema behavior",
+        "affected_paths": [
+          "fastapi/routing.py"
+        ],
+        "structural_scope": "multi_hop",
+        "graph_observable": true
+      }
+    ],
+    "min_issues": 1,
+    "max_issues": 1,
+    "is_empty_annotation": false
+  },
+  "metadata": {
+    "suite": "golden",
+    "tags": [
+      "golden",
+      "github",
+      "review",
+      "positive-sample",
+      "should-detect",
+      "held-out",
+      "multi-hop",
+      "state-propagation",
+      "openapi",
+      "streaming",
+      "graph-sensitive",
+      "fastapi"
+    ],
+    "difficulty": "hard",
+    "annotated_by": "manual",
+    "reviewed": true
+  }
+}

@@ -1219,6 +1219,13 @@ def _read_event_log_stats(repo_root: Path, run_id: str) -> dict[str, Any]:
         "budget_exhausted": False,
         "budget_state": "none",
         "finish_reasons": [],
+        "actual_review_iterations": 0,
+        "tool_bearing_iterations": 0,
+        "submit_iteration": None,
+        "natural_completion": False,
+        "iteration_guard_hit": False,
+        "pre_budget_submit_triggered": False,
+        "termination_reason": "",
     }
     settings = get_settings()
     log_dir = Path(settings.event_log_dir)
@@ -1235,6 +1242,7 @@ def _read_event_log_stats(repo_root: Path, run_id: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         etype = event.get("event_type")
+        phase = str(event.get("phase", ""))
         payload = event.get("payload", {}) or {}
         if etype in {"decision", "phase_end"}:
             reason = str(payload.get("reason", "")).strip()
@@ -1249,12 +1257,69 @@ def _read_event_log_stats(repo_root: Path, run_id: str) -> dict[str, Any]:
                 stats["budget_state"] = bs
             if payload.get("budget_exhausted"):
                 stats["budget_exhausted"] = True
+            if payload.get("pre_budget_submit_triggered") is True:
+                stats["pre_budget_submit_triggered"] = True
+            if payload.get("iteration_guard_hit") is True:
+                stats["iteration_guard_hit"] = True
+            if etype == "decision" and phase == "continue":
+                if payload.get("reached_limit") is True:
+                    stats["iteration_guard_hit"] = True
+                stats["termination_reason"] = _normalize_termination_reason(
+                    reason
+                ) or stats["termination_reason"]
+            if etype == "phase_end" and phase == "review_complete":
+                stats["actual_review_iterations"] = max(
+                    0,
+                    int(
+                        payload.get(
+                            "review_iterations",
+                            payload.get("actual_review_iterations", 0),
+                        )
+                        or 0
+                    ),
+                )
+                stats["tool_bearing_iterations"] = max(
+                    0, int(payload.get("tool_bearing_iterations", 0) or 0)
+                )
+                if payload.get("submit_iteration") is not None:
+                    stats["submit_iteration"] = max(
+                        0, int(payload.get("submit_iteration", 0) or 0)
+                    )
+                if isinstance(payload.get("natural_completion"), bool):
+                    stats["natural_completion"] = payload["natural_completion"]
+                if isinstance(payload.get("iteration_guard_hit"), bool):
+                    stats["iteration_guard_hit"] = payload["iteration_guard_hit"]
+                if isinstance(payload.get("pre_budget_submit_triggered"), bool):
+                    stats["pre_budget_submit_triggered"] = payload[
+                        "pre_budget_submit_triggered"
+                    ]
+                if str(payload.get("termination_reason", "") or "").strip():
+                    stats["termination_reason"] = str(
+                        payload["termination_reason"]
+                    ).strip()
         elif etype == "plan_parsed":
             if payload.get("submit_review_seen"):
                 stats["submit_review_seen_any"] = True
             if payload.get("submit_debug_seen"):
                 stats["submit_debug_seen_any"] = True
+        if etype == "decision" and phase == "pre_budget_submit":
+            stats["pre_budget_submit_triggered"] = True
     return stats
+
+
+def _normalize_termination_reason(reason: str) -> str:
+    """Map legacy decision labels to the normalized observability enum."""
+
+    return {
+        "model_completed": "natural_model_stop",
+        "completed": "natural_model_stop",
+        "max_iterations": "iteration_guard",
+        "budget_soft_capped": "token_soft_limit",
+        "budget_hard_capped": "token_hard_limit",
+        "run_timeout": "run_timeout",
+        "model_timeout": "provider_timeout",
+        "pre_budget_submit_attempted": "pre_budget_submit",
+    }.get(reason, "")
 
 
 def _read_total_tokens(repo_root: Path, run_id: str) -> int:
