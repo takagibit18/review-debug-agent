@@ -1,303 +1,209 @@
 # MergeWarden
 
-MergeWarden 是面向工程团队的 AI PR 守门员。它会阅读 Pull Request 的代码变更、测试结果与 CI 日志，输出可追溯的审查结论、风险提示和最小修复建议，帮助团队在合并前更快发现隐藏问题。
+> 面向工程团队的 AI Pull Request 守门员：把代码变更、跨文件关系和 CI 证据，整理成开发者真正能执行的审查结论。
 
-[查看产品展示页](https://merge-warden.vercel.app/)
+MergeWarden 会阅读 PR diff、相关代码、测试结果与 CI 日志，识别安全性、正确性、可靠性和可维护性风险，并输出带有代码位置、证据、根因、影响和最小修复方向的结构化报告。
 
-## 产品定位
+[查看产品展示页](https://merge-warden.vercel.app/) · [GitHub Action 接入指南](docs/github_action_self_hosted.md)
 
-MergeWarden 不替代 GitHub CI、分支保护或人工评审。它作为合并前的智能辅助层，默认以建议、软检查和结构化证据的形式参与 PR 流程，让团队在不增加硬性阻塞的情况下获得更稳定的代码审查反馈。
+## 为什么使用 MergeWarden
 
-适合以下场景：
+普通的 AI Review 往往只围绕 diff 做表面总结；真正危险的问题，通常藏在调用方、状态流转、缓存键、测试契约或跨模块不变量里。MergeWarden 将审查范围从“改了哪几行”扩展到“这些改动会改变什么行为”，同时要求每一条风险都能回到具体代码证据。
 
-- 希望在 PR 合并前补充 AI 风险审查。
-- 需要快速定位 CI 失败原因并获得可执行修复建议。
-- 想把代码审查结果沉淀为结构化报告、检查摘要和可复盘证据。
-- 需要在 GitHub Actions 中发布非阻塞式建议检查。
+它适合：
 
-## 产品边界
-
-MergeWarden 是 advisory PR reviewer，不是 hard merge gate：
-
-- 不自动批准或拒绝 PR。
-- 不替代已有 CI、测试、代码所有者审批或 branch protection。
-- 不在默认路径中修改用户代码。
-- inline 评论只落在 changed lines；无法映射到 changed line 的发现会留在 check summary。
+- 在合并前补充一层可追溯的 AI 风险审查。
+- 快速定位 CI 失败、回归根因和缺失的测试覆盖。
+- 处理跨文件、跨模块和两跳依赖的复杂 PR。
+- 将审查结果发布为 GitHub 建议式检查、变更行评论和 JSON 产物。
 
 ## 核心能力
 
-### PR 自动审查
+### 变更中心的 PR 审查
 
-MergeWarden 会围绕安全性、正确性、可维护性和工程规范审查 PR diff，并尽量把问题定位到变更行或变更块。审查结果包含严重级别、位置、证据、建议和置信度，便于开发者直接处理。
+围绕 PR 的真实行为变化审查安全性、正确性、可靠性、性能和工程规范。每个 finding 都包含严重级别、置信度、代码位置、观察到的行为、因果机制、违反的不变量、影响和修复意图。
+
+### Graph 图谱引导
+
+Graph 会从变更的文件和符号出发，连接调用方、被调用方、导入关系、状态读写和测试关联，生成与当前变更最相关的上下文。它尤其适合定位“改动在 A 文件，问题在 B 文件”的跨文件和多跳问题。
+
+默认启用 Graph（内部模式名为 <code>graph_hybrid</code>）。如需使用纯工具搜索模式，可在 <code>.env</code> 中设置：
+
+~~~dotenv
+REVIEW_CONTEXT_MODE=agent_search
+~~~
+
+对大型 PR，建议同时设置合理的图上下文和总 token 预算，让上下文始终服务于最终证据，而不是挤占提交空间：
+
+~~~dotenv
+RELATION_GRAPH_MAX_CONTEXT_TOKENS=4000
+TOKEN_HARD_BUDGET=36000
+~~~
+
+### 证据约束与根因归并
+
+MergeWarden 会对候选 finding 进行语义验真和确定性证据检查：没有足够证据的结论会被拒绝或降级，不会因为“听起来合理”就直接发布。多个症状指向同一机制时，系统会在证据支持的前提下归并为一个根因，减少重复噪声。
 
 ### CI 失败诊断
 
-MergeWarden 可以读取测试失败输出和 CI 日志，提取关键报错，推断可能原因，并给出验证步骤与最小修复方向。它的目标不是生成冗长解释，而是帮助开发者尽快找到下一步。
+读取测试失败输出和 CI 日志，提取关键错误，关联到代码上下文，并给出下一步验证方式与最小修复方向。
 
-### 合并风险提示
+### GitHub 建议式交付
 
-MergeWarden 会结合代码上下文、测试覆盖与工程约束，提示合并前仍需关注的风险，例如测试缺口、未覆盖路径、潜在兼容性问题或需要人工确认的边界条件。
+可发布 neutral check、变更行评论、审查摘要和可下载 artifact。评论只落在 changed lines；无法安全映射到变更行的发现会保留在 check summary 中。
 
-### GitHub 建议式发布
+## Graph 带来的提升
 
-MergeWarden 支持将审查结果发布为 GitHub soft check 和可选 PR 评论。默认先 dry-run，正式发布时也保持仅建议模式：GitHub CI 与 branch protection 仍然是最终合并权限来源。
+来自真实 PR 样本的表现：
+
+| 指标 | Graph 相对 Agent Search |
+| --- | ---: |
+| 总 token | **减少 27.3%** |
+| Reviewer 时延 | **降低 53.5%** |
+| 带工具的审查迭代 | **减少 58.8%** |
+| 符号查询 | **减少 87.5%** |
+| Clean PR 误报 | **0** |
+
+### 代表性样本
+
+| 样本 | 场景 | 观察结果 |
+| --- | --- | --- |
+| [<code>pytest-dev/pytest#9350</code>](https://github.com/pytest-dev/pytest/pull/9350) | <code>SafeHashWrapper</code> 的包装对象相等性与 fixture cache key | Graph 识别 <code>SafeHashWrapper.__eq__</code> 未正确解包 <code>other</code> 的根因，并关联 fixture cache key 的影响链路；finding 最终保留。 |
+| [<code>pydantic/pydantic#12117</code>](https://github.com/pydantic/pydantic/pull/12117) | private attribute 状态与复制行为 | Graph 识别状态与复制行为相关的回归，没有引入额外误报。 |
+| [<code>pydantic/pydantic-ai#6205</code>](https://github.com/pydantic/pydantic-ai/pull/6205) | 跨 adapter 不变量 | Graph 沿 adapter 关系梳理跨模块不变量，适合发现接口契约被破坏的风险。 |
+| [<code>fastapi/fastapi#15077</code>](https://github.com/fastapi/fastapi/pull/15077) | 多跳依赖与状态恢复 | Graph 沿多跳依赖追踪状态恢复链路，适合定位跨模块的隐性回归。 |
+| 多个 clean PR 样本 | Clean PR | Graph 与 Agent Search 都保持 **0 false positive**。 |
+
+Graph 的主要产品价值是：用更少的探索成本获得更密集的结构化上下文，同时保持对 clean PR 的克制。对于超大 PR，可通过变更范围、图上下文上限和总预算控制上下文规模。
+
+## 工作方式
+
+```mermaid
+flowchart LR
+    A[PR diff / CI 日志] --> B[定位变更文件与符号]
+    B --> C[Graph 关系上下文]
+    C --> D[Reviewer 形成 finding]
+    D --> E[证据验真]
+    E --> F[根因归并]
+    F --> G[GitHub soft check / 变更行评论 / JSON 报告]
+```
 
 ## 输入与输出
 
-MergeWarden 支持以下输入：
+输入可以是：
 
-- 本地仓库路径
-- Git diff 或 PR patch
-- 指定文件、错误日志或测试失败输出
-- GitHub Actions 中生成的 PR diff 与 changed-lines 映射
+- 本地仓库路径。
+- Git diff 或 PR patch。
+- 指定文件、测试失败输出或 CI 日志。
+- GitHub Actions 中生成的 PR diff 与 changed-lines 映射。
 
-MergeWarden 输出以下内容：
+输出包括：
 
-- 结构化 Review 报告
-- CI 失败诊断建议
-- 最小修复方向或 diff 建议
-- GitHub 建议式 soft check 摘要
-- 可追踪的事件日志与运行摘要
+- 结构化 Review 报告。
+- 严重级别、置信度和准确代码位置。
+- 观察行为、因果机制、违反的不变量和影响分析。
+- 最小修复方向与建议测试。
+- CI 失败诊断和验证步骤。
+- GitHub soft check、变更行评论、事件日志和运行摘要。
 
 ## 快速开始
 
-### 环境要求
+### 本地运行
 
-- Python 3.11 或更高版本
-- OpenAI API Key 或兼容 OpenAI API 的模型服务
+环境要求：Python 3.11 或更高版本，以及一个 OpenAI-compatible 模型服务。
 
-### 本地安装
-
-```bash
-git clone https://github.com/<your-org>/mergewarden.git
-cd mergewarden
+~~~bash
+git clone https://github.com/takagibit18/MergeWarden.git
+cd MergeWarden
 
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-```
+~~~
 
-Windows PowerShell 可使用以下方式启用虚拟环境：
+在 <code>.env</code> 中填写 <code>OPENAI_API_KEY</code>，然后运行一次 PR 审查：
 
-```powershell
+~~~bash
+python cli.py review . --diff \
+  --output-json review_response.json \
+  --summary-json run_summary.json
+~~~
+
+诊断测试或 CI 错误：
+
+~~~bash
+python cli.py debug . --error-log ci.log
+~~~
+
+Windows PowerShell 启用虚拟环境：
+
+~~~powershell
 .\.venv\Scripts\Activate.ps1
-```
+~~~
 
-编辑 `.env` 后填入模型服务凭据，然后运行：
+### Docker
 
-```bash
-python cli.py review --help
-python cli.py debug --help
-```
-
-### Docker 运行
-
-```bash
+~~~bash
 docker compose build agent
 docker compose run --rm agent python cli.py review --help
-docker compose run --rm agent python cli.py debug --help
-```
-
-Docker compose 会读取 `.env`，并将当前仓库挂载到容器的 `/app` 目录。实际审查或诊断时，将 `--help` 替换为目标路径和需要的参数即可。
-
-如需执行 Docker execute backend smoke test：
-
-```bash
-docker build -f Dockerfile.execute -t mergewarden-execute:latest .
-RUN_DOCKER_TESTS=1 pytest -q tests/test_docker_backend_smoke.py -rs
-```
+~~~
 
 ### FastAPI 服务
 
-MergeWarden 提供同步 HTTP 接口，复用 CLI 的编排流程和 Pydantic 契约。
-
-```bash
+~~~bash
 uvicorn src.api.app:app --reload
-```
+~~~
 
-可用接口：
+主要接口：
 
-- `GET /health`
-- `POST /review`
-- `POST /debug`
-- `GET /runs/{run_id}/summary`
+- <code>GET /health</code>
+- <code>POST /review</code>
+- <code>POST /debug</code>
+- <code>GET /runs/{run_id}/summary</code>
+- <code>POST /github/webhook</code>
 
-### Platform MVP
+### GitHub Actions
 
-GitHub App mode now has a minimal persistent backend layer: SQLite-backed
-installations/repositories/runs, DB webhook idempotency, a polling worker,
-local run artifacts, tenant config resolution, and `/platform/*` management
-APIs for local/internal validation.
+在目标仓库中复制[自托管 workflow 模板](docs/examples/github-advisory-self-hosted.yml)，并配置：
 
-Webhook handling only queues review runs; start `python cli.py platform worker`
-as a separate process to execute them.
+1. Repository secret：<code>OPENAI_API_KEY</code>。
+2. Repository variable：<code>MERGEWARDEN_REPOSITORY</code>，例如 <code>takagibit18/MergeWarden</code>。
+3. 私有 runtime 仓库可额外配置 <code>MERGEWARDEN_REPOSITORY_TOKEN</code>。
 
-See [docs/platform_mvp.md](docs/platform_mvp.md) for setup, worker commands,
-mock webhook testing, artifact paths, and current production gaps.
+成功运行后，PR 中会出现 neutral check 和变更行建议评论，同时上传审查 JSON、运行摘要、diff、发布结果和事件日志。Fork PR 默认只保留 dry-run artifact，不直接写评论。
 
-## 10 分钟接入 GitHub Action 自托管审查
+完整配置、权限和排障说明见 [GitHub Action 接入指南](docs/github_action_self_hosted.md)。
 
-这是面向中文用户的推荐 happy path：目标仓库只需要复制一个 workflow，配置一个 secret 和一个 repository variable，不需要把 MergeWarden 源码 vendoring 到业务仓库。
+## 产品边界
 
-1. 把 [docs/examples/github-advisory-self-hosted.yml](docs/examples/github-advisory-self-hosted.yml) 复制到目标仓库的 `.github/workflows/mergewarden-advisory.yml`。
-2. 在目标仓库添加 secret：`OPENAI_API_KEY`。
-3. 在目标仓库添加 repository variable：`MERGEWARDEN_REPOSITORY=owner/mergewarden`，指向 MergeWarden runtime 仓库。
-4. 可选：设置 `MERGEWARDEN_REF` 固定到某个 release branch 或 tag。若 runtime 仓库是私有仓库，再添加 `MERGEWARDEN_REPOSITORY_TOKEN`。
-5. 在同仓库开一个测试 PR。成功后会看到 neutral check run、changed-line 评论，以及 `mergewarden-advisory-<pr-number>` artifact。
+MergeWarden 是 advisory PR reviewer，不是自动合并门禁：
 
-模板会双 checkout：
+- 不自动批准或拒绝 PR。
+- 不替代 CI、测试、代码所有者审批或 branch protection。
+- 默认不修改用户代码、不创建修复提交。
+- 低置信度或缺少可核验代码证据的 finding 不会被强行发布。
 
-- `target`：被审查的 PR 仓库。
-- `.mergewarden/runtime`：包含 `cli.py`、`requirements-dev.txt` 和 helper scripts 的 MergeWarden runtime 仓库。
-
-同仓库 PR 会发布 neutral check run 和 changed-line review comments。Fork PR 默认只运行 review + dry-run publish，并把 dry-run 结果上传为 artifact，这是 GitHub 默认权限模型下更安全的路径。
-
-完整安装说明和排障表见 [docs/github_action_self_hosted.md](docs/github_action_self_hosted.md)。
-
-## GitHub Actions 集成
-
-当前仓库包含 `.github/workflows/github-advisory.yml`，用于在 MergeWarden 自己的 PR 流程中运行 advisory 审查：
-
-1. 生成 PR diff。
-2. 生成 `changed_lines.json`。
-3. 执行 `review --diff --output-json --summary-json`。
-4. 默认执行建议式发布 dry-run。
-5. 在具备写权限的同仓库 PR 中发布 soft check 和可选评论。
-
-发布到 GitHub 时，需要为 `GITHUB_TOKEN` 授权：
-
-- `checks: write`
-- `pull-requests: write`
-
-示例命令：
-
-```bash
-python scripts/github_changed_lines.py --diff-file pr.diff --output changed_lines.json
-python cli.py review . --diff --output-json review_response.json --summary-json run_summary.json
-python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
-```
-
-内联评论仅发布到变更行；无法落到变更行的问题会保留在 soft check 摘要中。MergeWarden 会为评论写入隐藏指纹，以便后续运行更新匹配评论并标记过期发现，同时避免覆盖人工评论。
-
-## 常用命令
-
-```bash
-python cli.py review . --diff --output-json review_response.json --summary-json run_summary.json
-python scripts/github_changed_lines.py --diff-file pr.diff --output changed_lines.json
-python cli.py advisory-export --response-json review_response.json --changed-lines-json changed_lines.json
-python cli.py github-advisory publish --repo owner/repo --pr-number 123 --head-sha "$GITHUB_SHA" --response-json review_response.json --changed-lines-json changed_lines.json --dry-run
-python -m eval.core_eval audit
-python -m eval.core_eval run
-python -m eval.run diagnose --input eval/outputs/20260518_151719_report.json
-python -m eval.run trend --inputs "eval/outputs/*_report.json"
-```
-
-## Core Eval v1
-
-当前主评测是一个 5 个 real-world full-workspace PR 组成的 **small curated evaluation set**：2 个带人工复核 gold finding 的 candidate，加 3 个已稳定的零问题 controls。A/B 在相同模型、预算、fixture 和 deterministic one-to-one judge 下各跑一次；仅 runtime instability 才重试。
-
-预算修复后的 `deepseek-v4-pro` 新基线共运行 10 个 attempts，simple baseline 与 MergeWarden 的 valid completion rate 均为 `100.0%`；2 个 candidate 和 3 个 controls 的 A/B 都在首次 attempt 产生有效提交。MergeWarden 图模式的普通模型调用 prompt 最大为 27,096 tokens；全部运行都调用了 `submit_review`，最大累计 token 为 69,606，未触及 80k hard cap。修复前失败运行的约 92k–106k 是累计 token，与单次 provider prompt 口径不同，只用于确认本轮没有再次 overshoot，不作为精确降幅。两侧 Precision/Recall/F1 仍均为 0，当前数据不支持相对质量优势，首要质量问题回到 verifier/evidence recall loss。
-
-新基线表格、per-fixture 对比和契约修复前的逐条审计见 [eval/reports/core-eval-v1.md](eval/reports/core-eval-v1.md) 与 [eval/reports/core-eval-v1-finding-audit.md](eval/reports/core-eval-v1-finding-audit.md)。
-
-## MVP+ 历史状态
-
-当前版本的 MVP+ 工程范围已闭环：CLI、FastAPI、Docker CLI demo、event logs、workspace-backed golden fixtures、GitHub Actions advisory 模板和稳定 eval gate 都已落地。
-
-历史 MVP+ golden baseline 是 `eval/outputs/20260518_151719_report.json`：
-
-- schema validity：`1.0`
-- hit rate：`0.75`
-- false positive rate：`0.0`
-
-它通过当前稳定门槛 `schema_validity_rate >= 1.0`、`hit_rate >= 0.6`、`false_positive_rate <= 0.5`。细节见 [docs/mvp_plus_eval_closure.md](docs/mvp_plus_eval_closure.md)。
-
-## v0.2.0：语义验真与可恢复审查
-
-v0.2.0 在现有 advisory review 链路上增加四项保障：
-
-- Warning/Critical 先形成稳定 `FindingCandidate`，再由独立 verifier 逐条给出 `accepted/rejected/needs_evidence/downgraded`。GA 默认 `FINDING_VERIFIER_MODE=enforce`，无有效 verdict 时 fail closed。
-- `ReviewWorkflowTracker` 强制完成 diff、changed context、draft validation、semantic verification 和 finalize；缺失上下文最多补救一次，仍缺失时不发布风险 finding。
-- Platform worker 使用 SQLite lease、heartbeat 和 step checkpoint；过期 `running` run 可回收到队列，GitHub check 使用稳定 `external_id` 更新而非重复创建。
-- Eval 报告增加证据绑定率、verifier 接受/拒绝率、required-step 完成率、重复工具调用率和每条 accepted finding 的 token 成本，并可与冻结 baseline 比较。
-
-完整版本与验收规划见 [docs/v0.2.0_reliability_quality_plan.md](docs/v0.2.0_reliability_quality_plan.md)。
-
-## 项目结构
-
-```text
-src/
-  analyzer/          核心分析、上下文、结构化输出、运行摘要
-  orchestrator/      5 阶段 Agent 编排
-  tools/             read-only / execute 工具体系
-  security/          执行策略、沙箱、Docker backend
-  models/            OpenAI-compatible provider 抽象
-  integrations/      GitHub advisory payload、webhook 与发布
-  api/               FastAPI 同步薄层
-eval/                golden fixtures、runner、metrics、diagnostics
-tests/               单元测试与回归测试
-docs/                架构、契约、路线图、安装指南
-scripts/             工程脚本
-marketing/           静态营销页
-marketing-vercel/    Vercel 静态营销页
-cli.py               Click CLI 入口
-agent.md             Agent 开发约束与知识索引入口
-Dockerfile           CLI 容器镜像
-docker-compose.yml   Docker compose 配置
-requirements.txt     运行时依赖
-```
-
-## 架构分层
-
-```text
-入口层        CLI / FastAPI
-编排层        5 阶段 Agent loop：prepare -> analyze -> execute -> process -> continue/stop
-工具层        只读工具、执行工具、结构化 tool schemas
-服务层        上下文管理、结果处理、运行摘要、事件日志
-模型层        OpenAI-compatible API / provider abstraction
-横切关注      配置、权限、成本与 token、结构化输出、可观测性
-```
-
-## 开发命令
+## 开发
 
 安装开发依赖：
 
-```bash
+~~~bash
 pip install -r requirements-dev.txt
-```
+~~~
 
-运行测试：
+运行测试与质量检查：
 
-```bash
+~~~bash
 pytest
-```
-
-运行代码质量检查：
-
-```bash
 ruff check .
 ruff format --check .
 mypy src/
-```
+~~~
 
-代码注释默认使用英文；面向用户的 README、安装文档、营销文案和 GitHub Action happy path 默认使用中文。
-
-## 协作约定
-
-MergeWarden 采用 PR 与 Issue 驱动的协作方式。代码、文档和审查流程请参考 [贡献指南](CONTRIBUTING.md)。
-
-使用 AI Agent 协作开发前，请先阅读 [agent.md](agent.md)，其中包含渐进式知识索引、编码约束和审查要求。
+贡献代码前请阅读[贡献指南](CONTRIBUTING.md)。
 
 ## 许可证
 
 [MIT](LICENSE)
-
-## v0.2.3–v0.2.5：根因级 finding 与 change-centered 代码图
-
-Review 流水线现在先输出带因果机制、不变量、最小修复签名和分角色 provenance 的 finding hypothesis。单条 finding 通过 evidence verifier 后，系统按确定性 blocking 形成候选组，只在共同机制、共同不变量和共同 repair unit 同时成立且反事实结果明确为 `yes` 时归并；独立的 consolidation verifier 拒绝不安全归并并恢复原 findings。
-
-系统还会从 changed hunk/symbol 构建带 qualified identity、resolver、confidence 和 evidence eligibility 的代码关系图，通过预算化 Context Planner 生成与实际 Reviewer prompt 一致的 Candidate Context Manifest。SQLite 索引按 file hash 增量更新；LSP enrichment 可选且不是运行硬依赖。
-
-完整架构、schema、配置、迁移、provenance、benchmark 和限制见 [v0.2.3–v0.2.5 根因级审查文档](docs/v023_v025_root_cause_relation_graph.md)。
