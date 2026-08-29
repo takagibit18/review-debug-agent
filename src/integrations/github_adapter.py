@@ -20,6 +20,7 @@ class InlineCommentCandidate(BaseModel):
     severity: Severity
     body: str
     fingerprint: str
+    finding_id: str = ""
 
 
 class SummaryOnlyIssue(BaseModel):
@@ -66,6 +67,7 @@ def build_github_advisory_payload(
                     severity=issue.severity,
                     body=_comment_body(issue),
                     fingerprint=fingerprint,
+                    finding_id=issue.finding_id.strip(),
                 )
             )
             continue

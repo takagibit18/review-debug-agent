@@ -136,6 +136,21 @@ def test_publisher_dry_run_builds_complete_plan_without_network_calls() -> None:
     assert "fingerprint" in result.lifecycle_plan.create[0].body
 
 
+def test_publisher_binds_finding_id_in_hidden_comment_metadata() -> None:
+    response = _response()
+    response.report.issues[0].finding_id = "F-02"
+
+    result = GitHubPublisher(client=RecordingGitHubClient()).build_publish_plan(
+        _request().model_copy(update={"response": response})
+    )
+
+    candidate = result.lifecycle_plan.create[0]
+    metadata = extract_comment_metadata(candidate.body)
+    assert metadata is not None
+    assert metadata.finding_id == "F-02"
+    assert candidate.finding_id == "F-02"
+
+
 def test_comment_lifecycle_updates_existing_and_stales_missing_mergewarden_comments() -> None:
     first = _request()
     fresh = GitHubPublisher(client=RecordingGitHubClient()).build_publish_plan(first)
@@ -231,3 +246,4 @@ def test_extract_comment_metadata_ignores_foreign_and_invalid_comments() -> None
     )
     assert parsed is not None
     assert parsed.fingerprint == "fp"
+    assert parsed.finding_id == ""
