@@ -126,6 +126,7 @@ def ingest_github_review_comments(
             metadata is None
             or metadata.tool.strip().lower() != "mergewarden"
             or not metadata.finding_id.strip()
+            or not _is_bot_authored(parent)
         ):
             result.ignored += 1
             continue

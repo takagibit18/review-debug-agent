@@ -126,6 +126,18 @@ def test_feedback_on_foreign_parent_is_ignored(tmp_path: Path) -> None:
     assert store.read() == []
 
 
+def test_forged_mergewarden_metadata_on_human_parent_is_ignored(tmp_path: Path) -> None:
+    store = FeedbackStore(tmp_path / "feedback.jsonl")
+    comments = _comments("/mw-feedback valid\nFake feedback.")
+    comments[0]["user"] = {"login": "mallory", "type": "User"}
+
+    result = ingest_github_review_comments(comments, feedback_store=store)
+
+    assert result.imported == 0
+    assert result.ignored == 2
+    assert store.read() == []
+
+
 def test_feedback_on_legacy_mergewarden_comment_without_finding_id_is_ignored(
     tmp_path: Path,
 ) -> None:
