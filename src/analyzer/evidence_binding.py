@@ -10,7 +10,6 @@ from src.analyzer.finding_schema import EvidenceProvenance, normalize_repo_path
 from src.analyzer.output_formatter import ReviewIssue
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
 
-_DIFF_SOURCES = {"git_diff", "diff", "review_diff", "changed_hunk"}
 _CANONICAL_TOOL_SOURCES = {
     "changed_context": "get_changed_context",
     "get_changed_context": "get_changed_context",
@@ -94,31 +93,6 @@ def bind_issue_candidate_id(issue: ReviewIssue, candidate_id: str) -> ReviewIssu
     return bound
 
 
-def bind_issue_evidence_from_context(
-    issue: ReviewIssue,
-    candidate_id: str,
-    context: dict[str, Any] | None,
-) -> ReviewIssue:
-    """Rebind a verifier-revised issue to context the verifier actually received."""
-
-    bound = bind_issue_candidate_id(issue, candidate_id)
-    bound.context_manifest_id = ""
-    bound.context_hash = ""
-    if context is None:
-        return bound
-    bound_manifest_ids: set[str] = set()
-    for evidence in bound.all_evidence():
-        selected = _select_binding(
-            evidence, _trusted_bindings_in_candidate_context(evidence, context)
-        )
-        if selected is not None:
-            _apply_binding(evidence, selected)
-            if selected.context_manifest_id:
-                bound_manifest_ids.add(selected.context_manifest_id)
-    bound.context_manifest_id = _single_value(bound_manifest_ids)
-    return bound
-
-
 def _trusted_bindings_for_evidence(
     evidence: EvidenceProvenance,
     hunks_by_file: dict[str, list[ParsedDiffHunk]],
@@ -162,106 +136,6 @@ def _trusted_bindings_for_evidence(
         spans = manifest.get("included_spans")
         if not isinstance(spans, list):
             continue
-        for span in spans:
-            if not isinstance(span, dict) or not _record_covers(
-                span, file, line, end_line
-            ):
-                continue
-            matches.add(
-                TrustedEvidenceBinding(
-                    kind="manifest",
-                    retrieval_source=str(span.get("retrieval_source", "relation_graph"))
-                    .strip()
-                    .lower(),
-                    context_manifest_id=manifest_id,
-                    context_hash=str(span.get("context_hash", "")).strip(),
-                    symbol_id=str(span.get("symbol_id", "")).strip(),
-                )
-            )
-    return sorted(
-        matches,
-        key=lambda item: (
-            item.kind,
-            item.retrieval_source,
-            item.context_manifest_id,
-            item.context_hash,
-        ),
-    )
-
-
-def _trusted_bindings_in_candidate_context(
-    evidence: EvidenceProvenance,
-    context: dict[str, Any],
-) -> list[TrustedEvidenceBinding]:
-    """Enumerate exact source representations retained in a verifier envelope."""
-
-    file = normalize_repo_path(evidence.file)
-    line = evidence.line
-    if not file or line is None:
-        return []
-    end_line = evidence.end_line or line
-    matches: set[TrustedEvidenceBinding] = set()
-
-    diff_hunks = context.get("diff_hunks")
-    if isinstance(diff_hunks, list):
-        for record in diff_hunks:
-            if not isinstance(record, dict) or not _record_covers(
-                record, file, line, end_line
-            ):
-                continue
-            source = str(record.get("source", "diff")).strip().lower()
-            if source in _DIFF_SOURCES:
-                matches.add(
-                    TrustedEvidenceBinding(kind="diff", retrieval_source="git_diff")
-                )
-            elif source in _TRUSTED_TOOL_SOURCES:
-                matches.add(
-                    TrustedEvidenceBinding(
-                        kind="tool",
-                        retrieval_source=_canonical_tool_source(source),
-                    )
-                )
-
-    for key in ("file_windows", "enclosing_symbols"):
-        records = context.get(key)
-        if not isinstance(records, list):
-            continue
-        for record in records:
-            if not isinstance(record, dict) or not _record_covers(
-                record, file, line, end_line
-            ):
-                continue
-            source = str(record.get("source", "")).strip().lower()
-            if source in _TRUSTED_TOOL_SOURCES:
-                matches.add(
-                    TrustedEvidenceBinding(
-                        kind="tool",
-                        retrieval_source=_canonical_tool_source(source),
-                    )
-                )
-
-    symbol_contexts = context.get("symbol_contexts")
-    if isinstance(symbol_contexts, list):
-        for symbol_context in symbol_contexts:
-            if not isinstance(symbol_context, dict):
-                continue
-            source = str(symbol_context.get("source", "")).strip().lower()
-            if source not in _TRUSTED_TOOL_SOURCES:
-                continue
-            if any(
-                _records_cover(symbol_context.get(key), file, line, end_line)
-                for key in ("definitions", "references", "enclosing_symbols")
-            ):
-                matches.add(
-                    TrustedEvidenceBinding(
-                        kind="tool",
-                        retrieval_source=_canonical_tool_source(source),
-                    )
-                )
-
-    manifest_id = str(context.get("context_manifest_id", "")).strip()
-    spans = context.get("included_spans")
-    if manifest_id and isinstance(spans, list):
         for span in spans:
             if not isinstance(span, dict) or not _record_covers(
                 span, file, line, end_line
