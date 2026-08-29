@@ -44,6 +44,7 @@ class CommentMetadata(BaseModel):
     run_id: str = ""
     fingerprint: str
     head_sha: str = ""
+    finding_id: str = ""
 
 
 class PendingReviewComment(BaseModel):
@@ -53,6 +54,7 @@ class PendingReviewComment(BaseModel):
     line: int
     body: str
     fingerprint: str
+    finding_id: str = ""
 
 
 class CommentUpdate(BaseModel):
@@ -519,7 +521,20 @@ def extract_comment_metadata(body: str) -> CommentMetadata | None:
         return None
     if not isinstance(raw, dict) or not raw.get("fingerprint"):
         return None
-    return CommentMetadata.model_validate(raw)
+    try:
+        return CommentMetadata.model_validate(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_public_comment_body(body: str) -> str:
+    """Remove MergeWarden's marker and hidden metadata from a comment body."""
+    start = body.rfind(_METADATA_PREFIX)
+    if start >= 0:
+        end = body.find(_METADATA_SUFFIX, start)
+        if end >= 0:
+            body = body[:start] + body[end + len(_METADATA_SUFFIX) :]
+    return body.replace(GITHUB_COMMENT_MARKER, "").strip()
 
 
 def resolve_github_token(explicit: str | None = None) -> str:
@@ -542,6 +557,7 @@ def _build_pending_comment(
         run_id=run_id,
         fingerprint=candidate.fingerprint,
         head_sha=head_sha,
+        finding_id=candidate.finding_id,
     )
     metadata_json = json.dumps(metadata.model_dump(), sort_keys=True, separators=(",", ":"))
     body = "\n\n".join(
@@ -556,6 +572,7 @@ def _build_pending_comment(
         line=candidate.line,
         body=body,
         fingerprint=candidate.fingerprint,
+        finding_id=candidate.finding_id,
     )
 
 
@@ -565,6 +582,7 @@ def _stale_body(existing_body: str, run_id: str, head_sha: str) -> str:
         run_id=run_id,
         fingerprint=existing_metadata.fingerprint if existing_metadata else "unknown",
         head_sha=head_sha,
+        finding_id=existing_metadata.finding_id if existing_metadata else "",
     )
     metadata_json = json.dumps(metadata.model_dump(), sort_keys=True, separators=(",", ":"))
     return "\n\n".join(

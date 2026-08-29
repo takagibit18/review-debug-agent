@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from scripts import review_experience
 from scripts.review_experience import cli
 from src.analyzer.review_lifecycle import (
     FeedbackRecord,
@@ -236,3 +237,69 @@ def test_cli_record_propose_activate_deprecate_round_trip(tmp_path: Path) -> Non
     assert result.exit_code == 0, result.output
     assert "Compare the changed" not in ReviewSkillLoader(tmp_path).render()
     assert SkillStore(skills_file).read()[0].status == "deprecated"
+
+
+def test_cli_ingest_github_uses_token_and_reports_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeGitHubClient:
+        def __init__(self, token: str) -> None:
+            assert token == "test-token"
+
+        async def list_review_comments(
+            self,
+            owner_repo: str,
+            pr_number: int,
+        ) -> list[dict[str, object]]:
+            assert owner_repo == "owner/repo"
+            assert pr_number == 88
+            return [
+                {
+                    "id": 100,
+                    "body": "\n\n".join(
+                        [
+                            "Finding summary",
+                            "Evidence: published agent judgment",
+                            "<!-- mergewarden:comment -->",
+                            (
+                                '<!-- mergewarden:{"fingerprint":"fp",'
+                                '"finding_id":"F-02"} -->'
+                            ),
+                        ]
+                    ),
+                    "user": {"login": "mergewarden[bot]", "type": "Bot"},
+                },
+                {
+                    "id": 200,
+                    "in_reply_to_id": 100,
+                    "body": "/mw-feedback invalid\nThe path is serialized.",
+                    "user": {"login": "alice", "type": "User"},
+                },
+            ]
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setattr(review_experience, "GitHubApiClient", FakeGitHubClient)
+    feedback_file = tmp_path / "feedback.jsonl"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "ingest-github",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "88",
+            "--feedback-file",
+            str(feedback_file),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "imported: 1" in result.output
+    assert "duplicate: 0" in result.output
+    assert "ignored: 1" in result.output
+    assert FeedbackStore(feedback_file).read()[0].finding_id == "F-02"
