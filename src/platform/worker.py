@@ -249,7 +249,12 @@ class PlatformWorker:
             model_name=config.model_name,
         )
         response_run_id = execution.review_response.run_id
-        event_log_path = _resolve_event_log_path(self.settings.event_log_dir, response_run_id)
+        preserved_event_log_path = str(getattr(execution, "event_log_path", "") or "")
+        event_log_path = (
+            Path(preserved_event_log_path)
+            if preserved_event_log_path
+            else _resolve_event_log_path(self.settings.event_log_dir, response_run_id)
+        )
         summary = summarize_run_artifacts(
             run_id=response_run_id,
             event_log_path=event_log_path,
