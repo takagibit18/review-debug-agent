@@ -48,6 +48,18 @@ class ReviewSkill:
             ),
         )
 
+    def to_record(self) -> dict[str, Any]:
+        """Return the intentionally small persisted skill representation."""
+
+        return {
+            "id": self.id,
+            "status": self.status,
+            "category": self.category,
+            "principle": self.principle,
+            "why": self.why,
+            "source_feedback_ids": list(self.source_feedback_ids),
+        }
+
 
 class ReviewSkillLoader:
     """Load core and active learned skills within a deterministic char budget."""
