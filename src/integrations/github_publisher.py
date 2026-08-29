@@ -527,6 +527,16 @@ def extract_comment_metadata(body: str) -> CommentMetadata | None:
         return None
 
 
+def extract_public_comment_body(body: str) -> str:
+    """Remove MergeWarden's marker and hidden metadata from a comment body."""
+    start = body.rfind(_METADATA_PREFIX)
+    if start >= 0:
+        end = body.find(_METADATA_SUFFIX, start)
+        if end >= 0:
+            body = body[:start] + body[end + len(_METADATA_SUFFIX) :]
+    return body.replace(GITHUB_COMMENT_MARKER, "").strip()
+
+
 def resolve_github_token(explicit: str | None = None) -> str:
     """Resolve the GitHub token accepted by GitHub Actions and local runs."""
     if explicit and explicit.strip():

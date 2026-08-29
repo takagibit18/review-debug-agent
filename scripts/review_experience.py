@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -17,6 +18,14 @@ from src.analyzer.review_lifecycle import (  # noqa: E402
     SkillStore,
     StaticImprover,
     propose_skill,
+)
+from src.integrations.github_feedback import (  # noqa: E402
+    GitHubFeedbackIngestionResult,
+    ingest_github_feedback,
+)
+from src.integrations.github_publisher import (  # noqa: E402
+    GitHubApiClient,
+    resolve_github_token,
 )
 
 
@@ -71,6 +80,41 @@ def record(
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"recorded {saved.id}")
+
+
+@cli.command("ingest-github")
+@click.option("--repo", required=True)
+@click.option("--pr", "pr_number", type=click.IntRange(min=1), required=True)
+@click.option("--feedback-file", type=click.Path(path_type=Path), default=None)
+def ingest_github(repo: str, pr_number: int, feedback_file: Path | None) -> None:
+    """Import explicit human feedback from GitHub review comment replies."""
+    token = resolve_github_token()
+    if not token:
+        raise click.ClickException("GITHUB_TOKEN/GH_TOKEN is required for GitHub ingestion.")
+
+    async def _run() -> GitHubFeedbackIngestionResult:
+        client = GitHubApiClient(token)
+        try:
+            return await ingest_github_feedback(
+                client,
+                owner_repo=repo,
+                pr_number=pr_number,
+                feedback_store=FeedbackStore(
+                    feedback_file or _default_path("review_experience/feedback.jsonl")
+                ),
+            )
+        finally:
+            await client.close()
+
+    try:
+        result = asyncio.run(_run())
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo("GitHub feedback ingestion complete:")
+    click.echo(f"  imported: {result.imported}")
+    click.echo(f"  duplicate: {result.duplicates}")
+    click.echo(f"  ignored: {result.ignored}")
 
 
 @cli.command()
