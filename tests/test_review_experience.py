@@ -35,6 +35,15 @@ def _feedback(feedback_id: str = "fb-001") -> dict[str, str]:
     }
 
 
+def _proposal(feedback_id: str) -> dict[str, object]:
+    return {
+        "category": "concurrency",
+        "principle": "Confirm a path can execute concurrently before reporting a race.",
+        "why": "Shared mutable state alone does not establish concurrent execution.",
+        "source_feedback_ids": [feedback_id],
+    }
+
+
 def test_feedback_append_and_malformed_feedback_are_handled(tmp_path: Path) -> None:
     store = FeedbackStore(tmp_path / "feedback.jsonl")
     saved = store.append(_feedback())
@@ -101,6 +110,68 @@ def test_fake_improver_creates_candidate_that_is_not_loaded_until_activation(
     assert deprecated.status == "deprecated"
     assert "Confirm a path" not in ReviewSkillLoader(tmp_path).render()
     assert skill_store.read()[0].status == "deprecated"
+
+
+def test_propose_does_not_reuse_feedback_after_creating_candidate(tmp_path: Path) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback("fb-001"))
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+
+    first_improver = StaticImprover(_proposal("fb-001"))
+    first = propose_skill(feedback_store, skill_store, first_improver)
+    assert first.status == "candidate"
+
+    feedback_store.append(_feedback("fb-002"))
+    second_improver = StaticImprover(_proposal("fb-002"))
+    propose_skill(feedback_store, skill_store, second_improver)
+
+    assert [item.id for item in second_improver.last_feedback] == ["fb-002"]
+
+
+def test_propose_excludes_feedback_cited_by_existing_skill(tmp_path: Path) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback("fb-001"))
+    feedback_store.append(_feedback("fb-002"))
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+    skill_store.add_candidate(_proposal("fb-001"))
+
+    improver = StaticImprover(_proposal("fb-002"))
+    propose_skill(feedback_store, skill_store, improver)
+
+    assert [item.id for item in improver.last_feedback] == ["fb-002"]
+
+
+@pytest.mark.parametrize("status", ["candidate", "active", "deprecated"])
+def test_all_skill_statuses_consume_source_feedback(
+    tmp_path: Path, status: str
+) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback("fb-001"))
+    feedback_store.append(_feedback("fb-002"))
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+    skill = skill_store.add_candidate(_proposal("fb-001"))
+    if status in {"active", "deprecated"}:
+        skill_store.update_status(skill.id, "active")
+    if status == "deprecated":
+        skill_store.update_status(skill.id, "deprecated")
+
+    improver = StaticImprover(_proposal("fb-002"))
+    propose_skill(feedback_store, skill_store, improver)
+
+    assert [item.id for item in improver.last_feedback] == ["fb-002"]
+
+
+def test_propose_fails_when_all_feedback_is_consumed(tmp_path: Path) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback("fb-001"))
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+    skill_store.add_candidate(_proposal("fb-001"))
+    improver = StaticImprover(_proposal("fb-001"))
+
+    with pytest.raises(ValueError, match="^no unconsumed feedback is available$"):
+        propose_skill(feedback_store, skill_store, improver)
+
+    assert improver.calls == 0
 
 
 def test_cli_record_propose_activate_deprecate_round_trip(tmp_path: Path) -> None:

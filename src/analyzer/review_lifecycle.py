@@ -265,12 +265,23 @@ def propose_skill(
 
     if max_feedback < 1:
         raise ValueError("max_feedback must be positive")
+    consumed_feedback_ids = {
+        feedback_id
+        for skill in skill_store.read()
+        for feedback_id in skill.source_feedback_ids
+    }
+    all_feedback = feedback_store.read()
+    unconsumed_feedback = [
+        item for item in all_feedback if item.id not in consumed_feedback_ids
+    ]
     feedback = [
         item
-        for item in feedback_store.read()
+        for item in unconsumed_feedback
         if item.human_reason.strip() and item.finding_reasoning.strip()
     ][:max_feedback]
     if not feedback:
+        if all_feedback and not unconsumed_feedback:
+            raise ValueError("no unconsumed feedback is available")
         raise ValueError("no detailed human feedback is available")
     raw_proposal = improver.propose(feedback)
     proposal = (
