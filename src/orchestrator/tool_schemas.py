@@ -180,7 +180,8 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                         "description": (
                                             "Canonical display location: "
                                             "path[:line[-end_line]]. It may be unchanged; "
-                                            "cause_evidence owns PR causality."
+                                            "the finding must still include a changed-code "
+                                            "anchor; supporting evidence may be unchanged."
                                         ),
                                         "pattern": r"^[^:\s][^:]*(:\d+(-\d+)?)?$",
                                     },
@@ -207,8 +208,8 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                         **anchor_schema,
                                         "description": (
                                             "Primary display anchor matching location; it need "
-                                            "not be changed when changed cause_evidence proves "
-                                            "PR causality."
+                                            "not be changed when another finding anchor proves "
+                                            "PR association."
                                         ),
                                     },
                                     "related_locations": {
@@ -252,8 +253,8 @@ def build_submit_tool_schemas() -> list[dict[str, Any]]:
                                         "type": "array",
                                         "items": evidence_schema,
                                         "description": (
-                                            "Causal evidence. Warning/critical findings require "
-                                            "at least one entry on a real changed line."
+                                            "Causal evidence. It may cite unchanged supporting "
+                                            "code when that code was actually observed."
                                         ),
                                     },
                                     "contract_evidence": {

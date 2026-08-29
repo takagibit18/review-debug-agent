@@ -19,6 +19,7 @@ from src.analyzer.context_strategy import ContextStrategy, build_context_strateg
 from src.analyzer.diff_lines import changed_new_lines_by_file
 from src.analyzer.evidence_binding import bind_candidate_evidence
 from src.analyzer.event_log import EventEntry, EventLog, EventType
+from src.analyzer.finding_integrity import FindingIntegrityGuard
 from src.analyzer.finding_verifier import (
     DeterministicValidationStats,
     FindingVerifier,
@@ -328,6 +329,13 @@ class AgentOrchestrator:
             if self._last_plan is not None and self._last_plan.draft_review is not None
             else response.report
         )
+        if self._finding_verifier is None:
+            return self._verify_with_integrity_guard(
+                response,
+                submitted_report,
+                request,
+                state,
+            )
         filter_decisions = [
             evaluate_issue_filter(issue) for issue in submitted_report.issues
         ]
@@ -445,8 +453,6 @@ class AgentOrchestrator:
                 )
             return response
         verifier = self._finding_verifier
-        if verifier is None and self._model_client is not None:
-            verifier = FindingVerifier(self._model_client)
         if verifier is None:
             if self._finding_verifier_mode == "enforce":
                 self._semantic_rejected_count = len(candidates)
@@ -742,6 +748,167 @@ class AgentOrchestrator:
             batch,
             request,
             state,
+        )
+        return response
+
+    def _verify_with_integrity_guard(
+        self,
+        response: ReviewResponse,
+        submitted_report: ReviewReport,
+        request: ReviewRequest,
+        state: ContextState,
+    ) -> ReviewResponse:
+        """Run the default thin integrity stage without another model call."""
+
+        filter_decisions = [
+            evaluate_issue_filter(issue) for issue in submitted_report.issues
+        ]
+        self._model_raw_issue_count = len(submitted_report.issues)
+        self._submitted_issue_count = self._model_raw_issue_count
+        self._policy_passed_issue_count = sum(
+            decision.passed for decision in filter_decisions
+        )
+        self._policy_rejected_issue_count = (
+            self._submitted_issue_count - self._policy_passed_issue_count
+        )
+        self._non_risk_issue_count = sum(
+            decision.severity.value not in {"critical", "warning"}
+            for decision in filter_decisions
+        )
+        for original_index, decision in enumerate(filter_decisions):
+            self._record_event(
+                EventType.FINDING_FILTER_DECISION,
+                "filter_findings",
+                decision.event_payload(original_index=original_index),
+            )
+
+        candidates = build_candidates(
+            response.report,
+            iteration=self._iteration,
+            request=request,
+        )
+        self._verifier_candidate_count = len(candidates)
+        self._risk_candidate_count = len(candidates)
+        self._filter_rescue_candidate_count = 0
+        self._severity_calibration_candidate_count = 0
+        self._high_confidence_info_issue_count = 0
+        self._severity_reviewed_count = 0
+        self._severity_promoted_count = 0
+        self._record_event(
+            EventType.FINDING_CANDIDATES_BUILT,
+            "verify_findings",
+            {
+                "candidate_count": len(candidates),
+                "model_raw_issue_count": self._model_raw_issue_count,
+                "submitted_issue_count": self._submitted_issue_count,
+                "policy_passed_issue_count": self._policy_passed_issue_count,
+                "policy_rejected_issue_count": self._policy_rejected_issue_count,
+                "non_risk_issue_count": self._non_risk_issue_count,
+                "verifier_candidate_count": self._verifier_candidate_count,
+                "risk_candidate_count": self._risk_candidate_count,
+                "filter_rescue_candidate_count": 0,
+                "severity_calibration_candidate_count": 0,
+                "structured_hypothesis_count": sum(
+                    item.issue.is_structured_hypothesis for item in candidates
+                ),
+                "verifier_context_entry_count": len(self._verifier_tool_evidence),
+                "mode": self._finding_verifier_mode,
+                "verifier_kind": "integrity_guard",
+                "candidates": [
+                    {
+                        "candidate_id": item.candidate_id,
+                        "source_issue_index": item.source_issue_index,
+                        "candidate_kind": item.candidate_kind,
+                        "finding_id": item.issue.finding_id,
+                        "location": item.issue.location,
+                    }
+                    for item in candidates
+                ],
+            },
+        )
+        if self._workflow_enforcement != "off":
+            if candidates:
+                self._complete_workflow_step("validate_candidate_draft")
+            else:
+                self._skip_workflow_step(
+                    "validate_candidate_draft", "no_candidate_findings"
+                )
+                self._skip_workflow_step(
+                    "semantic_verify_findings", "no_risk_candidates"
+                )
+
+        if self._finding_verifier_mode == "off":
+            if candidates and self._workflow_enforcement != "off":
+                self._fail_workflow_step(
+                    "semantic_verify_findings", "finding_verifier_disabled"
+                )
+            return response
+
+        guard_result = FindingIntegrityGuard(self._workspace_root).validate(
+            candidates,
+            request,
+            tool_evidence=list(self._verifier_tool_evidence),
+            context_manifests=[
+                dict(item) for item in state.candidate_context_manifests
+            ],
+            context_mode=state.context_mode,
+        )
+        self._semantic_rejected_count = 0
+        self._deterministic_rejected_count = guard_result.rejected_count
+        self._verifier_accepted_count = guard_result.passed_count
+        self._verifier_rejected_count = guard_result.rejected_count
+        self._verifier_needs_evidence_count = 0
+        self._verifier_downgraded_count = 0
+        self._record_event(
+            EventType.FINDING_VERIFICATION_COMPLETED,
+            "verify_findings",
+            {
+                "candidate_count": guard_result.checked_count,
+                "accepted_count": guard_result.passed_count,
+                "rejected_count": guard_result.rejected_count,
+                "verifier_accepted_count": guard_result.passed_count,
+                "verifier_rejected_count": guard_result.rejected_count,
+                "raw_accepted_count": guard_result.passed_count,
+                "raw_rejected_count": guard_result.rejected_count,
+                "semantic_rejected_count": 0,
+                "deterministic_rejected_count": guard_result.rejected_count,
+                "deterministic_evidence_checked_count": guard_result.checked_count,
+                "deterministic_evidence_passed_count": guard_result.passed_count,
+                "deterministic_evidence_rejected_count": guard_result.rejected_count,
+                "integrity_failures": {
+                    candidate_id: [
+                        failure.code for failure in failures
+                    ]
+                    for candidate_id, failures in guard_result.failures.items()
+                },
+                "mode": self._finding_verifier_mode,
+                "verifier_kind": "integrity_guard",
+            },
+        )
+        if self._workflow_enforcement != "off" and candidates:
+            self._complete_workflow_step("semantic_verify_findings")
+
+        if self._finding_verifier_mode != "enforce":
+            return response
+
+        bound_by_source_index = {
+            candidate.source_issue_index: candidate.issue
+            for candidate in guard_result.bound_candidates
+        }
+        rejected_ids = guard_result.rejected_candidate_ids
+        candidate_by_source_index = {
+            candidate.source_issue_index: candidate for candidate in candidates
+        }
+        output_issues = []
+        for index, issue in enumerate(response.report.issues):
+            candidate = candidate_by_source_index.get(index)
+            if candidate is not None and candidate.candidate_id in rejected_ids:
+                continue
+            output_issues.append(bound_by_source_index.get(index, issue))
+        response.report = ReviewReport(
+            summary=response.report.summary,
+            issues=output_issues,
+            schema_version=response.report.schema_version,
         )
         return response
 
@@ -2554,6 +2721,10 @@ class AgentOrchestrator:
         diff_text = request.diff_text or ""
         if request.diff_mode and not diff_text:
             diff_text = self._context_builder.load_diff(request.repo_path)
+            if diff_text:
+                # Keep the request aligned with the diff already exposed to the
+                # reviewer so the integrity stage can use the same changed lines.
+                request.diff_text = diff_text
         if not diff_text.strip():
             return None
         return ReviewToolContext.from_diff(request.repo_path, diff_text)

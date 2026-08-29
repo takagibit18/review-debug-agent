@@ -1,0 +1,5 @@
+- Report only concrete engineering risks introduced or exposed by the current PR.
+- Every risk finding needs a clear changed-code anchor.
+- Supporting evidence may come from unchanged code when the reviewer actually observed it.
+- Do not cite code that the reviewer did not receive through the diff or a successful read/context tool.
+- Be conservative with speculative risks; distinguish a current counterexample from a possible future caller.

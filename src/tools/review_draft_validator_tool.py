@@ -41,8 +41,8 @@ class ReviewDraftIssueInput(BaseModel):
     cause_evidence: list[EvidenceProvenance] = Field(
         default_factory=list,
         description=(
-            "Role-specific causal evidence; risk findings need at least one entry "
-            "whose location intersects code changed by this PR."
+            "Role-specific causal evidence; supporting locations may be unchanged "
+            "when they were actually observed by the reviewer."
         ),
     )
 
@@ -77,7 +77,7 @@ class ValidateReviewDraftTool(BaseTool):
                 "Check your candidate review issues against output policy before calling "
                 "submit_review. For each issue, this tool verifies: whether the location "
                 "uses the correct canonical file path format, whether warning/critical "
-                "cause_evidence contains a PR causal anchor on changed code, whether the "
+                "contains a finding anchor on code changed by this PR, whether the "
                 "evidence contains concrete code or diff snippets, and whether confidence "
                 "meets the threshold "
                 "for the chosen severity level. Use this BEFORE submit_review — it gives "
@@ -149,7 +149,10 @@ class ValidateReviewDraftTool(BaseTool):
             Severity.CRITICAL,
             Severity.WARNING,
         }
-        passes_causality = not causality_required or pr_causal_anchor_on_changed_line
+        changed_anchor_present = (
+            location_on_changed_line or pr_causal_anchor_on_changed_line
+        )
+        passes_causality = not causality_required or changed_anchor_present
         passes_filter = passes_output_filter and passes_causality
         fail_reasons: list[str] = []
         repair_hints: list[str] = []
@@ -160,11 +163,11 @@ class ValidateReviewDraftTool(BaseTool):
         elif location.warning:
             repair_hints.append(f"use canonical location {location.canonical}")
 
-        if causality_required and not pr_causal_anchor_on_changed_line:
-            fail_reasons.append("pr_causal_anchor_missing")
+        if causality_required and not changed_anchor_present:
+            fail_reasons.append("changed_anchor_missing")
             repair_hints.append(
-                "cite at least one real changed line in cause_evidence; keep location at "
-                "the clearest issue display site"
+                "cite at least one real changed line as the finding anchor; supporting "
+                "cause_evidence may remain on unchanged code"
             )
 
         if issue.severity == Severity.CRITICAL:
@@ -204,6 +207,7 @@ class ValidateReviewDraftTool(BaseTool):
             "location_valid": location.valid,
             "location_on_changed_line": location_on_changed_line,
             "pr_causal_anchor_on_changed_line": pr_causal_anchor_on_changed_line,
+            "changed_anchor_present": changed_anchor_present,
             "evidence_specific": evidence_specific,
             "passes_current_filter": passes_filter,
             "filter_reason_codes": list(filter_decision.reason_codes),
