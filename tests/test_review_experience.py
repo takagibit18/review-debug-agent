@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from scripts import review_experience
 from scripts.review_experience import cli
+from src.analyzer import review_improver
 from src.analyzer.review_lifecycle import (
     FeedbackRecord,
     FeedbackStore,
@@ -19,6 +20,7 @@ from src.analyzer.review_lifecycle import (
     propose_skill,
 )
 from src.analyzer.review_skills import ReviewSkillLoader
+from src.models.schemas import Message, ModelResponse
 
 
 def _feedback(feedback_id: str = "fb-001") -> dict[str, str]:
@@ -42,6 +44,31 @@ def _proposal(feedback_id: str) -> dict[str, object]:
         "why": "Shared mutable state alone does not establish concurrent execution.",
         "source_feedback_ids": [feedback_id],
     }
+
+
+class _FakeModelClient:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls = 0
+        self.messages: list[Message] = []
+        self.closed = False
+
+    async def chat(self, messages: list[Message]) -> ModelResponse:
+        self.calls += 1
+        self.messages = messages
+        return ModelResponse(content=self.content)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _model_improver(
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+) -> tuple[PromptImprover, _FakeModelClient]:
+    client = _FakeModelClient(content)
+    monkeypatch.setattr(review_improver, "ModelClient", lambda: client)
+    return PromptImprover(review_improver.complete_with_model), client
 
 
 def test_feedback_append_and_malformed_feedback_are_handled(tmp_path: Path) -> None:
@@ -115,6 +142,88 @@ def test_fake_improver_creates_candidate_that_is_not_loaded_until_activation(
     assert deprecated.status == "deprecated"
     assert "Confirm a path" not in ReviewSkillLoader(tmp_path).render()
     assert skill_store.read()[0].status == "deprecated"
+
+
+def test_model_improver_parses_plain_json_and_creates_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback())
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+    improver, client = _model_improver(
+        monkeypatch,
+        json.dumps(_proposal("fb-001")),
+    )
+
+    skill = propose_skill(feedback_store, skill_store, improver)
+
+    assert skill.status == "candidate"
+    assert skill.source_feedback_ids == ("fb-001",)
+    assert client.calls == 1
+    assert client.closed
+    assert len(client.messages) == 1
+    assert client.messages[0].role == "user"
+    assert "Feedback ID: fb-001" in client.messages[0].content
+
+
+def test_model_improver_parses_fenced_json_and_creates_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback())
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+    improver, client = _model_improver(
+        monkeypatch,
+        f"```json\n{json.dumps(_proposal('fb-001'))}\n```",
+    )
+
+    skill = propose_skill(feedback_store, skill_store, improver)
+
+    assert skill.status == "candidate"
+    assert client.calls == 1
+    assert client.closed
+
+
+def test_model_improver_rejects_malformed_json_without_writing_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback())
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+    improver, client = _model_improver(monkeypatch, "not json")
+
+    with pytest.raises(ValueError, match="^model response is not valid JSON$"):
+        propose_skill(feedback_store, skill_store, improver)
+
+    assert skill_store.read() == []
+    assert client.calls == 1
+    assert client.closed
+
+
+def test_model_improver_preserves_supplied_feedback_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feedback_store = FeedbackStore(tmp_path / "feedback.jsonl")
+    feedback_store.append(_feedback())
+    skill_store = SkillStore(tmp_path / "learned.jsonl")
+    improver, client = _model_improver(
+        monkeypatch,
+        json.dumps(_proposal("fake-feedback-id")),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="^proposal cites feedback that was not supplied$",
+    ):
+        propose_skill(feedback_store, skill_store, improver)
+
+    assert skill_store.read() == []
+    assert client.calls == 1
+    assert client.closed
 
 
 def test_propose_does_not_reuse_feedback_after_creating_candidate(tmp_path: Path) -> None:
@@ -241,6 +350,49 @@ def test_cli_record_propose_activate_deprecate_round_trip(tmp_path: Path) -> Non
     assert result.exit_code == 0, result.output
     assert "Compare the changed" not in ReviewSkillLoader(tmp_path).render()
     assert SkillStore(skills_file).read()[0].status == "deprecated"
+
+
+def test_cli_propose_model_creates_candidate_with_fake_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feedback_file = tmp_path / "feedback.jsonl"
+    skills_file = tmp_path / "learned.jsonl"
+    FeedbackStore(feedback_file).append(_feedback())
+    client = _FakeModelClient(json.dumps(_proposal("fb-001")))
+    monkeypatch.setattr(review_improver, "ModelClient", lambda: client)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "propose",
+            "--feedback-file",
+            str(feedback_file),
+            "--skills-file",
+            str(skills_file),
+            "--model",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "created skill-001 (candidate)" in result.output
+    assert SkillStore(skills_file).read()[0].status == "candidate"
+    assert client.calls == 1
+    assert client.closed
+
+
+@pytest.mark.parametrize(
+    "mode_args",
+    [
+        [],
+        ["--model", "--proposal-json", json.dumps(_proposal("fb-001"))],
+    ],
+)
+def test_cli_propose_requires_exactly_one_mode(mode_args: list[str]) -> None:
+    result = CliRunner().invoke(cli, ["propose", *mode_args])
+
+    assert result.exit_code == 2
+    assert "Exactly one of --model or --proposal-json must be provided." in result.output
 
 
 def test_cli_ingest_github_uses_token_and_reports_counts(

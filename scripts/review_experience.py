@@ -15,10 +15,12 @@ if __package__ in {None, ""}:
 
 from src.analyzer.review_lifecycle import (  # noqa: E402
     FeedbackStore,
+    PromptImprover,
     SkillStore,
     StaticImprover,
     propose_skill,
 )
+from src.analyzer.review_improver import complete_with_model  # noqa: E402
 from src.integrations.github_feedback import (  # noqa: E402
     GitHubFeedbackIngestionResult,
     ingest_github_feedback,
@@ -27,6 +29,7 @@ from src.integrations.github_publisher import (  # noqa: E402
     GitHubApiClient,
     resolve_github_token,
 )
+from src.models.exceptions import ModelClientError  # noqa: E402
 
 
 def _default_path(name: str) -> Path:
@@ -122,26 +125,42 @@ def ingest_github(repo: str, pr_number: int, feedback_file: Path | None) -> None
 @click.option("--skills-file", type=click.Path(path_type=Path), default=None)
 @click.option(
     "--proposal-json",
-    required=True,
+    default=None,
     help="Offline Improver response as JSON or a JSON file path.",
+)
+@click.option(
+    "--model",
+    "use_model",
+    is_flag=True,
+    help="Generate the proposal with the configured ModelClient.",
 )
 def propose(
     feedback_file: Path | None,
     skills_file: Path | None,
-    proposal_json: str,
+    proposal_json: str | None,
+    use_model: bool,
 ) -> None:
     """Create one candidate skill from detailed feedback."""
 
+    if use_model == (proposal_json is not None):
+        raise click.UsageError(
+            "Exactly one of --model or --proposal-json must be provided."
+        )
+
     try:
-        response = _read_json_value(proposal_json)
+        improver = (
+            PromptImprover(complete_with_model)
+            if use_model
+            else StaticImprover(_read_json_value(proposal_json or ""))
+        )
         skill = propose_skill(
             FeedbackStore(
                 feedback_file or _default_path("review_experience/feedback.jsonl")
             ),
             SkillStore(skills_file or _default_path("review_skills/learned.jsonl")),
-            StaticImprover(response),
+            improver,
         )
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, json.JSONDecodeError, ModelClientError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"created {skill.id} (candidate)")
 
