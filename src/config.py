@@ -27,7 +27,6 @@ load_dotenv(_REPO_ROOT / ".env", override=True)
 _base_url_adapter = TypeAdapter(AnyHttpUrl)
 PermissionMode = Literal["default", "plan"]
 TraceDetailMode = Literal["off", "compact", "full"]
-FindingVerifierMode = Literal["off", "shadow", "enforce"]
 ReviewWorkflowEnforcement = Literal["off", "warn", "enforce"]
 ExecuteBackend = Literal["subprocess", "docker"]
 GitHubAuthMode = Literal["token", "app"]
@@ -284,17 +283,6 @@ class Settings(BaseModel):
         ge=1,
         le=3,
         description="Maximum provider attempts for one logical model call.",
-    )
-    finding_verifier_mode: FindingVerifierMode = Field(
-        default_factory=lambda: cast(
-            FindingVerifierMode,
-            os.getenv("FINDING_VERIFIER_MODE", "enforce").strip().lower(),
-        ),
-    )
-    verifier_max_repair_rounds: int = Field(
-        default_factory=lambda: int(os.getenv("VERIFIER_MAX_REPAIR_ROUNDS", "1")),
-        ge=0,
-        le=1,
     )
     root_cause_consolidation_enabled: bool = Field(
         default_factory=lambda: _parse_bool_env(

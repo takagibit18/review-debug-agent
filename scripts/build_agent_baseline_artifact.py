@@ -17,6 +17,7 @@ OUTPUT = ROOT / "eval/baselines/agent-baseline-v1.json"
 FIXTURE = ROOT / "eval/development_fixtures/development_agent_search_cross_file.json"
 MATCHER_SOURCE = ROOT / "eval/runner.py"
 CONSOLIDATOR_SOURCE = ROOT / "src/analyzer/root_cause.py"
+INTEGRITY_SOURCE = ROOT / "src/analyzer/finding_integrity.py"
 IMPLEMENTATION_SCOPE = (
     "docs/graph-ab/current-coupling-audit.md",
     "eval/development_fixtures/development_agent_search_cross_file.json",
@@ -28,7 +29,7 @@ IMPLEMENTATION_SCOPE = (
     "src/analyzer/context_state.py",
     "src/analyzer/context_strategy.py",
     "src/analyzer/evidence_policy.py",
-    "src/analyzer/finding_verifier.py",
+    "src/analyzer/finding_integrity.py",
     "src/analyzer/output_formatter.py",
     "src/analyzer/prompts.py",
     "src/analyzer/verifier_context.py",
@@ -105,7 +106,6 @@ def _load_run() -> tuple[dict[str, Any], dict[str, Any], Path]:
 
 
 def main() -> None:
-    from src.analyzer import finding_verifier
     from src.analyzer.prompts import review_system_prompt
 
     raw, result, event_log = _load_run()
@@ -113,10 +113,6 @@ def main() -> None:
     implementation_commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
-    verifier_prompt = (
-        finding_verifier._COMMON_VERIFIER_SYSTEM_PROMPT
-        + finding_verifier._AGENT_VERIFIER_POLICY
-    )
     artifact = {
         "baseline_id": "agent-baseline-v1",
         "variant_id": result["variant_id"],
@@ -164,7 +160,7 @@ def main() -> None:
             "reviewer_prompt_sha256": _sha256_bytes(
                 review_system_prompt("agent_search").encode("utf-8")
             ),
-            "verifier_prompt_sha256": _sha256_bytes(verifier_prompt.encode("utf-8")),
+            "finding_integrity_source_sha256": _sha256_file(INTEGRITY_SOURCE),
             "consolidator_prompt_sha256": _sha256_file(CONSOLIDATOR_SOURCE),
             "finding_schema_version": result["raw_output"]["report"]["schema_version"],
             "dataset_version": "development-agent-search-v1",

@@ -12,7 +12,6 @@ from src.analyzer.finding_schema import (
     SourceAnchor,
     context_hash,
 )
-from src.analyzer.finding_verifier import apply_verifications, build_candidates
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.root_cause import (
     ConsolidationVerification,
@@ -20,7 +19,6 @@ from src.analyzer.root_cause import (
     CausalityRelation,
     RootCauseConsolidator,
 )
-from src.analyzer.schemas import FindingVerification, FindingVerificationBatch
 
 
 def _evidence(
@@ -348,55 +346,6 @@ def test_merge_verifier_rejection_falls_back_to_original_findings() -> None:
         "independent_problem_absorbed" in issue.merge_rejection_reasons
         for issue in result.report.issues
     )
-
-
-def test_unsupported_finding_is_removed_before_merger() -> None:
-    supported = _finding(
-        "F-SUPPORTED",
-        file="service.py",
-        line=10,
-        mechanism="Cache key omits model identity",
-        invariant="Cache identity must match requested model configuration",
-        action="Include model in cache identity",
-        targets=["cache_key"],
-        boundary="cache lifecycle",
-    )
-    unsupported = _finding(
-        "F-UNSUPPORTED",
-        file="service.py",
-        line=20,
-        mechanism="Cache key omits model identity",
-        invariant="Cache identity must match requested model configuration",
-        action="Include model in cache identity",
-        targets=["cache_key"],
-        boundary="cache lifecycle",
-    )
-    report = ReviewReport(issues=[supported, unsupported])
-    candidates = build_candidates(report, iteration=0)
-    batch = FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=candidate.candidate_id,
-                status="accepted"
-                if candidate.issue.finding_id == "F-SUPPORTED"
-                else "rejected",
-                reason_codes=["verified"]
-                if candidate.issue.finding_id == "F-SUPPORTED"
-                else ["claim_not_supported"],
-                rationale="verdict",
-                verified_evidence=[candidate.issue.location]
-                if candidate.issue.finding_id == "F-SUPPORTED"
-                else [],
-            )
-            for candidate in candidates
-        ]
-    )
-
-    verified = apply_verifications(report, batch, mode="enforce")
-    result = RootCauseConsolidator().consolidate(verified)
-
-    assert result.metrics.input_verified_findings == 1
-    assert result.report.issues[0].finding_id == "F-SUPPORTED"
 
 
 def test_finding_causality_graph_records_hard_criteria_and_absorbed_role() -> None:

@@ -8,15 +8,16 @@ It intentionally does not decide whether the reported behavior is a bug.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from src.analyzer.diff_lines import changed_new_lines_by_file
-from src.analyzer.evidence_binding import bind_candidate_evidence
+from src.analyzer.evidence_binding import bind_candidate_evidence, bind_issue_candidate_id
 from src.analyzer.finding_schema import normalize_repo_path
 from src.analyzer.location import LocationParseResult, normalize_location
-from src.analyzer.output_formatter import ReviewIssue, Severity
+from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
 from src.analyzer.verifier_context import (
     build_candidate_verifier_context,
@@ -25,6 +26,56 @@ from src.analyzer.verifier_context import (
 )
 
 _RISK_SEVERITIES = {Severity.CRITICAL, Severity.WARNING}
+
+
+def build_candidates(
+    report: ReviewReport,
+    *,
+    iteration: int,
+) -> list[FindingCandidate]:
+    """Build stable risk candidates for the integrity stage."""
+
+    candidates: list[FindingCandidate] = []
+    seen: set[str] = set()
+    for source_issue_index, issue in enumerate(report.issues):
+        if issue.severity not in _RISK_SEVERITIES:
+            continue
+        candidate_id = _candidate_id(issue)
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        bound_issue = bind_issue_candidate_id(issue, candidate_id)
+        issue.candidate_id = candidate_id
+        for evidence in issue.all_evidence():
+            evidence.candidate_id = candidate_id
+        if not issue.finding_id:
+            issue.finding_id = "F-" + candidate_id[:12].upper()
+        bound_issue.finding_id = issue.finding_id
+        candidates.append(
+            FindingCandidate(
+                candidate_id=candidate_id,
+                issue=bound_issue,
+                claim=issue.suggestion.strip(),
+                evidence_locations=(
+                    [issue.location] if issue.location.strip() else []
+                ),
+                originating_iteration=max(0, iteration),
+                source_issue_index=source_issue_index,
+            )
+        )
+    return candidates
+
+
+def _candidate_id(issue: ReviewIssue) -> str:
+    normalized = "\n".join(
+        (
+            issue.severity.value,
+            issue.location.strip().replace("\\", "/"),
+            issue.evidence.strip(),
+            issue.suggestion.strip(),
+        )
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)

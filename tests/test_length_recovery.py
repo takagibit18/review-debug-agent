@@ -90,7 +90,6 @@ def _run_review(
     orchestrator = AgentOrchestrator(
         registry=registry,
         review_max_iterations=3,
-        finding_verifier_mode="off",
         review_workflow_enforcement="off",
     )
     orchestrator._model_client = client  # type: ignore[assignment]  # noqa: SLF001

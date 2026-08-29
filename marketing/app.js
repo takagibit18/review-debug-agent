@@ -99,7 +99,7 @@ const translations = {
       q3: "为什么不先做 dashboard？",
       a3: "第一产品回路在 GitHub PR 内更短：reviewer 已经在那里处理风险、讨论和合并判断。",
       q4: "这个页面如何部署？",
-      a4: "`marketing-vercel/` 可作为 Vercel 静态根目录；`marketing/` 是同步静态镜像。"
+      a4: "`marketing/` 是唯一的静态源目录，也可直接作为 Vercel 静态根目录。"
     },
     cta: {
       title: "把更清楚的 review 证据放回每个 PR。",
@@ -208,7 +208,7 @@ const translations = {
       q3: "Why not start with a dashboard?",
       a3: "The shortest first product loop is inside the PR, where reviewers already handle risk, discussion, and merge judgment.",
       q4: "How is this page deployed?",
-      a4: "`marketing-vercel/` can be served as the Vercel static root; `marketing/` is the synced static mirror."
+      a4: "`marketing/` is the single static source and can be served directly as the Vercel root."
     },
     cta: {
       title: "Put clearer review evidence back into every PR.",

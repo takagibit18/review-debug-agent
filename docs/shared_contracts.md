@@ -178,8 +178,6 @@ as `get_changed_context` / `find_symbol_context` over large preloaded prompts.
 | `MODEL_REQUEST_TIMEOUT_SECONDS` | 单次模型 provider 调用的硬超时 | 默认 `60`，对应 `Settings.model_request_timeout_seconds` |
 | `MODEL_MAX_RETRIES` | 单次逻辑模型调用的最大尝试次数 | 默认 `1`，对应 `Settings.model_max_retries` |
 | `AGENT_RUN_TIMEOUT_SECONDS` | 单次编排运行的总墙钟截止线 | 默认 `170`，对应 `Settings.agent_run_timeout_seconds` |
-| `FINDING_VERIFIER_MODE` | Finding 语义验证模式 | `off` / `shadow` / `enforce`；v0.2.0 默认 `enforce`，Warning/Critical 无有效 verdict 时不发布 |
-| `VERIFIER_MAX_REPAIR_ROUNDS` | `needs_evidence` 的最大补证据复验轮数 | `0..1`，默认 `1` |
 | `REVIEW_WORKFLOW_ENFORCEMENT` | Review required-step 门控模式 | `off` / `warn` / `enforce`；v0.2.0 默认 `enforce` |
 | `EVENT_LOG_DIR` | 事件 JSONL 日志目录 | 默认 `.mergewarden/logs`；相对路径时相对于 `repo_path` 解析，见编排层实现 |
 | `GITHUB_TOKEN` / `GH_TOKEN` / `github_token` | GitHub API token | GitHub Actions publish mode needs `checks:write` and `pull-requests:write`; dry-run does not need a token |

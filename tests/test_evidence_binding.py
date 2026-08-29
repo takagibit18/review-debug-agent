@@ -3,23 +3,14 @@
 from __future__ import annotations
 
 from src.analyzer.evidence_binding import bind_candidate_evidence
+from src.analyzer.finding_integrity import build_candidates
 from src.analyzer.finding_schema import (
     EvidenceProvenance,
-    RelatedLocation,
     RepairIntent,
     SourceAnchor,
 )
-from src.analyzer.finding_verifier import (
-    build_candidates,
-    validate_verifications,
-    validate_verifications_with_stats,
-)
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
-from src.analyzer.schemas import (
-    FindingVerification,
-    FindingVerificationBatch,
-    ReviewRequest,
-)
+from src.analyzer.schemas import ReviewRequest
 from src.analyzer.verifier_context import build_candidate_verifier_context
 
 
@@ -102,69 +93,46 @@ def _read_evidence(
     ]
 
 
-def _accepted(candidate_id: str) -> FindingVerificationBatch:
-    return FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=candidate_id,
-                status="accepted",
-                reason_codes=["verified"],
-                rationale="The retained caller and helper code prove the double increment.",
-                verified_evidence=["main.py:1", "helper.py:5"],
-            )
-        ]
+def _context(
+    candidates,
+    request: ReviewRequest,
+    tools: list[dict[str, object]],
+    manifests: list[dict[str, object]] | None = None,
+):
+    bound = bind_candidate_evidence(
+        candidates,
+        request,
+        tools,
+        context_manifests=manifests,
     )
-
-
-def test_semantic_verifier_schema_does_not_require_model_owned_provenance() -> None:
-    schema = FindingVerificationBatch.model_json_schema()
-    evidence_schema = schema["$defs"]["EvidenceProvenance"]
-    required = set(evidence_schema.get("required", []))
-
-    assert "candidate_id" not in required
-    assert "retrieval_source" not in required
-    assert "context_manifest_id" not in required
-    assert "context_hash" not in required
+    return bound, build_candidate_verifier_context(
+        bound,
+        request,
+        tools,
+        context_manifests=manifests,
+    )
 
 
 def test_read_evidence_mislabeled_as_diff_is_bound_to_successful_read() -> None:
     request = _request()
-    tools = _read_evidence()
     candidates = build_candidates(
         ReviewReport(issues=[_issue(contract_source="git_diff")]), iteration=0
     )
 
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    result = validate_verifications(
-        bound,
-        _accepted(bound[0].candidate_id),
-        request,
-        candidate_context=context,
-    )
+    bound, _ = _context(candidates, request, _read_evidence())
 
     assert bound[0].issue.contract_evidence[0].retrieval_source == "read_file"
-    assert result.results[0].status == "accepted"
 
 
 def test_omitted_source_is_bound_from_successful_read() -> None:
     request = _request()
-    tools = _read_evidence()
     candidates = build_candidates(
         ReviewReport(issues=[_issue(contract_source="")]), iteration=0
     )
 
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    result = validate_verifications(
-        bound,
-        _accepted(bound[0].candidate_id),
-        request,
-        candidate_context=context,
-    )
+    bound, _ = _context(candidates, request, _read_evidence())
 
     assert bound[0].issue.contract_evidence[0].retrieval_source == "read_file"
-    assert result.results[0].status == "accepted"
 
 
 def test_nonexistent_evidence_remains_fail_closed() -> None:
@@ -182,14 +150,11 @@ def test_nonexistent_evidence_remains_fail_closed() -> None:
         iteration=0,
     )
 
-    bound = bind_candidate_evidence(candidates, request, [])
-    context = build_candidate_verifier_context(bound, request, [])
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].verified_evidence = ["main.py:1", "missing.py:20"]
-    result = validate_verifications(bound, batch, request, candidate_context=context)
+    bound, context = _context(candidates, request, [])
 
     assert bound[0].issue.contract_evidence[0].retrieval_source == "git_diff"
-    assert result.results[0].status == "rejected"
+    assert not context[0]["included_spans"]
+    assert not context[0]["file_windows"]
 
 
 def test_build_candidates_overwrites_empty_and_wrong_evidence_ids() -> None:
@@ -216,27 +181,9 @@ def test_diff_and_read_location_uses_system_priority_not_model_label() -> None:
     candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
     tools = _read_evidence(file="main.py", start_line=1, line_count=2)
 
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    result = validate_verifications(
-        bound,
-        FindingVerificationBatch(
-            results=[
-                FindingVerification(
-                    candidate_id=bound[0].candidate_id,
-                    status="accepted",
-                    reason_codes=["verified"],
-                    rationale="The location is present in two trusted representations.",
-                    verified_evidence=["main.py:1"],
-                )
-            ]
-        ),
-        request,
-        candidate_context=context,
-    )
+    bound, _ = _context(candidates, request, tools)
 
     assert bound[0].issue.contract_evidence[0].retrieval_source == "git_diff"
-    assert result.results[0].status == "accepted"
 
 
 def test_read_precedes_other_tool_representations_without_diff() -> None:
@@ -264,17 +211,9 @@ def test_read_precedes_other_tool_representations_without_diff() -> None:
         },
     ]
 
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    result = validate_verifications(
-        bound,
-        _accepted(bound[0].candidate_id),
-        request,
-        candidate_context=context,
-    )
+    bound, _ = _context(candidates, request, tools)
 
     assert bound[0].issue.contract_evidence[0].retrieval_source == "read_file"
-    assert result.results[0].status == "accepted"
 
 
 def test_explicit_fake_manifest_is_not_rewritten_as_diff_or_read() -> None:
@@ -287,31 +226,13 @@ def test_explicit_fake_manifest_is_not_rewritten_as_diff_or_read() -> None:
     issue.contract_evidence[0].context_manifest_id = "C-FAKE"
     issue.contract_evidence[0].context_hash = "fake-hash"
     candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
-    tools = _read_evidence(file="main.py", start_line=1, line_count=2)
 
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    result = validate_verifications(
-        bound,
-        FindingVerificationBatch(
-            results=[
-                FindingVerification(
-                    candidate_id=bound[0].candidate_id,
-                    status="accepted",
-                    reason_codes=["verified"],
-                    rationale="The model supplied a manifest the runtime never created.",
-                    verified_evidence=["main.py:1"],
-                )
-            ]
-        ),
-        request,
-        candidate_context=context,
-    )
+    bound, _ = _context(candidates, request, _read_evidence(file="main.py"))
 
     evidence = bound[0].issue.contract_evidence[0]
     assert evidence.context_manifest_id == "C-FAKE"
     assert evidence.context_hash == "fake-hash"
-    assert result.results[0].status == "rejected"
+    assert evidence.retrieval_source == "relation_graph"
 
 
 def test_ambiguous_manifest_only_source_remains_fail_closed() -> None:
@@ -341,29 +262,11 @@ def test_ambiguous_manifest_only_source_remains_fail_closed() -> None:
         for manifest_id, digest in (("C-ONE", "hash-one"), ("C-TWO", "hash-two"))
     ]
 
-    bound = bind_candidate_evidence(
-        candidates,
-        request,
-        [],
-        context_manifests=manifests,
-    )
-    context = build_candidate_verifier_context(
-        bound,
-        request,
-        [],
-        context_manifests=manifests,
-    )
-    result = validate_verifications(
-        bound,
-        _accepted(bound[0].candidate_id),
-        request,
-        candidate_context=context,
-    )
+    bound, _ = _context(candidates, request, [], manifests)
 
     evidence = bound[0].issue.contract_evidence[0]
     assert evidence.retrieval_source == "reviewer_context"
     assert evidence.context_manifest_id == ""
-    assert result.results[0].status == "rejected"
 
 
 def test_unique_manifest_source_and_issue_binding_are_system_owned() -> None:
@@ -392,24 +295,7 @@ def test_unique_manifest_source_and_issue_binding_are_system_owned() -> None:
         "excluded_low_confidence_paths": [],
     }
 
-    bound = bind_candidate_evidence(
-        candidates,
-        request,
-        [],
-        context_manifests=[manifest],
-    )
-    context = build_candidate_verifier_context(
-        bound,
-        request,
-        [],
-        context_manifests=[manifest],
-    )
-    result = validate_verifications(
-        bound,
-        _accepted(bound[0].candidate_id),
-        request,
-        candidate_context=context,
-    )
+    bound, _ = _context(candidates, request, [], [manifest])
 
     bound_issue = bound[0].issue
     evidence = bound_issue.contract_evidence[0]
@@ -419,353 +305,3 @@ def test_unique_manifest_source_and_issue_binding_are_system_owned() -> None:
     assert evidence.context_manifest_id == "C-CANONICAL"
     assert evidence.context_hash == "canonical-hash"
     assert evidence.retrieval_source == "relation_graph"
-    assert result.results[0].status == "accepted"
-
-
-def test_revised_finding_is_rebound_to_retained_trusted_context() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(deep=True)
-    revised.observed_behavior = "The supported caller path increments the value twice."
-    revised.contract_evidence[0].candidate_id = "verifier-invented-id"
-    revised.contract_evidence[0].retrieval_source = "git_diff"
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].revised_issue = revised
-
-    result = validate_verifications(bound, batch, request, candidate_context=context)
-
-    assert result.results[0].status == "accepted"
-    assert result.results[0].revised_issue is not None
-    accepted = result.results[0].revised_issue
-    assert accepted.contract_evidence[0].retrieval_source == "read_file"
-    assert {item.candidate_id for item in accepted.all_evidence()} == {
-        bound[0].candidate_id
-    }
-
-
-def test_revised_finding_new_unseen_location_is_rejected() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(deep=True)
-    revised.contract_evidence[0] = revised.contract_evidence[0].model_copy(
-        update={
-            "retrieval_source": "read_file",
-            "file": "missing.py",
-            "line": 99,
-            "end_line": 99,
-            "statement": "An unseen helper allegedly increments the value.",
-        }
-    )
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].revised_issue = revised
-
-    result, stats = validate_verifications_with_stats(
-        bound, batch, request, candidate_context=context
-    )
-
-    assert result.results[0].status == "rejected"
-    assert any(
-        item.rule == "tool_evidence_context_missing"
-        and item.evidence_role == "contract"
-        and item.file == "missing.py"
-        and item.line == 99
-        and item.revised_issue
-        for item in stats.rejection_details
-    )
-
-
-def test_revised_finding_can_delete_unsupported_impact() -> None:
-    request = _request()
-    tools = _read_evidence()
-    issue = _issue()
-    issue.impact = "Every downstream consumer receives a corrupt result."
-    issue.impact_evidence = [
-        issue.contract_evidence[0].model_copy(
-            update={"statement": "The helper returns the affected result."}
-        )
-    ]
-    candidates = build_candidates(ReviewReport(issues=[issue]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(deep=True)
-    revised.impact = ""
-    revised.impact_evidence = []
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].revised_issue = revised
-
-    result = validate_verifications(bound, batch, request, candidate_context=context)
-
-    assert result.results[0].status == "accepted"
-    assert result.results[0].revised_issue is not None
-    assert result.results[0].revised_issue.impact == ""
-    assert result.results[0].revised_issue.impact_evidence == []
-
-
-def test_revised_primary_location_outside_received_context_is_rejected() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(
-        deep=True,
-        update={
-            "location": "missing.py:99",
-            "primary_anchor": SourceAnchor(file="missing.py", line=99),
-        },
-    )
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].revised_issue = revised
-
-    result, stats = validate_verifications_with_stats(
-        bound, batch, request, candidate_context=context
-    )
-
-    assert result.results[0].status == "rejected"
-    assert any(
-        item.rule == "finding_primary_location_invalid"
-        and item.file == "missing.py"
-        and item.line == 99
-        and item.revised_issue
-        for item in stats.rejection_details
-    )
-
-
-def test_revised_related_location_in_received_tool_context_is_accepted() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(deep=True)
-    revised.related_locations = [
-        RelatedLocation(
-            file="helper.py",
-            line=5,
-            role="contract",
-            description="The retained helper establishes the consumer contract.",
-        )
-    ]
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].revised_issue = revised
-
-    result = validate_verifications(bound, batch, request, candidate_context=context)
-
-    assert result.results[0].status == "accepted"
-
-
-def test_revised_related_location_outside_received_context_is_rejected() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(deep=True)
-    revised.related_locations = [
-        RelatedLocation(file="missing.py", line=99, description="Invented location.")
-    ]
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].revised_issue = revised
-
-    result, stats = validate_verifications_with_stats(
-        bound, batch, request, candidate_context=context
-    )
-
-    assert result.results[0].status == "rejected"
-    assert any(
-        item.rule == "evidence_context_missing"
-        and item.evidence_role == "related"
-        and item.file == "missing.py"
-        and item.line == 99
-        and item.revised_issue
-        for item in stats.rejection_details
-    )
-
-
-def test_downgraded_revision_cannot_introduce_unseen_location() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(
-        deep=True,
-        update={
-            "severity": Severity.INFO,
-            "location": "missing.py:99",
-            "primary_anchor": SourceAnchor(file="missing.py", line=99),
-        },
-    )
-    batch = FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=bound[0].candidate_id,
-                status="downgraded",
-                reason_codes=["severity_overstated"],
-                rationale="The verifier moved this advisory to an unseen file.",
-                revised_issue=revised,
-            )
-        ]
-    )
-
-    result, stats = validate_verifications_with_stats(
-        bound, batch, request, candidate_context=context
-    )
-
-    assert result.results[0].status == "rejected"
-    assert any(
-        item.rule == "finding_primary_location_invalid" and item.revised_issue
-        for item in stats.rejection_details
-    )
-
-
-def test_downgraded_revision_with_only_received_locations_is_accepted() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(
-        deep=True,
-        update={"severity": Severity.INFO},
-    )
-    batch = FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=bound[0].candidate_id,
-                status="downgraded",
-                reason_codes=["severity_overstated"],
-                rationale="The received code supports only an advisory.",
-                revised_issue=revised,
-            )
-        ]
-    )
-
-    result = validate_verifications(bound, batch, request, candidate_context=context)
-
-    assert result.results[0].status == "downgraded"
-    assert result.results[0].revised_issue is not None
-    assert result.results[0].revised_issue.contract_evidence[0].retrieval_source == (
-        "read_file"
-    )
-
-
-def test_downgraded_verdict_cannot_return_unseen_verified_evidence() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(
-        deep=True,
-        update={"severity": Severity.INFO},
-    )
-    batch = FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=bound[0].candidate_id,
-                status="downgraded",
-                reason_codes=["severity_overstated"],
-                rationale="The verifier cited an unseen location while downgrading.",
-                verified_evidence=[{"file": "missing.py", "line": 99}],
-                revised_issue=revised,
-            )
-        ]
-    )
-
-    result, stats = validate_verifications_with_stats(
-        bound, batch, request, candidate_context=context
-    )
-
-    assert result.results[0].status == "rejected"
-    assert any(
-        item.rule == "evidence_context_missing"
-        and item.evidence_role == "verifier"
-        and item.file == "missing.py"
-        and item.line == 99
-        for item in stats.rejection_details
-    )
-
-
-def test_needs_evidence_verdict_cannot_return_unseen_location() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    batch = FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=bound[0].candidate_id,
-                status="needs_evidence",
-                reason_codes=["cross_file_context_missing"],
-                rationale="The verifier requested evidence from an unseen location.",
-                verified_evidence=[{"file": "missing.py", "line": 99}],
-            )
-        ]
-    )
-
-    result, stats = validate_verifications_with_stats(
-        bound, batch, request, candidate_context=context
-    )
-
-    assert result.results[0].status == "rejected"
-    assert any(
-        item.rule == "evidence_context_missing"
-        and item.evidence_role == "verifier"
-        and item.file == "missing.py"
-        and item.line == 99
-        for item in stats.rejection_details
-    )
-
-
-def test_needs_evidence_without_code_locations_remains_repairable() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    batch = FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=bound[0].candidate_id,
-                status="needs_evidence",
-                reason_codes=["cross_file_context_missing"],
-                rationale="More retained caller context is required.",
-            )
-        ]
-    )
-
-    result = validate_verifications(bound, batch, request, candidate_context=context)
-
-    assert result.results[0].status == "needs_evidence"
-
-
-def test_revised_structured_finding_cannot_downgrade_schema() -> None:
-    request = _request()
-    tools = _read_evidence()
-    candidates = build_candidates(ReviewReport(issues=[_issue()]), iteration=0)
-    bound = bind_candidate_evidence(candidates, request, tools)
-    context = build_candidate_verifier_context(bound, request, tools)
-    revised = bound[0].issue.model_copy(
-        deep=True,
-        update={"schema_version": "1.0"},
-    )
-    batch = _accepted(bound[0].candidate_id)
-    batch.results[0].revised_issue = revised
-
-    result, stats = validate_verifications_with_stats(
-        bound, batch, request, candidate_context=context
-    )
-
-    assert result.results[0].status == "rejected"
-    assert any(
-        item.rule == "revised_schema_invalid" and item.revised_issue
-        for item in stats.rejection_details
-    )

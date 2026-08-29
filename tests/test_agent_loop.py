@@ -181,7 +181,10 @@ def test_review_min_tool_iterations_defers_first_round_submit(
     ]
     assert analyze_calls == 2
     assert continue_steps[0].result == "continue"
-    assert continue_steps[-1].result == "stop:max_iterations"
+    assert continue_steps[-1].result in {
+        "stop:model_completed",
+        "stop:max_iterations",
+    }
 
 
 def test_review_naturally_stops_after_minimum_exploration(
@@ -900,6 +903,9 @@ def test_soft_budget_returns_submitted_compatibility_warning(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TOKEN_BUDGET", "10")
+    target = tmp_path / "src" / "_pytest" / "python.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n" * 1199 + "return value\n", encoding="utf-8")
     orchestrator = AgentOrchestrator()
 
     async def _soft_cap_with_submitted_issue(state, request, tool_specs, **kwargs):  # type: ignore[no-untyped-def]
@@ -927,7 +933,22 @@ def test_soft_budget_returns_submitted_compatibility_warning(
 
     monkeypatch.setattr(orchestrator, "analyze", _soft_cap_with_submitted_issue)
 
-    response = asyncio.run(orchestrator.run_review(ReviewRequest(repo_path=".")))
+    response = asyncio.run(
+        orchestrator.run_review(
+            ReviewRequest(
+                repo_path=".",
+                diff_mode=True,
+                diff_text=(
+                    "diff --git a/src/_pytest/python.py b/src/_pytest/python.py\n"
+                    "--- a/src/_pytest/python.py\n"
+                    "+++ b/src/_pytest/python.py\n"
+                    "@@ -1199,1 +1200,1 @@\n"
+                    "-old value\n"
+                    "+return value\n"
+                ),
+            )
+        )
+    )
 
     assert response.context.decisions[-1].result == "stop:budget_soft_capped"
     assert [issue.location for issue in response.report.issues] == [

@@ -1122,7 +1122,7 @@ def render_core_report(report: CoreEvalReport) -> str:
         "",
         "## Candidate Finding Funnel",
         "",
-        "Counts cover valid candidate runs only; missing legacy fields deserialize as zero.",
+        "Counts cover valid candidate runs only.",
         "",
         "| Stage | Baseline | MergeWarden |",
         "|---|---:|---:|",
@@ -1140,16 +1140,6 @@ def render_core_report(report: CoreEvalReport) -> str:
             "| Pre-verifier rejected | "
             f"{baseline.candidate_funnel.pre_verifier_rejected_count} | "
             f"{mergewarden.candidate_funnel.pre_verifier_rejected_count} |"
-        ),
-        (
-            "| Calibration / rescue routed | "
-            f"{baseline.candidate_funnel.calibration_rescue_candidate_count} | "
-            f"{mergewarden.candidate_funnel.calibration_rescue_candidate_count} |"
-        ),
-        (
-            "| Semantic rejected | "
-            f"{baseline.candidate_funnel.semantic_rejected_count} | "
-            f"{mergewarden.candidate_funnel.semantic_rejected_count} |"
         ),
         (
             "| Deterministic rejected | "
@@ -1291,14 +1281,14 @@ def _main_failure_mode(report: CoreEvalReport) -> str:
                 '但得到 blank `summary=""` + `issues=[]`，'
                 f"{hard_capped} 个在 hard token cap 后结束；{missing_summary} candidate "
                 "fixtures 缺少 valid completion。当前实测瓶颈是 blank submit 的"
-                "明确性校验/恢复边界，而不是 workspace、hard cap 或 semantic judge；"
+                "明确性校验/恢复边界，而不是 workspace、hard cap 或完整性检查；"
                 "review quality A/B 暂不可比较。"
             )
         return (
             f"{len(incomplete)}/{len(candidate_attempts)} 个 candidate attempts 未合法完成，"
             f"其中 {no_submit} 个没有 submit_review，{hard_capped} 个在 hard token cap 后结束；"
             f"{missing_summary} candidate fixtures 缺少 valid completion。当前首要问题是 "
-            "runtime reliability 与完整 PR 上下文的预算伸缩，而不是 semantic judge；"
+            "runtime reliability 与完整 PR 上下文的预算伸缩，而不是完整性检查；"
             "review quality A/B 暂不可比较。"
         )
     if not candidate_runs:
@@ -1310,14 +1300,12 @@ def _main_failure_mode(report: CoreEvalReport) -> str:
         "no finding submitted": combined.no_finding_run_count,
         "non-risk not routed": combined.non_risk_not_routed_count,
         "pre-verifier rejected": combined.pre_verifier_rejected_count,
-        "semantic rejected": combined.semantic_rejected_count,
         "deterministic rejected": combined.deterministic_rejected_count,
     }
     stage_summary = ", ".join(f"{name}={count}" for name, count in stages.items())
     if combined.final_risk_finding_count:
         return (
-            f"Candidate funnel: {stage_summary}, calibration/rescue routed="
-            f"{combined.calibration_rescue_candidate_count}, final risk="
+            f"Candidate funnel: {stage_summary}, final risk="
             f"{combined.final_risk_finding_count}. Risk reached final output; any remaining "
             "gold miss is attributable after the funnel rather than to an unspecified "
             "pre-verifier disappearance."
@@ -1325,10 +1313,9 @@ def _main_failure_mode(report: CoreEvalReport) -> str:
     primary_stage, primary_count = max(stages.items(), key=lambda item: item[1])
     if primary_count:
         return (
-            f"Candidate funnel: {stage_summary}, calibration/rescue routed="
-            f"{combined.calibration_rescue_candidate_count}, final risk=0. The primary "
+            f"Candidate funnel: {stage_summary}, final risk=0. The primary "
             f"zeroing stage is `{primary_stage}` ({primary_count}); the report no longer "
-            "combines distinct pre-verifier, semantic, and deterministic losses."
+            "combines distinct policy and integrity losses."
         )
     return (
         "Candidate funnel contains no attributed loss and no final risk finding; inspect "

@@ -104,9 +104,8 @@ def test_renderer_maps_stages_and_not_reached_na() -> None:
         final_finding_survived=False,
         matcher_attempted=False,
         gold_match="NOT_REACHED",
-        pre_verifier="N/A",
-        semantic_verifier="N/A",
-        deterministic_validation="N/A",
+        finding_policy="N/A",
+        integrity_validation="N/A",
         graph_manifest_contains_gold=None,
     )
     b = _diagnostic(
@@ -124,7 +123,7 @@ def test_renderer_maps_stages_and_not_reached_na() -> None:
     assert "| submit_review | NORMAL | RECOVERY |" in markdown
 
 
-def test_failure_attribution_distinguishes_discovery_and_verifier() -> None:
+def test_failure_attribution_distinguishes_discovery_and_integrity() -> None:
     discovery = _diagnostic(
         "A-agent-search",
         reviewer_discovered_gold="NO",
@@ -136,10 +135,9 @@ def test_failure_attribution_distinguishes_discovery_and_verifier() -> None:
     verifier = _diagnostic(
         "B1-graph-hybrid-cold",
         submitted_gold_issue=True,
-        pre_verifier="PASS",
-        semantic_verifier="REJECT",
-        semantic_verifier_reasons=["claim_not_supported"],
-        deterministic_validation="N/A",
+        finding_policy="PASS",
+        integrity_validation="REJECT",
+        integrity_reasons=["evidence_not_observed"],
         final_finding_survived=False,
         matcher_attempted=False,
         gold_match="NOT_REACHED",
@@ -149,8 +147,8 @@ def test_failure_attribution_distinguishes_discovery_and_verifier() -> None:
     _attribute_failure(verifier)
 
     assert discovery.failure_stage == "reviewer_discovery"
-    assert verifier.failure_stage == "semantic_verifier"
-    assert "claim_not_supported" in verifier.failure_evidence
+    assert verifier.failure_stage == "integrity_validation"
+    assert "evidence_not_observed" in verifier.failure_evidence
 
 
 def test_provider_failure_precedes_structured_submit() -> None:
@@ -174,9 +172,8 @@ def test_failure_attribution_reaches_matcher_only_after_final_survival() -> None
     item = _diagnostic(
         "A-agent-search",
         submitted_gold_issue=True,
-        pre_verifier="PASS",
-        semantic_verifier="ACCEPT",
-        deterministic_validation="PASS",
+        finding_policy="PASS",
+        integrity_validation="PASS",
         final_finding_survived=True,
         matcher_attempted=True,
         gold_match="MISS",

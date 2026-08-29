@@ -333,16 +333,9 @@ class ReviewProcessMetrics(BaseModel):
     evidence_bound_issue_count: int = Field(default=0, ge=0)
     verifier_accepted_count: int = Field(default=0, ge=0)
     verifier_rejected_count: int = Field(default=0, ge=0)
-    verifier_needs_evidence_count: int = Field(default=0, ge=0)
-    verifier_downgraded_count: int = Field(default=0, ge=0)
-    raw_verifier_accepted_count: int = Field(default=0, ge=0)
-    raw_verifier_rejected_count: int = Field(default=0, ge=0)
-    raw_verifier_needs_evidence_count: int = Field(default=0, ge=0)
-    raw_verifier_downgraded_count: int = Field(default=0, ge=0)
     deterministic_evidence_checked_count: int = Field(default=0, ge=0)
     deterministic_evidence_passed_count: int = Field(default=0, ge=0)
     deterministic_evidence_rejected_count: int = Field(default=0, ge=0)
-    first_pass_accept_count: int = Field(default=0, ge=0)
     required_step_count: int = Field(default=0, ge=0)
     completed_required_step_count: int = Field(default=0, ge=0)
     workflow_filtered_issue_count: int = Field(default=0, ge=0)
@@ -554,7 +547,6 @@ class MetricSummary(BaseModel):
     evidence_binding_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     verifier_accept_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     verifier_reject_rate: float = Field(default=0.0, ge=0.0, le=1.0)
-    first_pass_accept_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     required_step_completion_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     duplicate_tool_call_rate: float = Field(default=0.0, ge=0.0)
     cost_per_accepted_finding: float = Field(default=0.0, ge=0.0)
@@ -577,12 +569,6 @@ class MetricSummary(BaseModel):
     verifier_candidate_count: int = Field(default=0, ge=0)
     verifier_accepted_count: int = Field(default=0, ge=0)
     verifier_rejected_count: int = Field(default=0, ge=0)
-    verifier_needs_evidence_count: int = Field(default=0, ge=0)
-    verifier_downgraded_count: int = Field(default=0, ge=0)
-    raw_verifier_accepted_count: int = Field(default=0, ge=0)
-    raw_verifier_rejected_count: int = Field(default=0, ge=0)
-    raw_verifier_needs_evidence_count: int = Field(default=0, ge=0)
-    raw_verifier_downgraded_count: int = Field(default=0, ge=0)
     deterministic_evidence_checked_count: int = Field(default=0, ge=0)
     deterministic_evidence_passed_count: int = Field(default=0, ge=0)
     deterministic_evidence_rejected_count: int = Field(default=0, ge=0)
@@ -763,26 +749,9 @@ def _aggregate_process_metrics(
     )
     accepted = sum(item.process_metrics.verifier_accepted_count for item in results)
     rejected = sum(item.process_metrics.verifier_rejected_count for item in results)
-    first_pass = sum(item.process_metrics.first_pass_accept_count for item in results)
     required = sum(item.process_metrics.required_step_count for item in results)
     completed = sum(
         item.process_metrics.completed_required_step_count for item in results
-    )
-    needs_evidence = sum(
-        item.process_metrics.verifier_needs_evidence_count for item in results
-    )
-    downgraded = sum(item.process_metrics.verifier_downgraded_count for item in results)
-    raw_accepted = sum(
-        item.process_metrics.raw_verifier_accepted_count for item in results
-    )
-    raw_rejected = sum(
-        item.process_metrics.raw_verifier_rejected_count for item in results
-    )
-    raw_needs_evidence = sum(
-        item.process_metrics.raw_verifier_needs_evidence_count for item in results
-    )
-    raw_downgraded = sum(
-        item.process_metrics.raw_verifier_downgraded_count for item in results
     )
     deterministic_checked = sum(
         item.process_metrics.deterministic_evidence_checked_count for item in results
@@ -847,12 +816,6 @@ def _aggregate_process_metrics(
         "verifier_candidate_count": verifier_candidates,
         "verifier_accepted_count": accepted,
         "verifier_rejected_count": rejected,
-        "verifier_needs_evidence_count": needs_evidence,
-        "verifier_downgraded_count": downgraded,
-        "raw_verifier_accepted_count": raw_accepted,
-        "raw_verifier_rejected_count": raw_rejected,
-        "raw_verifier_needs_evidence_count": raw_needs_evidence,
-        "raw_verifier_downgraded_count": raw_downgraded,
         "deterministic_evidence_checked_count": deterministic_checked,
         "deterministic_evidence_passed_count": deterministic_passed,
         "deterministic_evidence_rejected_count": deterministic_rejected,
@@ -868,7 +831,6 @@ def _aggregate_process_metrics(
             if deterministic_checked
             else 1.0
         ),
-        "first_pass_accept_rate": first_pass / accepted if accepted else 0.0,
         "required_step_completion_rate": completed / required if required else 1.0,
         "duplicate_tool_call_rate": duplicates / candidates if candidates else 0.0,
         "cost_per_accepted_finding": tokens / accepted if accepted else 0.0,

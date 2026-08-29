@@ -6,7 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from src.analyzer.finding_integrity import FindingIntegrityGuard
+from src.analyzer.finding_integrity import FindingIntegrityGuard, build_candidates
 from src.analyzer.finding_schema import EvidenceProvenance
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import AnalysisPlan, FindingCandidate, ReviewRequest
@@ -98,12 +98,9 @@ def _read_file_evidence(tmp_path: Path) -> list[dict[str, object]]:
 
 
 def _candidate(issue: ReviewIssue, request: ReviewRequest) -> FindingCandidate:
-    from src.analyzer.finding_verifier import build_candidates
-
     return build_candidates(
         ReviewReport(summary="review", issues=[issue]),
         iteration=0,
-        request=request,
     )[0]
 
 
@@ -238,7 +235,6 @@ def test_default_orchestrator_uses_integrity_guard_without_semantic_verifier(
     _write_service(tmp_path)
     monkeypatch.setenv("ROOT_CAUSE_CONSOLIDATION_ENABLED", "false")
     orchestrator = AgentOrchestrator(
-        finding_verifier_mode="enforce",
         review_workflow_enforcement="off",
         review_diff_first_changed_files=False,
     )

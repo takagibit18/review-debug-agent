@@ -98,26 +98,6 @@ def extract_review_process_metrics(
             metrics.verifier_rejected_count = _non_negative_int(
                 payload.get("rejected_count")
             )
-            metrics.verifier_needs_evidence_count = _non_negative_int(
-                payload.get("needs_evidence_count")
-            )
-            metrics.verifier_downgraded_count = _non_negative_int(
-                payload.get("downgraded_count")
-            )
-            metrics.raw_verifier_accepted_count = _non_negative_int(
-                payload.get("raw_accepted_count", payload.get("accepted_count"))
-            )
-            metrics.raw_verifier_rejected_count = _non_negative_int(
-                payload.get("raw_rejected_count", payload.get("rejected_count"))
-            )
-            metrics.raw_verifier_needs_evidence_count = _non_negative_int(
-                payload.get(
-                    "raw_needs_evidence_count", payload.get("needs_evidence_count")
-                )
-            )
-            metrics.raw_verifier_downgraded_count = _non_negative_int(
-                payload.get("raw_downgraded_count", payload.get("downgraded_count"))
-            )
             metrics.deterministic_evidence_checked_count = _non_negative_int(
                 payload.get("deterministic_evidence_checked_count")
             )
@@ -126,9 +106,6 @@ def extract_review_process_metrics(
             )
             metrics.deterministic_evidence_rejected_count = _non_negative_int(
                 payload.get("deterministic_evidence_rejected_count")
-            )
-            metrics.first_pass_accept_count = _non_negative_int(
-                payload.get("first_pass_accept_count")
             )
             metrics.model_raw_issue_count = _non_negative_int(
                 payload.get("model_raw_issue_count", metrics.model_raw_issue_count)

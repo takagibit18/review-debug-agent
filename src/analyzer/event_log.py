@@ -30,8 +30,6 @@ class EventType(str, Enum):
     FINDING_CANDIDATES_BUILT = "finding_candidates_built"
     FINDING_VERIFICATION_COMPLETED = "finding_verification_completed"
     FINDING_FUNNEL_COMPLETED = "finding_funnel_completed"
-    FINDING_VERIFICATION_FAILED = "finding_verification_failed"
-    FINDING_EVIDENCE_REPAIR_COMPLETED = "finding_evidence_repair_completed"
     INDEX_LIFECYCLE = "index_lifecycle"
     CHANGED_ANCHORS_EXTRACTED = "changed_anchors_extracted"
     RELATION_GRAPH_BUILT = "relation_graph_built"
