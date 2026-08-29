@@ -68,7 +68,7 @@ class ReviewIssue(BaseModel):
         default=None,
         description=(
             "Primary display anchor for the issue; PR causality is established "
-            "separately by cause_evidence on changed code."
+            "by a changed-code anchor, while supporting evidence may be unchanged."
         ),
     )
     related_locations: list[RelatedLocation] = Field(default_factory=list)

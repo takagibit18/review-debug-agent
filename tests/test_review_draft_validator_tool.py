@@ -122,7 +122,7 @@ def test_validate_review_draft_separates_display_location_from_causal_anchor(
     assert not any("move location" in hint for hint in issue["repair_hints"])
 
 
-def test_validate_review_draft_requires_changed_cause_evidence_for_risk(
+def test_validate_review_draft_accepts_changed_display_anchor_without_changed_cause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -146,9 +146,9 @@ def test_validate_review_draft_requires_changed_cause_evidence_for_risk(
     issue = result["issue_results"][0]
     assert issue["location_on_changed_line"] is True
     assert issue["pr_causal_anchor_on_changed_line"] is False
-    assert issue["passes_current_filter"] is False
-    assert "pr_causal_anchor_missing" in issue["fail_reasons"]
-    assert any("cause_evidence" in hint for hint in issue["repair_hints"])
+    assert issue["changed_anchor_present"] is True
+    assert issue["passes_current_filter"] is True
+    assert "changed_anchor_missing" not in issue["fail_reasons"]
 
 
 def test_validate_review_draft_warns_when_summary_mentions_regression_without_surviving_issue(
