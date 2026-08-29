@@ -16,6 +16,7 @@ from src.analyzer.context_priority import (
     compact_review_prompt_parts,
 )
 from src.analyzer.context_state import ContextState
+from src.analyzer.review_skills import ReviewSkillLoader
 from src.analyzer.schemas import DebugRequest, ReviewRequest
 from src.models.schemas import Message
 
@@ -154,9 +155,14 @@ def review_prompt_parts(context_mode: str) -> tuple[str, str]:
     return COMMON_REVIEW_PROMPT, policy
 
 
-def review_system_prompt(context_mode: str) -> str:
+def review_system_prompt(
+    context_mode: str,
+    *,
+    skill_loader: ReviewSkillLoader | None = None,
+) -> str:
     common, policy = review_prompt_parts(context_mode)
-    return common + policy
+    skills = (skill_loader or ReviewSkillLoader()).render()
+    return common + "\n\n" + skills + "\n" + policy
 
 
 SYSTEM_PROMPT_DEBUG = (
@@ -242,6 +248,7 @@ def build_review_messages(
     context_builder: ContextBuilder | None = None,
     project_structure: str | None = None,
     telemetry_sink: dict[str, Any] | None = None,
+    skill_loader: ReviewSkillLoader | None = None,
 ) -> list[Message]:
     """Build review-mode messages with optional priority truncation of payload parts."""
     cb = context_builder or ContextBuilder()
@@ -257,7 +264,13 @@ def build_review_messages(
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context, selected)
     return [
-        Message(role="system", content=review_system_prompt(context.context_mode)),
+        Message(
+            role="system",
+            content=review_system_prompt(
+                context.context_mode,
+                skill_loader=skill_loader,
+            ),
+        ),
         Message(
             role="user",
             content=USER_PREFIX_REVIEW + json.dumps(payload, ensure_ascii=True),
@@ -279,6 +292,7 @@ async def build_review_messages_async(
     summary_max_tokens_per_part: int = 1000,
     summary_model_name: str = "",
     telemetry_sink: dict[str, Any] | None = None,
+    skill_loader: ReviewSkillLoader | None = None,
 ) -> list[Message]:
     """Build review-mode messages with optional second-layer summary compaction."""
     cb = context_builder or ContextBuilder()
@@ -302,7 +316,13 @@ async def build_review_messages_async(
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context, selected)
     return [
-        Message(role="system", content=review_system_prompt(context.context_mode)),
+        Message(
+            role="system",
+            content=review_system_prompt(
+                context.context_mode,
+                skill_loader=skill_loader,
+            ),
+        ),
         Message(
             role="user",
             content=USER_PREFIX_REVIEW + json.dumps(payload, ensure_ascii=True),
