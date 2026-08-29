@@ -3,7 +3,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MARKETING_DIRS = (ROOT / "marketing", ROOT / "marketing-vercel")
+MARKETING_DIRS = (ROOT / "marketing",)
 
 
 def _rule_body(css: str, selector: str) -> str:
