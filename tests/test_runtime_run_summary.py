@@ -76,43 +76,31 @@ def test_summarize_run_artifacts_includes_artifact_paths(tmp_path: Path) -> None
     assert artifact_summary.artifact_paths["publish_result_json"] == str(publish_json)
 
 
-def test_runtime_summary_collects_verifier_and_workflow_outcomes(
+def test_runtime_summary_collects_integrity_and_workflow_outcomes(
     tmp_path: Path,
 ) -> None:
-    log = tmp_path / "v020.jsonl"
+    log = tmp_path / "integrity.jsonl"
     events = [
         {
-            "run_id": "run-v020",
+            "run_id": "run-integrity",
             "event_type": "finding_candidates_built",
             "phase": "verify_findings",
             "payload": {"candidate_count": 3, "mode": "enforce"},
         },
         {
-            "run_id": "run-v020",
+            "run_id": "run-integrity",
             "event_type": "finding_verification_completed",
             "phase": "verify_findings",
             "payload": {
                 "accepted_count": 1,
                 "rejected_count": 1,
-                "needs_evidence_count": 0,
-                "downgraded_count": 1,
-                "reason_codes": [
-                    "verified",
-                    "claim_not_supported",
-                    "severity_overstated",
-                ],
-                "raw_accepted_count": 2,
-                "raw_rejected_count": 0,
-                "raw_needs_evidence_count": 0,
-                "raw_downgraded_count": 1,
-                "raw_reason_codes": ["verified", "verified", "severity_overstated"],
                 "deterministic_evidence_checked_count": 2,
                 "deterministic_evidence_passed_count": 1,
                 "deterministic_evidence_rejected_count": 1,
             },
         },
         {
-            "run_id": "run-v020",
+            "run_id": "run-integrity",
             "event_type": "finding_funnel_completed",
             "phase": "finding_funnel",
             "payload": {
@@ -121,16 +109,12 @@ def test_runtime_summary_collects_verifier_and_workflow_outcomes(
                 "non_risk_not_routed_count": 1,
                 "pre_verifier_rejected_count": 1,
                 "risk_candidate_count": 1,
-                "filter_rescue_candidate_count": 1,
-                "severity_calibration_candidate_count": 1,
-                "calibration_rescue_candidate_count": 2,
-                "semantic_rejected_count": 1,
                 "deterministic_rejected_count": 1,
                 "final_risk_finding_count": 1,
             },
         },
         {
-            "run_id": "run-v020",
+            "run_id": "run-integrity",
             "event_type": "workflow_summary",
             "phase": "workflow",
             "payload": {
@@ -146,22 +130,14 @@ def test_runtime_summary_collects_verifier_and_workflow_outcomes(
 
     summary = summarize_event_log(log)
 
-    assert summary.finding_verifier_mode == "enforce"
     assert summary.finding_candidate_count == 3
     assert summary.finding_accepted_count == 1
     assert summary.finding_rejected_count == 1
-    assert summary.finding_downgraded_count == 1
-    assert summary.finding_reason_codes["claim_not_supported"] == 1
-    assert summary.raw_verifier_accepted_count == 2
-    assert summary.raw_verifier_rejected_count == 0
-    assert summary.raw_finding_reason_codes["verified"] == 2
     assert summary.deterministic_evidence_checked_count == 2
     assert summary.deterministic_evidence_passed_count == 1
     assert summary.deterministic_evidence_rejected_count == 1
     assert summary.finding_funnel.submitted_finding_count == 5
     assert summary.finding_funnel.non_risk_not_routed_count == 1
-    assert summary.finding_funnel.calibration_rescue_candidate_count == 2
-    assert summary.finding_funnel.semantic_rejected_count == 1
     assert summary.finding_funnel.deterministic_rejected_count == 1
     assert summary.finding_funnel.final_risk_finding_count == 1
     assert summary.workflow_enforcement == "enforce"
@@ -171,20 +147,19 @@ def test_runtime_summary_collects_verifier_and_workflow_outcomes(
     assert summary.workflow_reprompt_count == 1
 
 
-def test_runtime_summary_backfills_raw_counts_for_legacy_events(tmp_path: Path) -> None:
-    log = tmp_path / "legacy.jsonl"
+def test_runtime_summary_ignores_retired_verifier_fields(tmp_path: Path) -> None:
+    log = tmp_path / "historical.jsonl"
     log.write_text(
         json.dumps(
             {
-                "run_id": "legacy",
+                "run_id": "historical",
                 "event_type": "finding_verification_completed",
                 "phase": "verify_findings",
                 "payload": {
                     "accepted_count": 1,
                     "rejected_count": 1,
-                    "needs_evidence_count": 0,
-                    "downgraded_count": 0,
-                    "reason_codes": ["verified", "claim_not_supported"],
+                    "raw_accepted_count": 2,
+                    "raw_rejected_count": 1,
                 },
             }
         ),
@@ -193,12 +168,8 @@ def test_runtime_summary_backfills_raw_counts_for_legacy_events(tmp_path: Path) 
 
     summary = summarize_event_log(log)
 
-    assert summary.raw_verifier_accepted_count == 1
-    assert summary.raw_verifier_rejected_count == 1
-    assert summary.raw_finding_reason_codes == {
-        "verified": 1,
-        "claim_not_supported": 1,
-    }
+    assert summary.finding_accepted_count == 1
+    assert summary.finding_rejected_count == 1
     assert summary.deterministic_evidence_checked_count == 0
     assert summary.finding_funnel.model_dump() == {
         key: 0 for key in type(summary.finding_funnel).model_fields

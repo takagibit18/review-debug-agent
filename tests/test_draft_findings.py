@@ -360,7 +360,6 @@ def test_draft_is_journaled_and_stored_before_ordinary_tool_then_used_by_finaliz
     orchestrator = AgentOrchestrator(
         registry=registry,
         review_max_iterations=2,
-        finding_verifier_mode="off",
         review_workflow_enforcement="off",
     )
     orchestrator_ref["value"] = orchestrator

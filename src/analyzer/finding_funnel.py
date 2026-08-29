@@ -13,10 +13,6 @@ class FindingFunnel(BaseModel):
     non_risk_not_routed_count: int = Field(default=0, ge=0)
     pre_verifier_rejected_count: int = Field(default=0, ge=0)
     risk_candidate_count: int = Field(default=0, ge=0)
-    filter_rescue_candidate_count: int = Field(default=0, ge=0)
-    severity_calibration_candidate_count: int = Field(default=0, ge=0)
-    calibration_rescue_candidate_count: int = Field(default=0, ge=0)
-    semantic_rejected_count: int = Field(default=0, ge=0)
     deterministic_rejected_count: int = Field(default=0, ge=0)
     final_risk_finding_count: int = Field(default=0, ge=0)
 

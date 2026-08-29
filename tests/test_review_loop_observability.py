@@ -53,7 +53,6 @@ def _orchestrator(
     return AgentOrchestrator(
         registry=registry,
         context_mode="agent_search",
-        finding_verifier_mode="off",
         review_workflow_enforcement="off",
         **kwargs,
     )

@@ -394,7 +394,7 @@ def test_report_identifies_blank_submit_as_completion_failure() -> None:
 
     assert 'blank `summary=""` + `issues=[]`' in markdown
     assert "明确性校验/恢复边界" in markdown
-    assert "不是 workspace、hard cap 或 semantic judge" in markdown
+    assert "不是 workspace、hard cap 或完整性检查" in markdown
 
 
 def test_core_report_aggregates_candidate_funnel_by_variant() -> None:
@@ -415,9 +415,7 @@ def test_core_report_aggregates_candidate_funnel_by_variant() -> None:
                 finding_funnel=FindingFunnel(
                     submitted_finding_count=2,
                     non_risk_not_routed_count=1,
-                    severity_calibration_candidate_count=1,
-                    calibration_rescue_candidate_count=1,
-                    semantic_rejected_count=1,
+                    deterministic_rejected_count=1,
                     final_risk_finding_count=1,
                 )
             )
@@ -435,15 +433,11 @@ def test_core_report_aggregates_candidate_funnel_by_variant() -> None:
     assert by_label["baseline"].candidate_funnel.no_finding_run_count == 1
     assert by_label["mergewarden"].candidate_funnel.submitted_finding_count == 2
     assert by_label["mergewarden"].candidate_funnel.non_risk_not_routed_count == 1
-    assert (
-        by_label["mergewarden"].candidate_funnel.calibration_rescue_candidate_count == 1
-    )
-    assert by_label["mergewarden"].candidate_funnel.semantic_rejected_count == 1
+    assert by_label["mergewarden"].candidate_funnel.deterministic_rejected_count == 1
     assert by_label["mergewarden"].candidate_funnel.final_risk_finding_count == 1
     markdown = render_core_report(report)
     assert "## Candidate Finding Funnel" in markdown
     assert "| No finding submitted | 1 | 0 |" in markdown
-    assert "| Calibration / rescue routed | 0 | 1 |" in markdown
     assert "| Final risk findings | 0 | 1 |" in markdown
     assert "Risk reached final output" in markdown
 

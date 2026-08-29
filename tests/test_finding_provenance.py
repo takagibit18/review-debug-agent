@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.analyzer.code_graph import ChangedAnchor
 from src.analyzer.context_planner import (
     CandidateContextManifest,
@@ -10,20 +12,16 @@ from src.analyzer.context_planner import (
     ManifestGraphEdge,
     extend_manifest,
 )
+from src.analyzer.finding_integrity import FindingIntegrityGuard, build_candidates
 from src.analyzer.finding_schema import (
     EvidenceProvenance,
     RepairIntent,
     SourceAnchor,
     context_hash,
 )
-from src.analyzer.finding_verifier import build_candidates, validate_verifications
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.root_cause import ConsolidationVerifier, RootCauseConsolidator
-from src.analyzer.schemas import (
-    FindingVerification,
-    FindingVerificationBatch,
-    ReviewRequest,
-)
+from src.analyzer.schemas import ReviewRequest
 
 
 def _span(
@@ -120,9 +118,9 @@ def _issue(
     )
 
 
-def _request() -> ReviewRequest:
+def _request(repo_path: str = ".") -> ReviewRequest:
     return ReviewRequest(
-        repo_path=".",
+        repo_path=repo_path,
         diff_mode=True,
         diff_text=(
             "diff --git a/pkg/service.py b/pkg/service.py\n"
@@ -132,44 +130,61 @@ def _request() -> ReviewRequest:
     )
 
 
-def _accepted_batch(candidate_id: str) -> FindingVerificationBatch:
-    return FindingVerificationBatch(
-        results=[
-            FindingVerification(
-                candidate_id=candidate_id,
-                status="accepted",
-                reason_codes=["verified"],
-                rationale="Evidence supports the hypothesis.",
-                verified_evidence=["pkg/service.py:12"],
-            )
-        ]
+def _write_integrity_repo(tmp_path: Path) -> None:
+    service = tmp_path / "pkg" / "service.py"
+    service.parent.mkdir(parents=True, exist_ok=True)
+    service.write_text(
+        "\n".join(f"line {index}" for index in range(1, 31)) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pkg" / "helper.py").write_text(
+        "\n".join(f"helper line {index}" for index in range(1, 31)) + "\n",
+        encoding="utf-8",
     )
 
 
-def test_verifier_accepts_exact_manifest_span_and_hash() -> None:
-    manifest = _manifest()
-    candidate = build_candidates(
-        ReviewReport(issues=[_issue(manifest=manifest)]), iteration=0
-    )[0]
-    context = {
-        "candidate_id": candidate.candidate_id,
+def _manifest_context(manifest: CandidateContextManifest) -> dict[str, object]:
+    return {
+        "candidate_id": "",
         "context_manifest_id": manifest.candidate_id,
         "included_spans": [
             item.model_dump(mode="json") for item in manifest.included_spans
         ],
     }
 
-    result = validate_verifications(
+
+def _guard_result(
+    tmp_path: Path,
+    issue: ReviewIssue,
+    manifest: CandidateContextManifest,
+    *,
+    context: dict[str, object] | None = None,
+) -> object:
+    request = _request(str(tmp_path))
+    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
+    candidate_context = dict(context or _manifest_context(manifest))
+    candidate_context["candidate_id"] = candidate.candidate_id
+    return FindingIntegrityGuard(tmp_path).validate(
         [candidate],
-        _accepted_batch(candidate.candidate_id),
-        _request(),
-        candidate_context=[context],
+        request,
+        context_manifests=[manifest.model_dump(mode="json")],
+        candidate_context=[candidate_context],
     )
 
-    assert result.results[0].status == "accepted"
+
+def test_integrity_guard_accepts_exact_manifest_span_and_hash(tmp_path: Path) -> None:
+    _write_integrity_repo(tmp_path)
+    manifest = _manifest()
+
+    result = _guard_result(tmp_path, _issue(manifest=manifest), manifest)
+
+    assert result.passed_count == 1
 
 
-def test_verifier_accepts_manifest_and_read_evidence_in_one_finding() -> None:
+def test_integrity_guard_accepts_manifest_and_read_evidence_in_one_finding(
+    tmp_path: Path,
+) -> None:
+    _write_integrity_repo(tmp_path)
     manifest = _manifest()
     issue = _issue(manifest=manifest)
     issue.contract_evidence = [
@@ -184,14 +199,8 @@ def test_verifier_accepts_manifest_and_read_evidence_in_one_finding() -> None:
             }
         )
     ]
-    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
     context = {
-        "candidate_id": candidate.candidate_id,
-        "context_mode": "graph_hybrid",
-        "context_manifest_id": manifest.candidate_id,
-        "included_spans": [
-            item.model_dump(mode="json") for item in manifest.included_spans
-        ],
+        **_manifest_context(manifest),
         "file_windows": [
             {
                 "path": "pkg/helper.py",
@@ -202,17 +211,16 @@ def test_verifier_accepts_manifest_and_read_evidence_in_one_finding() -> None:
             }
         ],
     }
-    batch = _accepted_batch(candidate.candidate_id)
-    batch.results[0].verified_evidence.append("pkg/helper.py:20")
 
-    result = validate_verifications(
-        [candidate], batch, _request(), candidate_context=[context]
-    )
+    result = _guard_result(tmp_path, issue, manifest, context=context)
 
-    assert result.results[0].status == "accepted"
+    assert result.passed_count == 1
 
 
-def test_verifier_accepts_manifest_and_diff_evidence_in_one_finding() -> None:
+def test_integrity_guard_accepts_manifest_and_diff_evidence_in_one_finding(
+    tmp_path: Path,
+) -> None:
+    _write_integrity_repo(tmp_path)
     manifest = _manifest()
     issue = _issue(manifest=manifest)
     issue.contract_evidence = [
@@ -228,14 +236,8 @@ def test_verifier_accepts_manifest_and_diff_evidence_in_one_finding() -> None:
             }
         )
     ]
-    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
     context = {
-        "candidate_id": candidate.candidate_id,
-        "context_mode": "graph_hybrid",
-        "context_manifest_id": manifest.candidate_id,
-        "included_spans": [
-            item.model_dump(mode="json") for item in manifest.included_spans
-        ],
+        **_manifest_context(manifest),
         "diff_hunks": [
             {
                 "path": "pkg/service.py",
@@ -247,17 +249,15 @@ def test_verifier_accepts_manifest_and_diff_evidence_in_one_finding() -> None:
         ],
     }
 
-    result = validate_verifications(
-        [candidate],
-        _accepted_batch(candidate.candidate_id),
-        _request(),
-        candidate_context=[context],
-    )
+    result = _guard_result(tmp_path, issue, manifest, context=context)
 
-    assert result.results[0].status == "accepted"
+    assert result.passed_count == 1
 
 
-def test_verifier_rejects_manifest_finding_with_unread_tool_evidence() -> None:
+def test_integrity_guard_rejects_manifest_finding_with_unread_tool_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_integrity_repo(tmp_path)
     manifest = _manifest()
     issue = _issue(manifest=manifest)
     issue.contract_evidence = [
@@ -271,82 +271,55 @@ def test_verifier_rejects_manifest_finding_with_unread_tool_evidence() -> None:
             }
         )
     ]
-    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
-    context = {
-        "candidate_id": candidate.candidate_id,
-        "context_mode": "graph_hybrid",
-        "context_manifest_id": manifest.candidate_id,
-        "included_spans": [
-            item.model_dump(mode="json") for item in manifest.included_spans
-        ],
-        "file_windows": [],
+
+    result = _guard_result(tmp_path, issue, manifest)
+
+    assert result.rejected_count == 1
+    assert "evidence_not_observed" in {
+        failure.code for failure in result.results[0].failures
     }
 
-    result = validate_verifications(
-        [candidate],
-        _accepted_batch(candidate.candidate_id),
-        _request(),
-        candidate_context=[context],
-    )
 
-    assert result.results[0].status == "rejected"
-
-
-def test_verifier_rejects_code_outside_manifest() -> None:
+def test_integrity_guard_rejects_code_outside_manifest(tmp_path: Path) -> None:
+    _write_integrity_repo(tmp_path)
     manifest = _manifest()
     issue = _issue(manifest=manifest)
-    outside = issue.cause_evidence[0].model_copy(
-        update={
-            "file": "pkg/outside.py",
-            "line": 8,
-            "context_hash": context_hash("8: hidden mechanism"),
-        }
-    )
-    issue.cause_evidence = [outside]
-    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
-    context = {
-        "candidate_id": candidate.candidate_id,
-        "context_manifest_id": manifest.candidate_id,
-        "included_spans": [
-            item.model_dump(mode="json") for item in manifest.included_spans
-        ],
+    issue.cause_evidence = [
+        issue.cause_evidence[0].model_copy(
+            update={
+                "file": "pkg/helper.py",
+                "line": 8,
+                "context_hash": context_hash("8: hidden mechanism"),
+            }
+        )
+    ]
+
+    result = _guard_result(tmp_path, issue, manifest)
+
+    assert result.rejected_count == 1
+    assert "evidence_not_observed" in {
+        failure.code for failure in result.results[0].failures
     }
 
-    result = validate_verifications(
-        [candidate],
-        _accepted_batch(candidate.candidate_id),
-        _request(),
-        candidate_context=[context],
-    )
 
-    assert result.results[0].status == "rejected"
-    assert result.results[0].reason_codes == ["deterministic_evidence_invalid"]
-
-
-def test_context_hash_must_match_actual_included_span() -> None:
+def test_integrity_guard_requires_matching_context_hash(tmp_path: Path) -> None:
+    _write_integrity_repo(tmp_path)
     manifest = _manifest()
     issue = _issue(manifest=manifest)
     issue.cause_evidence[0].context_hash = context_hash("different content")
-    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
-    context = {
-        "candidate_id": candidate.candidate_id,
-        "context_manifest_id": manifest.candidate_id,
-        "included_spans": [
-            item.model_dump(mode="json") for item in manifest.included_spans
-        ],
+
+    result = _guard_result(tmp_path, issue, manifest)
+
+    assert result.rejected_count == 1
+    assert "evidence_not_observed" in {
+        failure.code for failure in result.results[0].failures
     }
 
-    result = validate_verifications(
-        [candidate],
-        _accepted_batch(candidate.candidate_id),
-        _request(),
-        candidate_context=[context],
-    )
 
-    assert result.results[0].status == "rejected"
-
-
-def test_low_confidence_graph_edge_cannot_support_acceptance() -> None:
+def test_low_confidence_graph_edge_cannot_support_integrity_validation(
+    tmp_path: Path,
+) -> None:
+    _write_integrity_repo(tmp_path)
     manifest = _manifest()
     span = manifest.included_spans[0]
     manifest.included_graph_paths = [
@@ -383,46 +356,28 @@ def test_low_confidence_graph_edge_cannot_support_acceptance() -> None:
             "evidence_eligibility": "exploratory",
         }
     )
-    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
-    context = {
-        "candidate_id": candidate.candidate_id,
-        "context_manifest_id": manifest.candidate_id,
-        "included_spans": [
-            item.model_dump(mode="json") for item in manifest.included_spans
-        ],
-        "included_graph_paths": [
-            item.model_dump(mode="json") for item in manifest.included_graph_paths
-        ],
-    }
 
-    result = validate_verifications(
-        [candidate],
-        _accepted_batch(candidate.candidate_id),
-        _request(),
-        candidate_context=[context],
-    )
+    result = _guard_result(tmp_path, issue, manifest)
 
-    assert result.results[0].status == "rejected"
+    assert result.rejected_count == 1
 
 
-def test_trimmed_or_discarded_path_cannot_be_accepted_evidence() -> None:
+def test_trimmed_or_discarded_path_cannot_be_accepted_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_integrity_repo(tmp_path)
     manifest = _manifest()
     issue = _issue(manifest=manifest)
     discarded_content = "30: caller invokes hidden path"
     issue.cause_evidence[0] = issue.cause_evidence[0].model_copy(
         update={
-            "file": "pkg/caller.py",
+            "file": "pkg/helper.py",
             "line": 30,
             "context_hash": context_hash(discarded_content),
         }
     )
-    candidate = build_candidates(ReviewReport(issues=[issue]), iteration=0)[0]
     context = {
-        "candidate_id": candidate.candidate_id,
-        "context_manifest_id": manifest.candidate_id,
-        "included_spans": [
-            item.model_dump(mode="json") for item in manifest.included_spans
-        ],
+        **_manifest_context(manifest),
         "discarded_paths": [
             {
                 "path_id": "path-discarded",
@@ -433,14 +388,9 @@ def test_trimmed_or_discarded_path_cannot_be_accepted_evidence() -> None:
         ],
     }
 
-    result = validate_verifications(
-        [candidate],
-        _accepted_batch(candidate.candidate_id),
-        _request(),
-        candidate_context=[context],
-    )
+    result = _guard_result(tmp_path, issue, manifest, context=context)
 
-    assert result.results[0].status == "rejected"
+    assert result.rejected_count == 1
 
 
 def test_consolidation_verifier_rejects_evidence_outside_member_union() -> None:
@@ -478,12 +428,7 @@ def test_consolidation_verifier_rejects_evidence_outside_member_union() -> None:
 
 def test_extra_retrieval_creates_new_manifest_and_provenance() -> None:
     base = _manifest("C-BASE")
-    added = _span(
-        "C-EXTRA",
-        file="pkg/caller.py",
-        line=8,
-        content="8: return load()",
-    )
+    added = _span("C-EXTRA", file="pkg/caller.py", line=8, content="8: return load()")
 
     extension = extend_manifest(
         base,
@@ -495,26 +440,15 @@ def test_extra_retrieval_creates_new_manifest_and_provenance() -> None:
     assert extension.candidate_id != base.candidate_id
     assert base.candidate_id in extension.parent_manifest_ids
     assert extension.retrieval_provenance[0]["parent_manifest_id"] == base.candidate_id
-    assert (
-        added.context_hash in extension.retrieval_provenance[0]["added_context_hashes"]
-    )
-    assert (
-        extension.included_spans[-1].retrieval_source == "consolidation_extra_retrieval"
-    )
+    assert added.context_hash in extension.retrieval_provenance[0]["added_context_hashes"]
+    assert extension.included_spans[-1].retrieval_source == "consolidation_extra_retrieval"
 
 
 def test_consolidation_extra_retrieval_requires_explicit_config() -> None:
     base = _manifest("C-BASE")
     extension = extend_manifest(
         base,
-        [
-            _span(
-                "C-EXTRA",
-                file="pkg/caller.py",
-                line=8,
-                content="8: return load()",
-            )
-        ],
+        [_span("C-EXTRA", file="pkg/caller.py", line=8, content="8: return load()")],
         retrieval_source="consolidation_extra_retrieval",
         reason="verify shared caller contract",
     )

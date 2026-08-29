@@ -45,9 +45,8 @@ FailureStage = Literal[
     "draft_persistence",
     "structured_submit",
     "length_recovery",
-    "pre_verifier_policy",
-    "semantic_verifier",
-    "deterministic_validation",
+    "finding_policy",
+    "integrity_validation",
     "matcher",
     "none",
 ]
@@ -104,12 +103,10 @@ class StageDiagnostic(BaseModel):
     recovery_evidence_preserved: bool | None = None
     recovery_submit_preserved_gold: bool | None = None
     raw_submitted_finding_count: int = 0
-    pre_verifier: str = "N/A"
-    pre_verifier_reasons: list[str] = Field(default_factory=list)
-    semantic_verifier: str = "N/A"
-    semantic_verifier_reasons: list[str] = Field(default_factory=list)
-    deterministic_validation: str = "N/A"
-    deterministic_reasons: list[str] = Field(default_factory=list)
+    finding_policy: str = "N/A"
+    finding_policy_reasons: list[str] = Field(default_factory=list)
+    integrity_validation: str = "N/A"
+    integrity_reasons: list[str] = Field(default_factory=list)
     final_finding_survived: bool = False
     final_risk_finding_count: int = 0
     matcher_attempted: bool = False
@@ -472,65 +469,34 @@ def diagnose_attempt(
     verification_payload = (
         _payloads(events, "finding_verification_completed") or [{}]
     )[-1]
-    raw_verdicts = [
-        item
-        for item in verification_payload.get("raw_verdicts", [])
-        if isinstance(item, dict)
-        and str(item.get("candidate_id", "")) in gold_candidate_ids
-    ]
-    verdicts = [
-        item
-        for item in verification_payload.get("verdicts", [])
-        if isinstance(item, dict)
-        and str(item.get("candidate_id", "")) in gold_candidate_ids
-    ]
-    deterministic_details = [
-        item
-        for item in verification_payload.get("deterministic_rejection_details", [])
-        if isinstance(item, dict)
-        and str(item.get("candidate_id", "")) in gold_candidate_ids
-    ]
-
     if not submitted_gold_indices:
-        pre_verifier = "N/A"
-        pre_reasons: list[str] = []
+        finding_policy = "N/A"
+        policy_reasons: list[str] = []
     elif gold_candidates:
-        pre_verifier = "PASS"
-        pre_reasons = list(gold_filter.get("reason_codes", [])) if gold_filter else []
+        finding_policy = "PASS"
+        policy_reasons = list(gold_filter.get("reason_codes", [])) if gold_filter else []
     else:
-        pre_verifier = "REJECT"
-        pre_reasons = (
+        finding_policy = "REJECT"
+        policy_reasons = (
             list(gold_filter.get("reason_codes", []))
             if gold_filter
             else ["candidate_not_built"]
         )
     if not gold_candidates:
-        semantic = "N/A"
-        semantic_reasons: list[str] = []
-    elif raw_verdicts and all(
-        item.get("status") == "accepted" for item in raw_verdicts
-    ):
-        semantic = "ACCEPT"
-        semantic_reasons = [
-            code for item in raw_verdicts for code in item.get("reason_codes", [])
+        integrity_validation = "N/A"
+        integrity_reasons: list[str] = []
+    else:
+        failures = verification_payload.get("integrity_failures", {})
+        integrity_reasons = [
+            str(code)
+            for candidate_id in gold_candidate_ids
+            for code in (
+                failures.get(candidate_id, [])
+                if isinstance(failures, dict)
+                else []
+            )
         ]
-    else:
-        semantic = "REJECT"
-        semantic_reasons = [
-            code for item in raw_verdicts for code in item.get("reason_codes", [])
-        ] or ["verdict_missing"]
-    if semantic != "ACCEPT":
-        deterministic = "N/A"
-        deterministic_reasons: list[str] = []
-    elif verdicts and all(item.get("status") == "accepted" for item in verdicts):
-        deterministic = "PASS"
-        deterministic_reasons = []
-    else:
-        deterministic = "REJECT"
-        deterministic_reasons = [
-            str(item.get("rule", "deterministic_validation_failed"))
-            for item in deterministic_details
-        ] or [code for item in verdicts for code in item.get("reason_codes", [])]
+        integrity_validation = "REJECT" if integrity_reasons else "PASS"
 
     final_issues = _raw_final_issues(result)
     final_survived = any(
@@ -619,12 +585,10 @@ def diagnose_attempt(
             bool(submitted_gold_indices) if length_required else None
         ),
         raw_submitted_finding_count=metrics.finding_funnel.submitted_finding_count,
-        pre_verifier=pre_verifier,
-        pre_verifier_reasons=pre_reasons,
-        semantic_verifier=semantic,
-        semantic_verifier_reasons=semantic_reasons,
-        deterministic_validation=deterministic,
-        deterministic_reasons=deterministic_reasons,
+        finding_policy=finding_policy,
+        finding_policy_reasons=policy_reasons,
+        integrity_validation=integrity_validation,
+        integrity_reasons=integrity_reasons,
         final_finding_survived=final_survived,
         final_risk_finding_count=metrics.finding_funnel.final_risk_finding_count,
         matcher_attempted=matcher_attempted,
@@ -684,23 +648,17 @@ def _attribute_failure(item: StageDiagnostic) -> None:
         item.failure_evidence = (
             "finish_reason=length required recovery, but recovery did not succeed"
         )
-    elif item.submitted_gold_issue and item.pre_verifier == "REJECT":
-        item.failure_stage = "pre_verifier_policy"
+    elif item.submitted_gold_issue and item.finding_policy == "REJECT":
+        item.failure_stage = "finding_policy"
         item.failure_evidence = (
-            ", ".join(item.pre_verifier_reasons)
+            ", ".join(item.finding_policy_reasons)
             or "correct submitted issue was not routed"
         )
-    elif item.submitted_gold_issue and item.semantic_verifier == "REJECT":
-        item.failure_stage = "semantic_verifier"
+    elif item.submitted_gold_issue and item.integrity_validation == "REJECT":
+        item.failure_stage = "integrity_validation"
         item.failure_evidence = (
-            ", ".join(item.semantic_verifier_reasons)
-            or "semantic verifier rejected the gold issue"
-        )
-    elif item.submitted_gold_issue and item.deterministic_validation == "REJECT":
-        item.failure_stage = "deterministic_validation"
-        item.failure_evidence = (
-            ", ".join(item.deterministic_reasons)
-            or "deterministic validation rejected the gold issue"
+            ", ".join(item.integrity_reasons)
+            or "finding integrity validation rejected the gold issue"
         )
     elif item.final_finding_survived and item.gold_match != "HIT":
         item.failure_stage = "matcher"
@@ -742,9 +700,8 @@ def _conclusion(items: list[StageDiagnostic]) -> tuple[str, str, str]:
             ),
         )
     evidence_failures = {
-        "pre_verifier_policy",
-        "semantic_verifier",
-        "deterministic_validation",
+        "finding_policy",
+        "integrity_validation",
     }
     blocked_evidence = [
         item for item in measured if item.failure_stage in evidence_failures
@@ -823,9 +780,8 @@ def render_markdown(report: ReviewerRuntimeSmokeReport) -> str:
         ("Draft persisted", "draft_persisted"),
         ("submit_review", "submit_review"),
         ("Length recovery", "length_recovery"),
-        ("Pre-verifier", "pre_verifier"),
-        ("Semantic verifier", "semantic_verifier"),
-        ("Deterministic validation", "deterministic_validation"),
+        ("Finding policy", "finding_policy"),
+        ("Integrity validation", "integrity_validation"),
         ("Final finding survived", "final_finding_survived"),
         ("Gold match", "gold_match"),
         ("Graph manifest valid", "graph_manifest_contains_gold"),
@@ -842,7 +798,7 @@ def render_markdown(report: ReviewerRuntimeSmokeReport) -> str:
         f"- Model: `{report.runtime_contract['model']}`; temperature `0`; max output tokens `{report.runtime_contract['model_max_tokens']}`",
         f"- Prompt / cumulative budgets: `{report.runtime_contract.get('prompt_input_token_budget', '?')}` prompt; `{report.runtime_contract.get('token_budget', '?')}/{report.runtime_contract.get('token_hard_budget', '?')}` soft/hard; `{report.runtime_contract.get('final_submit_reserve_tokens', '?')}` submit reserve",
         f"- Loop / tools: `{report.runtime_contract.get('review_max_iterations', '?')}` review iterations; `{report.runtime_contract.get('agent_max_tool_calls', '?')}` tool calls; request/run timeouts `{report.runtime_contract.get('model_request_timeout_seconds', '?')}/{report.runtime_contract.get('agent_run_timeout_seconds', '?')}` seconds",
-        f"- Gates: verifier `{report.runtime_contract.get('finding_verifier_mode', '?')}`; workflow `{report.runtime_contract.get('workflow_enforcement', '?')}`",
+        f"- Gates: FindingIntegrityGuard; workflow `{report.runtime_contract.get('workflow_enforcement', '?')}`",
         f"- Order: `{' → '.join(report.run_order)}`; one measured attempt per variant; no retry; no warm run",
         "- Matcher: existing Eval matcher; fixture and gold were not modified",
         "",
@@ -889,7 +845,7 @@ def render_markdown(report: ReviewerRuntimeSmokeReport) -> str:
                 f"- Draft: record_draft_finding={item.record_draft_finding_called}; count={item.draft_finding_count}; correct_file_symbol={item.draft_correct_file_symbol}; correct_semantics={item.draft_correct_semantics}",
                 f"- Submit: {item.submit_review}; summary_nonempty={item.submit_summary_nonempty}; issues={item.submitted_issue_count}; blank={item.blank_submit}; schema_invalid={item.submit_schema_invalid}; contains_gold={item.submitted_gold_issue}",
                 f"- Recovery: {item.length_recovery}; required={item.recovery_required}; attempted={item.recovery_attempted}; evidence_preserved={item.recovery_evidence_preserved}; gold_preserved={item.recovery_submit_preserved_gold}",
-                f"- Funnel: submitted={item.raw_submitted_finding_count}; pre={item.pre_verifier} ({item.pre_verifier_reasons or ['none']}); semantic={item.semantic_verifier} ({item.semantic_verifier_reasons or ['none']}); deterministic={item.deterministic_validation} ({item.deterministic_reasons or ['none']}); final_risk={item.final_risk_finding_count}",
+                f"- Funnel: submitted={item.raw_submitted_finding_count}; policy={item.finding_policy} ({item.finding_policy_reasons or ['none']}); integrity={item.integrity_validation} ({item.integrity_reasons or ['none']}); final_risk={item.final_risk_finding_count}",
                 f"- Artifacts: EventLog `{item.event_log_path}`; Run Journal status={item.run_journal_status}, path=`{item.run_journal_path}`",
                 "",
             ]
@@ -1037,7 +993,6 @@ async def run_smoke(
             "model_request_timeout_seconds": settings.model_request_timeout_seconds,
             "agent_tool_timeout_seconds": settings.agent_tool_timeout_seconds,
             "agent_run_timeout_seconds": settings.agent_run_timeout_seconds,
-            "finding_verifier_mode": settings.finding_verifier_mode,
             "workflow_enforcement": settings.review_workflow_enforcement,
         },
         diagnostics=diagnostics,
@@ -1121,7 +1076,6 @@ def reanalyze_report(
         "model_request_timeout_seconds": settings.model_request_timeout_seconds,
         "agent_tool_timeout_seconds": settings.agent_tool_timeout_seconds,
         "agent_run_timeout_seconds": settings.agent_run_timeout_seconds,
-        "finding_verifier_mode": settings.finding_verifier_mode,
         "workflow_enforcement": settings.review_workflow_enforcement,
     }
     return report.model_copy(

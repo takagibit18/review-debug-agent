@@ -163,21 +163,19 @@ def test_github_app_mode_switch_and_private_key_newlines(monkeypatch) -> None:
 
 
 def test_v020_quality_and_recovery_defaults_are_enforced(monkeypatch) -> None:
-    monkeypatch.delenv("FINDING_VERIFIER_MODE", raising=False)
     monkeypatch.delenv("REVIEW_WORKFLOW_ENFORCEMENT", raising=False)
     monkeypatch.delenv("RUN_CHECKPOINTS_ENABLED", raising=False)
     monkeypatch.delenv("RUN_LEASE_SECONDS", raising=False)
     monkeypatch.delenv("RUN_HEARTBEAT_SECONDS", raising=False)
-    monkeypatch.delenv("VERIFIER_MAX_REPAIR_ROUNDS", raising=False)
 
     settings = get_settings()
 
-    assert settings.finding_verifier_mode == "enforce"
     assert settings.review_workflow_enforcement == "enforce"
     assert settings.run_checkpoints_enabled is True
     assert settings.run_lease_seconds == 180
     assert settings.run_heartbeat_seconds == 30
-    assert settings.verifier_max_repair_rounds == 1
+    assert not hasattr(settings, "finding_verifier_mode")
+    assert not hasattr(settings, "verifier_max_repair_rounds")
 
 
 def test_runtime_version_is_v020() -> None:

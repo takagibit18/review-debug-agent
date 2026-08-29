@@ -28,16 +28,9 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
             "payload": {
                 "accepted_count": 1,
                 "rejected_count": 1,
-                "needs_evidence_count": 1,
-                "downgraded_count": 0,
-                "first_pass_accept_count": 1,
                 "model_raw_issue_count": 4,
                 "verifier_candidate_count": 3,
                 "verifier_accepted_count": 1,
-                "raw_accepted_count": 2,
-                "raw_rejected_count": 0,
-                "raw_needs_evidence_count": 1,
-                "raw_downgraded_count": 0,
                 "deterministic_evidence_checked_count": 2,
                 "deterministic_evidence_passed_count": 1,
                 "deterministic_evidence_rejected_count": 1,
@@ -64,10 +57,6 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
                 "non_risk_not_routed_count": 1,
                 "pre_verifier_rejected_count": 0,
                 "risk_candidate_count": 1,
-                "filter_rescue_candidate_count": 1,
-                "severity_calibration_candidate_count": 1,
-                "calibration_rescue_candidate_count": 2,
-                "semantic_rejected_count": 1,
                 "deterministic_rejected_count": 1,
                 "final_risk_finding_count": 1,
             },
@@ -93,11 +82,6 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
     assert metrics.verifier_candidate_count == 3
     assert metrics.verifier_accepted_count == 1
     assert metrics.verifier_rejected_count == 1
-    assert metrics.verifier_needs_evidence_count == 1
-    assert metrics.first_pass_accept_count == 1
-    assert metrics.raw_verifier_accepted_count == 2
-    assert metrics.raw_verifier_rejected_count == 0
-    assert metrics.raw_verifier_needs_evidence_count == 1
     assert metrics.deterministic_evidence_checked_count == 2
     assert metrics.deterministic_evidence_passed_count == 1
     assert metrics.deterministic_evidence_rejected_count == 1
@@ -113,8 +97,6 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
     assert metrics.workflow_missing_steps == ["inspect_changed_context"]
     assert metrics.finding_funnel.submitted_finding_count == 4
     assert metrics.finding_funnel.non_risk_not_routed_count == 1
-    assert metrics.finding_funnel.calibration_rescue_candidate_count == 2
-    assert metrics.finding_funnel.semantic_rejected_count == 1
     assert metrics.finding_funnel.deterministic_rejected_count == 1
     assert metrics.finding_funnel.final_risk_finding_count == 1
 
@@ -147,12 +129,9 @@ def test_metric_summary_aggregates_process_metrics() -> None:
             evidence_bound_issue_count=2,
             verifier_accepted_count=1,
             verifier_rejected_count=1,
-            raw_verifier_accepted_count=2,
-            raw_verifier_rejected_count=0,
             deterministic_evidence_checked_count=2,
             deterministic_evidence_passed_count=1,
             deterministic_evidence_rejected_count=1,
-            first_pass_accept_count=1,
             required_step_count=5,
             completed_required_step_count=5,
             duplicate_tool_call_count=1,
@@ -162,8 +141,6 @@ def test_metric_summary_aggregates_process_metrics() -> None:
             finding_funnel={
                 "submitted_finding_count": 3,
                 "pre_verifier_rejected_count": 1,
-                "calibration_rescue_candidate_count": 1,
-                "semantic_rejected_count": 1,
                 "deterministic_rejected_count": 1,
                 "final_risk_finding_count": 1,
             },
@@ -175,7 +152,6 @@ def test_metric_summary_aggregates_process_metrics() -> None:
     assert summary.evidence_binding_rate == 1.0
     assert summary.verifier_accept_rate == 0.5
     assert summary.verifier_reject_rate == 0.5
-    assert summary.first_pass_accept_rate == 1.0
     assert summary.required_step_completion_rate == 1.0
     assert summary.duplicate_tool_call_rate == 0.5
     assert summary.cost_per_accepted_finding == 100.0
@@ -183,8 +159,6 @@ def test_metric_summary_aggregates_process_metrics() -> None:
     assert summary.verifier_candidate_count == 2
     assert summary.verifier_accepted_count == 1
     assert summary.verifier_rejected_count == 1
-    assert summary.raw_verifier_accepted_count == 2
-    assert summary.raw_verifier_rejected_count == 0
     assert summary.deterministic_evidence_checked_count == 2
     assert summary.deterministic_evidence_passed_count == 1
     assert summary.deterministic_evidence_rejected_count == 1
@@ -194,8 +168,6 @@ def test_metric_summary_aggregates_process_metrics() -> None:
     assert summary.workflow_invalid_run_count == 1
     assert summary.finding_funnel.submitted_finding_count == 3
     assert summary.finding_funnel.pre_verifier_rejected_count == 1
-    assert summary.finding_funnel.calibration_rescue_candidate_count == 1
-    assert summary.finding_funnel.semantic_rejected_count == 1
     assert summary.finding_funnel.deterministic_rejected_count == 1
     assert summary.finding_funnel.final_risk_finding_count == 1
 

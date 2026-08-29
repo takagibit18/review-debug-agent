@@ -50,7 +50,7 @@ class ReviewIssue(BaseModel):
     )
     candidate_id: str = Field(
         default="",
-        description="Stable semantic-verification identifier for this finding",
+        description="Stable runtime candidate identifier for this finding",
     )
     schema_version: str = Field(
         default="1.0",

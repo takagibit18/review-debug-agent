@@ -44,20 +44,11 @@ class RunSummary(BaseModel):
     model_names: list[str] = Field(default_factory=list)
     total_tokens: int = 0
     publish_status: PublishStatus = "not_requested"
-    finding_verifier_mode: str = "off"
     model_raw_issue_count: int = 0
     verifier_candidate_count: int = 0
     finding_candidate_count: int = 0
     finding_accepted_count: int = 0
     finding_rejected_count: int = 0
-    finding_needs_evidence_count: int = 0
-    finding_downgraded_count: int = 0
-    finding_reason_codes: dict[str, int] = Field(default_factory=dict)
-    raw_verifier_accepted_count: int = 0
-    raw_verifier_rejected_count: int = 0
-    raw_verifier_needs_evidence_count: int = 0
-    raw_verifier_downgraded_count: int = 0
-    raw_finding_reason_codes: dict[str, int] = Field(default_factory=dict)
     deterministic_evidence_checked_count: int = 0
     deterministic_evidence_passed_count: int = 0
     deterministic_evidence_rejected_count: int = 0
@@ -277,7 +268,6 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         )
 
     if event_type == "finding_candidates_built":
-        summary.finding_verifier_mode = str(payload.get("mode", "off") or "off")
         summary.model_raw_issue_count = int(
             payload.get("model_raw_issue_count", summary.model_raw_issue_count) or 0
         )
@@ -297,25 +287,6 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         )
         summary.finding_accepted_count = int(payload.get("accepted_count", 0) or 0)
         summary.finding_rejected_count = int(payload.get("rejected_count", 0) or 0)
-        summary.finding_needs_evidence_count = int(
-            payload.get("needs_evidence_count", 0) or 0
-        )
-        summary.finding_downgraded_count = int(payload.get("downgraded_count", 0) or 0)
-        summary.raw_verifier_accepted_count = int(
-            payload.get("raw_accepted_count", summary.finding_accepted_count) or 0
-        )
-        summary.raw_verifier_rejected_count = int(
-            payload.get("raw_rejected_count", summary.finding_rejected_count) or 0
-        )
-        summary.raw_verifier_needs_evidence_count = int(
-            payload.get(
-                "raw_needs_evidence_count", summary.finding_needs_evidence_count
-            )
-            or 0
-        )
-        summary.raw_verifier_downgraded_count = int(
-            payload.get("raw_downgraded_count", summary.finding_downgraded_count) or 0
-        )
         summary.deterministic_evidence_checked_count = int(
             payload.get("deterministic_evidence_checked_count", 0) or 0
         )
@@ -325,23 +296,6 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         summary.deterministic_evidence_rejected_count = int(
             payload.get("deterministic_evidence_rejected_count", 0) or 0
         )
-        reason_codes = payload.get("reason_codes", [])
-        if isinstance(reason_codes, list):
-            for raw_code in reason_codes:
-                code = str(raw_code).strip()
-                if code:
-                    summary.finding_reason_codes[code] = (
-                        summary.finding_reason_codes.get(code, 0) + 1
-                    )
-        raw_reason_codes = payload.get("raw_reason_codes", reason_codes)
-        if isinstance(raw_reason_codes, list):
-            for raw_code in raw_reason_codes:
-                code = str(raw_code).strip()
-                if code:
-                    summary.raw_finding_reason_codes[code] = (
-                        summary.raw_finding_reason_codes.get(code, 0) + 1
-                    )
-
     if event_type == "finding_funnel_completed":
         summary.finding_funnel = FindingFunnel.model_validate(payload)
 
