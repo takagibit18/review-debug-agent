@@ -16,7 +16,6 @@ from src.analyzer.review_lifecycle import (
     PromptImprover,
     SkillStore,
     StaticImprover,
-    build_contrastive_prompt,
     propose_skill,
 )
 from src.analyzer.review_skills import ReviewSkillLoader
@@ -58,7 +57,8 @@ def test_feedback_append_and_malformed_feedback_are_handled(tmp_path: Path) -> N
 def test_contrastive_improver_receives_agent_and_human_reasoning() -> None:
     feedback = [
         # Use the validated store model so the Improver contract receives typed data.
-        FeedbackRecord.model_validate(_feedback())
+        FeedbackRecord.model_validate(_feedback("github-review-comment-123")),
+        FeedbackRecord.model_validate(_feedback("github-review-comment-456")),
     ]
 
     captured: list[str] = []
@@ -69,17 +69,21 @@ def test_contrastive_improver_receives_agent_and_human_reasoning() -> None:
             "category": "concurrency",
             "principle": "Confirm a path can execute concurrently before reporting a race.",
             "why": "Shared mutable state alone does not establish concurrent execution.",
-            "source_feedback_ids": ["fb-001"],
+            "source_feedback_ids": ["github-review-comment-123"],
         }
 
     improver = PromptImprover(_complete)
     proposal = improver.propose(feedback)
 
     assert proposal["category"] == "concurrency"
+    assert "Feedback ID: github-review-comment-123" in captured[0]
+    assert "Feedback ID: github-review-comment-456" in captured[0]
     assert "Agent reasoning" in captured[0]
+    assert "Human verdict" in captured[0]
     assert "Human correction" in captured[0]
     assert "contrastive analysis" in captured[0].lower()
-    assert "source_feedback_ids" in build_contrastive_prompt(feedback)
+    assert "Return JSON only with exactly these fields:" in captured[0]
+    assert "source_feedback_ids" in captured[0]
 
 
 def test_fake_improver_creates_candidate_that_is_not_loaded_until_activation(

@@ -206,7 +206,9 @@ def build_contrastive_prompt(feedback: Sequence[FeedbackRecord]) -> str:
     """Describe the missing reusable reasoning step, not the concrete incident."""
 
     examples = "\n\n".join(
-        "Agent reasoning:\n"
+        "Feedback ID: "
+        + item.id
+        + "\nAgent reasoning:\n"
         + item.finding_reasoning
         + "\nHuman verdict: "
         + item.human_verdict
@@ -217,9 +219,15 @@ def build_contrastive_prompt(feedback: Sequence[FeedbackRecord]) -> str:
     return (
         "Perform contrastive analysis over the review feedback below. Compare the agent's "
         "reasoning with the human correction, identify the missing reusable engineering "
-        "check, and return JSON with category, principle, why, and source_feedback_ids. "
-        "Write a transferable principle, not a case-specific file/line reminder and not "
-        "a vague instruction such as 'do not make this mistake'.\n\n"
+        "check, and write a transferable principle, not a case-specific file/line reminder "
+        "and not a vague instruction such as 'do not make this mistake'.\n\n"
+        "Return JSON only with exactly these fields:\n"
+        "category\n"
+        "principle\n"
+        "why\n"
+        "source_feedback_ids\n"
+        'Example: {"category":"...","principle":"...","why":"...",'
+        '"source_feedback_ids":["feedback-id"]}\n\n'
         + examples
     )
 
