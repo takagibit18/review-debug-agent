@@ -31,6 +31,14 @@ class PullRequestWebhookFields:
     account_type: str = ""
 
 
+@dataclass(frozen=True)
+class RepositoryWebhookFields:
+    full_name: str
+    owner: str = ""
+    name: str = ""
+    default_branch: str = ""
+
+
 class WebhookIngestionService:
     """Persist GitHub webhook deliveries and enqueue durable review runs."""
 
@@ -70,22 +78,11 @@ class WebhookIngestionService:
             self.repo.update_delivery_status(delivery_id, status="ignored", reason="ping")
             return WebhookIngestionResponse(status="ok", reason="ping", delivery_id=delivery_id)
 
-        if event_name in {"installation", "installation_repositories"}:
-            installation = self._upsert_installation_if_present(fields)
-            self.repo.update_delivery_tenant(
-                delivery_id,
-                installation_id=installation.id,
-            )
-            self.repo.update_delivery_status(
-                delivery_id,
-                status="ignored",
-                reason=event_name,
-            )
-            return WebhookIngestionResponse(
-                status="ignored",
-                reason=event_name,
-                delivery_id=delivery_id,
-            )
+        if event_name == "installation":
+            return self._ingest_installation_lifecycle(delivery_id, fields)
+
+        if event_name == "installation_repositories":
+            return self._ingest_repository_lifecycle(delivery_id, fields, payload)
 
         if event_name != "pull_request":
             return self._ignore(
@@ -115,9 +112,16 @@ class WebhookIngestionService:
                 fields=fields,
             )
 
-        installation = self._upsert_installation_if_present(fields)
+        installation = self._ensure_installation_if_present(fields)
         self.repo.update_delivery_tenant(delivery_id, installation_id=installation.id)
-        repository = self._upsert_repository_if_present(fields, installation.id)
+        installation_block = _installation_block_reason(installation.status)
+        if installation_block:
+            return self._ignore(
+                delivery_id,
+                reason=installation_block,
+                fields=fields,
+            )
+        repository = self._ensure_repository_if_present(fields, installation.id)
         if not repository.enabled:
             return self._ignore(delivery_id, reason="repository_disabled", fields=fields)
 
@@ -190,29 +194,132 @@ class WebhookIngestionService:
             head_sha=fields.head_sha,
         )
 
-    def _upsert_installation_if_present(self, fields: PullRequestWebhookFields):
+    def _ensure_installation_if_present(self, fields: PullRequestWebhookFields):
         github_installation_id = fields.github_installation_id or _synthetic_installation_id(fields)
-        account_login = fields.account_login or fields.repo_owner or "unknown"
-        account_type = fields.account_type or "unknown"
-        return self.repo.upsert_installation(
+        return self.repo.ensure_installation(
             github_installation_id=github_installation_id,
-            account_login=account_login,
-            account_type=account_type,
-            status="active",
+            account_login=fields.account_login or fields.repo_owner,
+            account_type=fields.account_type,
+            default_status="active",
         )
 
-    def _upsert_repository_if_present(
+    def _ensure_repository_if_present(
         self,
         fields: PullRequestWebhookFields,
         installation_id: int,
     ) -> RepositoryRecord:
-        return self.repo.upsert_repository(
+        return self.repo.ensure_repository(
             installation_id=installation_id,
             full_name=fields.repo_full_name,
             owner=fields.repo_owner,
             name=fields.repo_name,
             default_branch=fields.default_branch,
-            enabled=True,
+            default_enabled=True,
+        )
+
+    def _ingest_installation_lifecycle(
+        self,
+        delivery_id: str,
+        fields: PullRequestWebhookFields,
+    ) -> WebhookIngestionResponse:
+        if fields.github_installation_id is None:
+            return self._ignore(
+                delivery_id,
+                reason="missing_installation_id",
+                fields=fields,
+            )
+        statuses = {
+            "created": "active",
+            "suspend": "suspended",
+            "unsuspend": "active",
+            "deleted": "deleted",
+        }
+        status = statuses.get(fields.action)
+        if status is None:
+            return self._ignore(
+                delivery_id,
+                reason=f"unsupported_installation_action:{fields.action}",
+                fields=fields,
+            )
+        installation = self.repo.upsert_installation(
+            github_installation_id=fields.github_installation_id,
+            account_login=fields.account_login or "unknown",
+            account_type=fields.account_type or "unknown",
+            status=status,
+        )
+        self.repo.update_delivery_tenant(
+            delivery_id,
+            installation_id=installation.id,
+        )
+        reason = f"installation_{fields.action}"
+        self.repo.update_delivery_status(
+            delivery_id,
+            status="ignored",
+            reason=reason,
+        )
+        return WebhookIngestionResponse(
+            status="ignored",
+            reason=reason,
+            delivery_id=delivery_id,
+        )
+
+    def _ingest_repository_lifecycle(
+        self,
+        delivery_id: str,
+        fields: PullRequestWebhookFields,
+        payload: dict[str, Any],
+    ) -> WebhookIngestionResponse:
+        if fields.github_installation_id is None:
+            return self._ignore(
+                delivery_id,
+                reason="missing_installation_id",
+                fields=fields,
+            )
+        lifecycle = {
+            "added": ("repositories_added", True),
+            "removed": ("repositories_removed", False),
+        }.get(fields.action)
+        if lifecycle is None:
+            return self._ignore(
+                delivery_id,
+                reason=f"unsupported_repository_action:{fields.action}",
+                fields=fields,
+            )
+        installation = self.repo.ensure_installation(
+            github_installation_id=fields.github_installation_id,
+            account_login=fields.account_login,
+            account_type=fields.account_type,
+            default_status="active",
+        )
+        self.repo.update_delivery_tenant(
+            delivery_id,
+            installation_id=installation.id,
+        )
+        payload_key, enabled = lifecycle
+        for repository_fields in _parse_repository_list(payload, payload_key):
+            self.repo.ensure_repository(
+                installation_id=installation.id,
+                full_name=repository_fields.full_name,
+                owner=repository_fields.owner,
+                name=repository_fields.name,
+                default_branch=repository_fields.default_branch,
+                default_enabled=enabled,
+            )
+            self.repo.set_repository_enabled(
+                installation_id=installation.id,
+                full_name=repository_fields.full_name,
+                enabled=enabled,
+            )
+        reason = f"repositories_{fields.action}"
+        self.repo.update_delivery_status(
+            delivery_id,
+            status="ignored",
+            reason=reason,
+        )
+        return WebhookIngestionResponse(
+            status="ignored",
+            reason=reason,
+            delivery_id=delivery_id,
         )
 
     def _ignore(
@@ -310,3 +417,47 @@ def _synthetic_installation_id(fields: PullRequestWebhookFields) -> int:
     scope = fields.repo_full_name or fields.account_login or fields.repo_owner or "unknown"
     digest = sha256(scope.encode("utf-8")).hexdigest()[:12]
     return -int(digest, 16)
+
+
+def _installation_block_reason(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized == "active":
+        return ""
+    if normalized == "suspended":
+        return "installation_suspended"
+    if normalized == "deleted":
+        return "installation_deleted"
+    return "installation_inactive"
+
+
+def _parse_repository_list(
+    payload: dict[str, Any],
+    key: str,
+) -> list[RepositoryWebhookFields]:
+    raw_items = payload.get(key)
+    if not isinstance(raw_items, list):
+        return []
+    parsed: list[RepositoryWebhookFields] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        full_name = str(raw.get("full_name", "") or "").strip()
+        if not full_name:
+            continue
+        owner_payload = raw.get("owner")
+        owner_payload = owner_payload if isinstance(owner_payload, dict) else {}
+        owner = str(owner_payload.get("login", "") or "")
+        name = str(raw.get("name", "") or "")
+        if "/" in full_name:
+            full_name_owner, full_name_repo = full_name.split("/", 1)
+            owner = owner or full_name_owner
+            name = name or full_name_repo
+        parsed.append(
+            RepositoryWebhookFields(
+                full_name=full_name,
+                owner=owner,
+                name=name,
+                default_branch=str(raw.get("default_branch", "") or ""),
+            )
+        )
+    return parsed

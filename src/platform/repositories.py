@@ -74,10 +74,52 @@ class PlatformRepository:
             ).fetchall()
         ]
 
+    def ensure_installation(
+        self,
+        *,
+        github_installation_id: int,
+        account_login: str,
+        account_type: str,
+        default_status: str = "active",
+    ) -> InstallationRecord:
+        """Create a missing installation without changing an existing lifecycle state."""
+        existing = self.get_installation_by_github_id(github_installation_id)
+        if existing is None:
+            return self.upsert_installation(
+                github_installation_id=github_installation_id,
+                account_login=account_login or "unknown",
+                account_type=account_type or "unknown",
+                status=default_status,
+            )
+        self.conn.execute(
+            """
+            UPDATE installations
+            SET account_login = COALESCE(NULLIF(?, ''), account_login),
+                account_type = COALESCE(NULLIF(?, ''), account_type),
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (account_login, account_type, existing.id),
+        )
+        self.conn.commit()
+        record = self.get_installation(existing.id)
+        assert record is not None
+        return record
+
     def get_installation(self, installation_id: int) -> InstallationRecord | None:
         row = self._fetchone(
             "SELECT * FROM installations WHERE id = ?",
             (installation_id,),
+        )
+        return _installation(row) if row is not None else None
+
+    def get_installation_by_github_id(
+        self,
+        github_installation_id: int,
+    ) -> InstallationRecord | None:
+        row = self._fetchone(
+            "SELECT * FROM installations WHERE github_installation_id = ?",
+            (github_installation_id,),
         )
         return _installation(row) if row is not None else None
 
@@ -135,6 +177,89 @@ class PlatformRepository:
                 (installation_id,),
             ).fetchall()
         return [_repository(row) for row in rows]
+
+    def ensure_repository(
+        self,
+        *,
+        installation_id: int,
+        full_name: str,
+        owner: str,
+        name: str,
+        default_branch: str,
+        default_enabled: bool = True,
+    ) -> RepositoryRecord:
+        """Create a missing repository without re-enabling an existing record."""
+        existing = self.get_repository(
+            installation_id=installation_id,
+            full_name=full_name,
+        )
+        if existing is None:
+            return self.upsert_repository(
+                installation_id=installation_id,
+                full_name=full_name,
+                owner=owner,
+                name=name,
+                default_branch=default_branch,
+                enabled=default_enabled,
+            )
+        self.conn.execute(
+            """
+            UPDATE repositories
+            SET owner = COALESCE(NULLIF(?, ''), owner),
+                name = COALESCE(NULLIF(?, ''), name),
+                default_branch = COALESCE(NULLIF(?, ''), default_branch),
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (owner, name, default_branch, existing.id),
+        )
+        self.conn.commit()
+        record = self.get_repository(
+            installation_id=installation_id,
+            full_name=full_name,
+        )
+        assert record is not None
+        return record
+
+    def get_repository(
+        self,
+        *,
+        installation_id: int,
+        full_name: str,
+    ) -> RepositoryRecord | None:
+        row = self._fetchone(
+            """
+            SELECT * FROM repositories
+            WHERE installation_id = ? AND full_name = ?
+            """,
+            (installation_id, full_name),
+        )
+        return _repository(row) if row is not None else None
+
+    def set_repository_enabled(
+        self,
+        *,
+        installation_id: int,
+        full_name: str,
+        enabled: bool,
+    ) -> RepositoryRecord:
+        cursor = self.conn.execute(
+            """
+            UPDATE repositories
+            SET enabled = ?, updated_at = datetime('now')
+            WHERE installation_id = ? AND full_name = ?
+            """,
+            (int(enabled), installation_id, full_name),
+        )
+        self.conn.commit()
+        if cursor.rowcount != 1:
+            raise KeyError(full_name)
+        record = self.get_repository(
+            installation_id=installation_id,
+            full_name=full_name,
+        )
+        assert record is not None
+        return record
 
     def insert_webhook_delivery(
         self,
