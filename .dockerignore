@@ -1,0 +1,13 @@
+.git
+.env
+*.key
+*.pem
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.mergewarden
+artifacts
+eval/outputs
+runs

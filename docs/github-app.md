@@ -1,9 +1,9 @@
 # GitHub App PR Review Setup
 
-This guide configures MergeWarden as a GitHub App bot. The app receives PR
-webhooks, exchanges `installation_id` for a short-lived installation token, runs
-the existing review pipeline, and publishes advisory checks/comments as the
-GitHub App.
+This guide configures MergeWarden as a GitHub App bot. The API receives PR
+webhooks and durably enqueues review runs. A separate worker exchanges
+`installation_id` for a short-lived installation token, runs the existing
+review pipeline, and publishes advisory checks/comments as the GitHub App.
 
 ## 1. Create The GitHub App
 
@@ -77,17 +77,19 @@ behavior. `GITHUB_APP_MODE=true` is also accepted and switches to app mode.
 
 ## 5. Start The Service
 
-Install dependencies:
+Create `.env` from `.env.example`, configure the GitHub App and model variables
+shown above, then start the hosted runtime:
 
 ```bash
-pip install -r requirements.txt
+docker compose up -d --build
 ```
 
-Run the API server:
-
-```bash
-uvicorn src.api.app:app --host 0.0.0.0 --port 8000
-```
+Compose starts one FastAPI API service on port `8000` and one continuously
+polling Platform Worker. Both services use the same `/data` volume for the
+SQLite database, review artifacts, and event logs. The API only validates and
+enqueues webhook work; the worker processes each `ReviewRun` asynchronously.
+The API service also enables `PLATFORM_PUBLIC_GITHUB_APP_ONLY`, so only
+`GET /health` and `POST /github/webhook` are exposed by this public runtime.
 
 Health check:
 
@@ -97,10 +99,10 @@ curl http://localhost:8000/health
 
 ## 6. Local Webhook Test With ngrok
 
-Start the backend:
+Start the hosted runtime:
 
 ```bash
-uvicorn src.api.app:app --host 0.0.0.0 --port 8000
+docker compose up -d --build
 ```
 
 Expose it:
@@ -147,7 +149,7 @@ that is enough to verify the webhook boundary.
 
 ## 7. Production Deployment
 
-Deploy the FastAPI service behind HTTPS. Configure:
+Run the Compose API and worker services on a Docker host. Configure `.env` with:
 
 ```bash
 APP_BASE_URL=https://mergewarden.example.com
@@ -166,24 +168,24 @@ Then update the GitHub App webhook URL:
 https://mergewarden.example.com/github/webhook
 ```
 
+Compose exposes HTTP on port `8000`; provide HTTPS, DNS, and ingress in the
+deployment environment. The named volume persists `/data/platform.db`,
+`/data/platform-artifacts`, and `/data/logs` across container restarts.
+
 Install the GitHub App into the target test repository and open a PR. The
 published check/comment should show the GitHub App bot identity.
 
 ## 8. Duplicate Handling
 
-The first implementation uses process-local idempotency:
+Webhook intake uses the shared SQLite database for durable idempotency and
+queueing:
 
 - duplicate `X-GitHub-Delivery` is ignored
 - duplicate `repo + pull_number + head_sha` is ignored
 
-This prevents obvious duplicates in a single running process. Production
-deployments with multiple replicas should replace the in-memory store with
-shared storage.
-
-Webhook work currently runs through FastAPI background tasks in the same
-process. This keeps GitHub webhook responses short for the MVP, but it is not a
-durable queue. Production deployments should move `process_github_pull_request_review`
-to a real worker/queue before relying on retries across restarts.
+The API inserts a queued `ReviewRun` and returns without running the model.
+The single Platform Worker claims queued runs from the same database, writes
+artifacts and event logs to the shared volume, and publishes the GitHub advisory.
 
 Set this only for deliberate rerun testing:
 

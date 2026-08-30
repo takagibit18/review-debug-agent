@@ -146,9 +146,12 @@ Windows PowerShell 启用虚拟环境：
 ### Docker
 
 ~~~bash
-docker compose build agent
-docker compose run --rm agent python cli.py review --help
+docker compose up -d --build
+curl http://localhost:8000/health
+docker compose down
 ~~~
+
+Compose 会启动共享持久化卷的 FastAPI 服务与 Platform Worker。
 
 ### FastAPI 服务
 
