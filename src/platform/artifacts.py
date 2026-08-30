@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+import shutil
 from typing import Any
 
 
@@ -95,6 +96,25 @@ class ArtifactStore:
                     f"event_logs/{path.name}",
                 )
         return metadata
+
+    def delete_run_artifacts(self, run_id: str) -> bool:
+        """Delete one run directory without allowing traversal or symlink escapes."""
+        if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
+            raise ValueError("run_id must be a single safe path component")
+
+        root = self.root.resolve()
+        candidate = self.root / run_id
+        if candidate.is_symlink():
+            raise ValueError("refusing to delete a symlinked artifact directory")
+        target = candidate.resolve()
+        if target.parent != root:
+            raise ValueError("artifact directory must be a direct child of artifact root")
+        if not target.exists():
+            return False
+        if not target.is_dir():
+            raise ValueError("run artifact path is not a directory")
+        shutil.rmtree(target)
+        return True
 
     def copy_event_log(self, run_id: str, source: str | Path) -> str:
         src = Path(source)

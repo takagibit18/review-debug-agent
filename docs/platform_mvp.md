@@ -32,6 +32,7 @@ Important environment variables:
 ```text
 PLATFORM_DATABASE_URL=sqlite:///.mergewarden/platform.db
 PLATFORM_ARTIFACT_ROOT=.mergewarden/platform-artifacts
+PLATFORM_ARTIFACT_RETENTION_DAYS=30
 PLATFORM_INIT_DB_ON_STARTUP=true
 PLATFORM_REVIEW_ENABLED=true
 PLATFORM_PUBLISH_COMMENTS=true
@@ -59,6 +60,15 @@ You can also initialize explicitly:
 
 ```bash
 python cli.py platform init-db
+```
+
+Delete local artifacts for terminal runs older than the configured retention
+window while keeping run, usage, delivery, installation, and repository records:
+
+```bash
+python cli.py platform cleanup --dry-run
+python cli.py platform cleanup
+python cli.py platform cleanup --retention-days 14
 ```
 
 Tests can point `PLATFORM_DATABASE_URL` at a temp SQLite file, for example:

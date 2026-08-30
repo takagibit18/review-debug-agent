@@ -809,6 +809,49 @@ class PlatformRepository:
         ).fetchall()
         return [_run(row) for row in rows]
 
+    def list_runs_for_artifact_cleanup(
+        self,
+        *,
+        completed_before: datetime,
+    ) -> list[ReviewRunRecord]:
+        """Return terminal runs whose persisted completion time predates a cutoff."""
+        rows = self.conn.execute(
+            """
+            SELECT * FROM review_runs
+            WHERE status IN ('succeeded', 'failed', 'cancelled', 'skipped')
+              AND datetime(COALESCE(finished_at, updated_at, created_at)) < datetime(?)
+            ORDER BY COALESCE(finished_at, updated_at, created_at), id
+            """,
+            (completed_before.astimezone(UTC).isoformat(),),
+        ).fetchall()
+        return [_run(row) for row in rows]
+
+    def clear_run_artifact_paths(self, run_id: str) -> None:
+        """Clear paths made invalid after deleting a run's local artifacts."""
+        try:
+            self.conn.execute("BEGIN")
+            self.conn.execute(
+                """
+                UPDATE review_runs
+                SET review_response_path = '', run_summary_path = '',
+                    publish_result_path = ''
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+            self.conn.execute(
+                """
+                UPDATE run_checkpoints
+                SET output_artifact_path = ''
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def retry_run(
         self,
         run_id: str,

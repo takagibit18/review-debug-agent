@@ -32,8 +32,10 @@ from src.integrations.github_publisher import (
     resolve_github_token,
 )
 from src.orchestrator.agent_loop import AgentOrchestrator
+from src.platform.artifacts import ArtifactStore
 from src.platform.db import connect, init_db
 from src.platform.repositories import PlatformRepository
+from src.platform.retention import cleanup_artifacts
 from src.platform.worker import PlatformWorker
 
 T = TypeVar("T")
@@ -350,6 +352,40 @@ def platform_init_db() -> None:
     finally:
         conn.close()
     click.echo(f"Platform database initialized: {settings.platform_database_url}")
+
+
+@platform.command("cleanup")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report eligible runs without deleting files or changing database paths.",
+)
+@click.option(
+    "--retention-days",
+    type=click.IntRange(min=0, max=3650),
+    default=None,
+    help="Override PLATFORM_ARTIFACT_RETENTION_DAYS for this cleanup pass.",
+)
+def platform_cleanup(dry_run: bool, retention_days: int | None) -> None:
+    """Remove local artifacts belonging to old terminal review runs."""
+    settings = get_settings()
+    effective_retention_days = (
+        settings.platform_artifact_retention_days
+        if retention_days is None
+        else retention_days
+    )
+    conn = connect(settings.platform_database_url)
+    try:
+        init_db(conn)
+        result = cleanup_artifacts(
+            PlatformRepository(conn),
+            ArtifactStore(settings.platform_artifact_root),
+            retention_days=effective_retention_days,
+            dry_run=dry_run,
+        )
+    finally:
+        conn.close()
+    click.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True))
 
 
 @platform.command("worker")
