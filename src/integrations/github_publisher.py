@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 import httpx
@@ -23,6 +27,14 @@ GITHUB_COMMENT_MARKER = (
 )
 _METADATA_PREFIX = "<!-- mergewarden:"
 _METADATA_SUFFIX = " -->"
+_RETRYABLE_GITHUB_STATUSES = frozenset({429, 502, 503, 504})
+_RETRYABLE_GITHUB_METHODS = frozenset({"GET", "PATCH"})
+_RETRYABLE_GITHUB_EXCEPTIONS = (
+    httpx.NetworkError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.RemoteProtocolError,
+)
 
 
 class GitHubPublishRequest(BaseModel):
@@ -161,9 +173,15 @@ class GitHubApiClient:
         *,
         base_url: str = "https://api.github.com",
         timeout: float = 30.0,
+        max_attempts: int = 3,
+        transport: httpx.AsyncBaseTransport | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        random_source: Callable[[], float] = random.random,
     ) -> None:
         if not token.strip():
             raise ValueError("GITHUB_TOKEN is required for publishing.")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers={
@@ -173,7 +191,11 @@ class GitHubApiClient:
             },
             timeout=timeout,
             follow_redirects=True,
+            transport=transport,
         )
+        self._max_attempts = max_attempts
+        self._sleep = sleep
+        self._random_source = random_source
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -182,8 +204,11 @@ class GitHubApiClient:
         path = f"/repos/{owner_repo}/pulls/{pr_number}/comments"
         output: list[dict[str, Any]] = []
         for page in range(1, 101):
-            resp = await self._client.get(path, params={"per_page": 100, "page": page})
-            self._raise_api_error(resp, path)
+            resp = await self._request(
+                "GET",
+                path,
+                params={"per_page": 100, "page": page},
+            )
             payload = resp.json()
             values = payload if isinstance(payload, list) else []
             output.extend(item for item in values if isinstance(item, dict))
@@ -193,24 +218,22 @@ class GitHubApiClient:
 
     async def get_pull_request(self, owner_repo: str, pr_number: int) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/pulls/{pr_number}"
-        resp = await self._client.get(path)
-        self._raise_api_error(resp, path)
+        resp = await self._request("GET", path)
         payload = resp.json()
         return payload if isinstance(payload, dict) else {}
 
     async def get_pull_diff(self, owner_repo: str, pr_number: int) -> str:
         path = f"/repos/{owner_repo}/pulls/{pr_number}"
-        resp = await self._client.get(
+        resp = await self._request(
+            "GET",
             path,
             headers={"Accept": "application/vnd.github.diff"},
         )
-        self._raise_api_error(resp, path)
         return resp.text
 
     async def create_check_run(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/check-runs"
-        resp = await self._client.post(path, json=payload)
-        self._raise_api_error(resp, path)
+        resp = await self._request("POST", path, json=payload)
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
@@ -223,10 +246,11 @@ class GitHubApiClient:
         path = f"/repos/{owner_repo}/commits/{head_sha}/check-runs"
         output: list[dict[str, Any]] = []
         for page in range(1, 101):
-            resp = await self._client.get(
-                path, params={"check_name": check_name, "per_page": 100, "page": page}
+            resp = await self._request(
+                "GET",
+                path,
+                params={"check_name": check_name, "per_page": 100, "page": page},
             )
-            self._raise_api_error(resp, path)
             payload = resp.json()
             runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
             values = runs if isinstance(runs, list) else []
@@ -243,8 +267,7 @@ class GitHubApiClient:
     ) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/check-runs/{check_run_id}"
         update_payload = {key: value for key, value in payload.items() if key != "head_sha"}
-        resp = await self._client.patch(path, json=update_payload)
-        self._raise_api_error(resp, path)
+        resp = await self._request("PATCH", path, json=update_payload)
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
@@ -255,8 +278,7 @@ class GitHubApiClient:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/pulls/{pr_number}/comments"
-        resp = await self._client.post(path, json=payload)
-        self._raise_api_error(resp, path)
+        resp = await self._request("POST", path, json=payload)
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
@@ -267,10 +289,56 @@ class GitHubApiClient:
         body: str,
     ) -> dict[str, Any]:
         path = f"/repos/{owner_repo}/pulls/comments/{comment_id}"
-        resp = await self._client.patch(path, json={"body": body})
-        self._raise_api_error(resp, path)
+        resp = await self._request("PATCH", path, json={"body": body})
         data = resp.json()
         return data if isinstance(data, dict) else {}
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        normalized_method = method.upper()
+        attempt_limit = (
+            self._max_attempts
+            if normalized_method in _RETRYABLE_GITHUB_METHODS
+            else 1
+        )
+        for attempt in range(attempt_limit):
+            try:
+                response = await self._client.request(
+                    normalized_method,
+                    path,
+                    **kwargs,
+                )
+            except _RETRYABLE_GITHUB_EXCEPTIONS as exc:
+                if attempt + 1 >= attempt_limit:
+                    raise RuntimeError(
+                        f"GitHub API {normalized_method} {path} failed after "
+                        f"{attempt + 1} attempt(s): {exc.__class__.__name__}"
+                    ) from exc
+                await self._sleep(self._backoff_seconds(attempt))
+                continue
+
+            if (
+                response.status_code in _RETRYABLE_GITHUB_STATUSES
+                and attempt + 1 < attempt_limit
+            ):
+                retry_after = _retry_after_seconds(response)
+                delay = (
+                    retry_after
+                    if retry_after is not None
+                    else self._backoff_seconds(attempt)
+                )
+                await self._sleep(delay)
+                continue
+            self._raise_api_error(response, path)
+            return response
+        raise RuntimeError(f"GitHub API {normalized_method} {path} exhausted retries")
+
+    def _backoff_seconds(self, attempt: int) -> float:
+        return min(4.0, 0.5 * (2**attempt)) + (0.1 * self._random_source())
 
     @staticmethod
     def _raise_api_error(resp: httpx.Response, path: str) -> None:
@@ -281,6 +349,23 @@ class GitHubApiClient:
             raise RuntimeError(
                 f"GitHub API {resp.status_code} for {path}. Body preview: {preview!r}"
             ) from exc
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    raw = response.headers.get("Retry-After", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
 
 
 class GitHubPublisher:
