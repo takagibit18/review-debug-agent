@@ -49,15 +49,7 @@ def test_pr_review_bridge_binds_existing_review_flow_to_target_workspace(
             seen["token"] = token
 
         async def get_pull_diff(self, owner_repo: str, pr_number: int) -> str:
-            seen["get_diff"] = (owner_repo, pr_number)
-            return (
-                "diff --git a/src/app.py b/src/app.py\n"
-                "--- a/src/app.py\n"
-                "+++ b/src/app.py\n"
-                "@@ -1,1 +1,2 @@\n"
-                " old\n"
-                "+new\n"
-            )
+            raise AssertionError("live pull request diff must not be requested")
 
         async def close(self) -> None:
             seen["closed"] = True
@@ -108,11 +100,31 @@ def test_pr_review_bridge_binds_existing_review_flow_to_target_workspace(
     @contextmanager
     def fake_materialize_github_workspace(**kwargs):  # type: ignore[no-untyped-def]
         seen["workspace_args"] = kwargs
-        yield SimpleNamespace(path=workspace_root, head_sha=kwargs["head_sha"])
+        yield SimpleNamespace(
+            path=workspace_root,
+            base_sha=kwargs["base_sha"],
+            head_sha=kwargs["head_sha"],
+        )
+
+    def fake_generate_revision_diff(workspace):  # type: ignore[no-untyped-def]
+        seen["diff_workspace"] = workspace
+        return (
+            "diff --git a/src/app.py b/src/app.py\n"
+            "--- a/src/app.py\n"
+            "+++ b/src/app.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            " old\n"
+            "+new\n"
+        )
 
     monkeypatch.setattr(github_pr_review, "GitHubApiClient", FakeGitHubClient)
     monkeypatch.setattr(github_pr_review, "AgentOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(github_pr_review, "GitHubPublisher", FakePublisher)
+    monkeypatch.setattr(
+        github_pr_review,
+        "generate_revision_diff",
+        fake_generate_revision_diff,
+    )
     monkeypatch.setenv("EVENT_LOG_DIR", ".mergewarden/logs")
     monkeypatch.setattr(
         github_pr_review,
@@ -137,13 +149,14 @@ def test_pr_review_bridge_binds_existing_review_flow_to_target_workspace(
 
     assert seen["installation_id"] == 123
     assert seen["token"] == "installation-token"
-    assert seen["get_diff"] == ("owner/repo", 7)
     assert seen["workspace_args"] == {
         "owner_repo": "owner/repo",
         "pull_number": 7,
+        "base_sha": "base-sha",
         "head_sha": "head-sha",
         "token": "installation-token",
     }
+    assert seen["diff_workspace"].base_sha == "base-sha"  # type: ignore[union-attr]
     assert Path(seen["review_request"].repo_path) == workspace_root  # type: ignore[union-attr]
     assert seen["review_request"].diff_mode is True  # type: ignore[union-attr]
     assert seen["review_request"].diff_text.startswith("diff --git")  # type: ignore[union-attr]
@@ -173,7 +186,7 @@ def test_pr_review_bridge_cleans_workspace_when_review_raises(
             pass
 
         async def get_pull_diff(self, owner_repo: str, pr_number: int) -> str:
-            return "diff --git a/a.py b/a.py\n"
+            raise AssertionError("live pull request diff must not be requested")
 
         async def close(self) -> None:
             seen["closed"] = True
@@ -188,10 +201,19 @@ def test_pr_review_bridge_cleans_workspace_when_review_raises(
         with tempfile.TemporaryDirectory(dir=tmp_path) as raw_path:
             workspace_path = Path(raw_path)
             workspace_paths.append(workspace_path)
-            yield SimpleNamespace(path=workspace_path, head_sha=kwargs["head_sha"])
+            yield SimpleNamespace(
+                path=workspace_path,
+                base_sha=kwargs["base_sha"],
+                head_sha=kwargs["head_sha"],
+            )
 
     monkeypatch.setattr(github_pr_review, "GitHubApiClient", FakeGitHubClient)
     monkeypatch.setattr(github_pr_review, "AgentOrchestrator", FailingOrchestrator)
+    monkeypatch.setattr(
+        github_pr_review,
+        "generate_revision_diff",
+        lambda _workspace: "diff --git a/a.py b/a.py\n",
+    )
     monkeypatch.setattr(
         github_pr_review,
         "materialize_github_workspace",
