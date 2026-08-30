@@ -13,6 +13,33 @@ from src.analyzer.schemas import DebugResponse, ReviewResponse
 from src.config import get_settings
 
 
+def test_hosted_public_mode_exposes_only_health_and_webhook(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from src.api import app as api_app
+
+    monkeypatch.setenv("PLATFORM_PUBLIC_GITHUB_APP_ONLY", "true")
+    client = TestClient(api_app.app)
+
+    assert client.get("/health").status_code == 200
+    assert client.post("/github/webhook", content=b"{}").status_code == 401
+    assert client.post("/review", json={"repo_path": "."}).status_code == 404
+    assert client.post("/debug", json={"repo_path": "."}).status_code == 404
+    assert client.get("/platform/health").status_code == 404
+    assert client.get("/runs/example/summary").status_code == 404
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+    assert client.get("/redoc").status_code == 404
+
+
+def test_local_mode_does_not_hide_review_route(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from src.api import app as api_app
+
+    monkeypatch.setenv("PLATFORM_PUBLIC_GITHUB_APP_ONLY", "false")
+
+    response = TestClient(api_app.app).post("/review", json={})
+
+    assert response.status_code == 422
+
+
 def test_health_returns_status_version_and_model_name() -> None:
     from src.api.app import app
 

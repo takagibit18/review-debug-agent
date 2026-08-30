@@ -1,7 +1,46 @@
 services:
-  agent:
+  api:
     build: .
-    env_file: .env
+    image: mergewarden:hosted
+    container_name: mergewarden-api
+    command:
+      - uvicorn
+      - src.api.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    env_file:
+      - .env
+    environment:
+      PLATFORM_DATABASE_URL: sqlite:////data/platform.db
+      PLATFORM_ARTIFACT_ROOT: /data/platform-artifacts
+      EVENT_LOG_DIR: /data/logs
+      PLATFORM_PUBLIC_GITHUB_APP_ONLY: "true"
     volumes:
-      - .:/app
-    working_dir: /app
+      - mergewarden-data:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: mergewarden:hosted
+    container_name: mergewarden-worker
+    command:
+      - python
+      - cli.py
+      - platform
+      - worker
+    env_file:
+      - .env
+    environment:
+      PLATFORM_DATABASE_URL: sqlite:////data/platform.db
+      PLATFORM_ARTIFACT_ROOT: /data/platform-artifacts
+      EVENT_LOG_DIR: /data/logs
+    volumes:
+      - mergewarden-data:/data
+    restart: unless-stopped
+
+volumes:
+  mergewarden-data:

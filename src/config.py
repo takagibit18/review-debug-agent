@@ -618,6 +618,15 @@ class Settings(BaseModel):
         default_factory=lambda: _parse_bool_env("PLATFORM_INIT_DB_ON_STARTUP", True),
         description="Initialize platform tables on API/worker startup.",
     )
+    platform_public_github_app_only: bool = Field(
+        default_factory=lambda: _parse_bool_env(
+            "PLATFORM_PUBLIC_GITHUB_APP_ONLY",
+            False,
+        ),
+        description=(
+            "Expose only health and GitHub webhook routes for the hosted public API."
+        ),
+    )
     platform_review_enabled: bool = Field(
         default_factory=lambda: _parse_bool_env("PLATFORM_REVIEW_ENABLED", True),
         description="Global default for whether webhook reviews are enabled.",

@@ -5,6 +5,18 @@ from __future__ import annotations
 from src.config import get_settings
 
 
+def test_public_github_app_only_defaults_to_false(monkeypatch) -> None:
+    monkeypatch.delenv("PLATFORM_PUBLIC_GITHUB_APP_ONLY", raising=False)
+
+    assert get_settings().platform_public_github_app_only is False
+
+
+def test_public_github_app_only_reads_true_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("PLATFORM_PUBLIC_GITHUB_APP_ONLY", "true")
+
+    assert get_settings().platform_public_github_app_only is True
+
+
 def test_permission_mode_falls_back_to_default_for_invalid_value(monkeypatch) -> None:
     monkeypatch.setenv("PERMISSION_MODE", "invalid-mode")
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 import json
 import logging
@@ -10,7 +10,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 
 from src import __version__
 from src.analyzer.run_summary import RunSummary, summarize_event_log
@@ -51,6 +51,27 @@ from src.platform.tenancy import (
 app = FastAPI(title="MergeWarden API", version=__version__)
 logger = logging.getLogger(__name__)
 _initialized_platform_databases: set[str] = set()
+_PUBLIC_GITHUB_APP_ROUTES = frozenset(
+    {
+        ("GET", "/health"),
+        ("POST", "/github/webhook"),
+    }
+)
+
+
+@app.middleware("http")
+async def restrict_public_github_app_surface(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    """Hide local and management routes when serving the public GitHub App."""
+    settings = get_settings()
+    if (
+        settings.platform_public_github_app_only
+        and (request.method, request.url.path) not in _PUBLIC_GITHUB_APP_ROUTES
+    ):
+        return Response(status_code=404)
+    return await call_next(request)
 
 
 @app.on_event("startup")
