@@ -13,13 +13,21 @@ from src.analyzer.schemas import DebugResponse, ReviewResponse
 from src.config import get_settings
 
 
-def test_hosted_public_mode_exposes_only_health_and_webhook(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_hosted_public_mode_exposes_only_health_ready_and_webhook(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
     from src.api import app as api_app
 
     monkeypatch.setenv("PLATFORM_PUBLIC_GITHUB_APP_ONLY", "true")
+    monkeypatch.setenv(
+        "PLATFORM_DATABASE_URL",
+        f"sqlite:///{tmp_path / 'platform.db'}",
+    )
     client = TestClient(api_app.app)
 
     assert client.get("/health").status_code == 200
+    assert client.get("/ready").status_code == 503
     assert client.post("/github/webhook", content=b"{}").status_code == 401
     assert client.post("/review", json={"repo_path": "."}).status_code == 404
     assert client.post("/debug", json={"repo_path": "."}).status_code == 404

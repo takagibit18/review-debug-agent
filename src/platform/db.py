@@ -103,6 +103,15 @@ CREATE TABLE IF NOT EXISTS run_checkpoints (
 CREATE INDEX IF NOT EXISTS idx_run_checkpoints_run_step
 ON run_checkpoints(run_id, step_id, attempt);
 
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+    worker_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_worker_heartbeats_last_seen
+ON worker_heartbeats(last_seen_at);
+
 CREATE TABLE IF NOT EXISTS tenant_configs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     installation_id INTEGER NOT NULL REFERENCES installations(id) ON DELETE CASCADE,

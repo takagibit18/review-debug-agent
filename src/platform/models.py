@@ -78,6 +78,12 @@ class RunCheckpointRecord(BaseModel):
     updated_at: str = ""
 
 
+class WorkerHeartbeatRecord(BaseModel):
+    worker_id: str
+    started_at: str
+    last_seen_at: str
+
+
 class WebhookDeliveryRecord(BaseModel):
     id: int
     delivery_id: str

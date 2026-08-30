@@ -15,6 +15,7 @@ from src.platform.models import (
     TenantConfigRecord,
     UsageRecord,
     WebhookDeliveryRecord,
+    WorkerHeartbeatRecord,
 )
 
 ACTIVE_RUN_STATUSES = ("queued", "running", "succeeded")
@@ -372,6 +373,51 @@ class PlatformRepository:
         )
         self.conn.commit()
         return cursor.rowcount == 1
+
+    def upsert_worker_heartbeat(
+        self,
+        worker_id: str,
+        *,
+        seen_at: datetime | None = None,
+    ) -> WorkerHeartbeatRecord:
+        normalized_worker_id = worker_id.strip()
+        if not normalized_worker_id:
+            raise ValueError("worker_id must not be empty")
+        timestamp = (seen_at or datetime.now(UTC)).astimezone(UTC).isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO worker_heartbeats (worker_id, started_at, last_seen_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(worker_id) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at
+            """,
+            (normalized_worker_id, timestamp, timestamp),
+        )
+        self.conn.commit()
+        row = self._fetchone(
+            "SELECT * FROM worker_heartbeats WHERE worker_id = ?",
+            (normalized_worker_id,),
+        )
+        assert row is not None
+        return _worker_heartbeat(row)
+
+    def freshest_worker_heartbeat(self) -> WorkerHeartbeatRecord | None:
+        row = self._fetchone(
+            """
+            SELECT * FROM worker_heartbeats
+            ORDER BY datetime(last_seen_at) DESC, last_seen_at DESC
+            LIMIT 1
+            """,
+            (),
+        )
+        return _worker_heartbeat(row) if row is not None else None
+
+    def queue_depth(self) -> int:
+        row = self._fetchone(
+            "SELECT COUNT(*) AS count FROM review_runs WHERE status = 'queued'",
+            (),
+        )
+        return int(row["count"] if row is not None else 0)
 
     def requeue_expired_runs(
         self,
@@ -857,3 +903,7 @@ def _usage(row: sqlite3.Row) -> UsageRecord:
 
 def _run_checkpoint(row: sqlite3.Row) -> RunCheckpointRecord:
     return RunCheckpointRecord.model_validate(dict(row))
+
+
+def _worker_heartbeat(row: sqlite3.Row) -> WorkerHeartbeatRecord:
+    return WorkerHeartbeatRecord.model_validate(dict(row))

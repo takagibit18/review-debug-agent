@@ -62,8 +62,9 @@ jobs:
         run: |
           docker run --detach --name mergewarden-api-smoke \
             --publish 127.0.0.1:18000:8000 \
-            --env PLATFORM_DATABASE_URL=sqlite:////tmp/platform.db \
-            --env PLATFORM_ARTIFACT_ROOT=/tmp/platform-artifacts \
+            --volume mergewarden-ci-data:/data \
+            --env PLATFORM_DATABASE_URL=sqlite:////data/platform.db \
+            --env PLATFORM_ARTIFACT_ROOT=/data/platform-artifacts \
             --env PLATFORM_PUBLIC_GITHUB_APP_ONLY=true \
             --env GITHUB_WEBHOOK_SECRET=offline-smoke-secret \
             mergewarden:ci \
@@ -80,6 +81,29 @@ jobs:
           docker logs mergewarden-api-smoke
           exit 1
 
-      - name: Stop API container
+      - name: Start worker container
+        run: |
+          docker run --detach --name mergewarden-worker-smoke \
+            --volume mergewarden-ci-data:/data \
+            --env PLATFORM_DATABASE_URL=sqlite:////data/platform.db \
+            --env PLATFORM_ARTIFACT_ROOT=/data/platform-artifacts \
+            mergewarden:ci \
+            python cli.py platform worker --poll-interval 0.25
+
+      - name: Verify API readiness
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18000/ready; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs mergewarden-api-smoke
+          docker logs mergewarden-worker-smoke
+          exit 1
+
+      - name: Stop smoke containers
         if: always()
-        run: docker rm --force mergewarden-api-smoke || true
+        run: |
+          docker rm --force mergewarden-api-smoke mergewarden-worker-smoke || true
+          docker volume rm mergewarden-ci-data || true
