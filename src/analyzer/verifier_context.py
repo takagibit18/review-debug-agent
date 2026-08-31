@@ -167,31 +167,6 @@ def build_candidate_verifier_context(
                     context, manifest, requested=requested, budget=budget
                 )
 
-        # Only after each cited location has had its declared source retained,
-        # add alternate trusted representations for semantic inspection. This
-        # keeps a redundant primary read/symbol/manifest copy from consuming
-        # the budget before a lower-priority trigger or impact location gets
-        # its first evidence record. Deduplication makes this pass additive.
-        for requested in requested_locations:
-            _append_matching_diff_context(
-                context,
-                hunks_by_file,
-                requested=requested,
-                budget=budget,
-            )
-            for entry in tool_evidence:
-                _append_matching_tool_context(
-                    context,
-                    entry,
-                    requested=requested,
-                    budget=budget,
-                    respect_requested_source=False,
-                )
-            if manifest is not None:
-                _append_matching_manifest_context(
-                    context, manifest, requested=requested, budget=budget
-                )
-
         # Preserve the prior manifest envelope when budget remains, but only
         # after every explicitly cited location has had a chance to be retained.
         if manifest is not None:
