@@ -12,6 +12,7 @@ from src.analyzer.context_planner import (
     ManifestGraphEdge,
     extend_manifest,
 )
+from src.analyzer.evidence_binding import bind_candidate_evidence
 from src.analyzer.finding_integrity import FindingIntegrityGuard, build_candidates
 from src.analyzer.finding_schema import (
     EvidenceProvenance,
@@ -22,6 +23,7 @@ from src.analyzer.finding_schema import (
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.root_cause import ConsolidationVerifier, RootCauseConsolidator
 from src.analyzer.schemas import ReviewRequest
+from src.analyzer.verifier_context import build_candidate_verifier_context
 
 
 def _span(
@@ -130,6 +132,49 @@ def _request(repo_path: str = ".") -> ReviewRequest:
     )
 
 
+def _diff_hunk_request(repo_path: str = ".") -> ReviewRequest:
+    return ReviewRequest(
+        repo_path=repo_path,
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/pkg/service.py b/pkg/service.py\n"
+            "--- a/pkg/service.py\n"
+            "+++ b/pkg/service.py\n"
+            "@@ -10,5 +10,5 @@ load\n"
+            " line 10\n"
+            " line 11\n"
+            "-line 12\n"
+            "+changed = value + 1\n"
+            " line 13\n"
+            " line 14\n"
+        ),
+    )
+
+
+def _diff_issue(*, evidence_line: int = 13) -> ReviewIssue:
+    issue = _issue()
+    cause = EvidenceProvenance(
+        retrieval_source="git_diff",
+        file="pkg/service.py",
+        line=evidence_line,
+        statement="The cited context line is retained in the same diff hunk.",
+    )
+    return issue.model_copy(
+        update={
+            "location": "pkg/service.py:12",
+            "primary_anchor": SourceAnchor(
+                file="pkg/service.py",
+                line=12,
+                symbol_id="python|pkg/service.py|load",
+            ),
+            "context_manifest_id": "",
+            "context_hash": "",
+            "cause_evidence": [cause],
+            "contract_evidence": [],
+        }
+    )
+
+
 def _write_integrity_repo(tmp_path: Path) -> None:
     service = tmp_path / "pkg" / "service.py"
     service.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +186,68 @@ def _write_integrity_repo(tmp_path: Path) -> None:
         "\n".join(f"helper line {index}" for index in range(1, 31)) + "\n",
         encoding="utf-8",
     )
+
+
+def test_diff_evidence_accepts_unchanged_line_inside_complete_hunk(
+    tmp_path: Path,
+) -> None:
+    _write_integrity_repo(tmp_path)
+    request = _diff_hunk_request(str(tmp_path))
+    candidate = build_candidates(ReviewReport(issues=[_diff_issue()]), iteration=0)[0]
+
+    bound = bind_candidate_evidence([candidate], request, [])
+    context = build_candidate_verifier_context(bound, request, [])
+
+    hunk = context[0]["diff_hunks"][0]
+    anchor = bound[0].issue.primary_anchor
+    assert anchor is not None
+    assert anchor.line in hunk["changed_new_lines"]
+    assert hunk["new_start"] == 10
+    assert hunk["new_count"] == 5
+    assert hunk["changed_new_lines"] == [12]
+    assert 12 in hunk["changed_new_lines"]
+    assert 13 not in hunk["changed_new_lines"]
+    assert hunk["text"] == (
+        "@@ -10,5 +10,5 @@ load\n"
+        " line 10\n"
+        " line 11\n"
+        "-line 12\n"
+        "+changed = value + 1\n"
+        " line 13\n"
+        " line 14"
+    )
+
+    result = FindingIntegrityGuard(tmp_path).validate(
+        bound,
+        request,
+        candidate_context=context,
+    )
+
+    assert result.passed_count == 1
+    assert result.rejected_count == 0
+
+
+def test_diff_evidence_outside_hunk_is_rejected_as_unobserved(
+    tmp_path: Path,
+) -> None:
+    _write_integrity_repo(tmp_path)
+    request = _diff_hunk_request(str(tmp_path))
+    candidate = build_candidates(
+        ReviewReport(issues=[_diff_issue(evidence_line=20)]), iteration=0
+    )[0]
+
+    bound = bind_candidate_evidence([candidate], request, [])
+    context = build_candidate_verifier_context(bound, request, [])
+    result = FindingIntegrityGuard(tmp_path).validate(
+        bound,
+        request,
+        candidate_context=context,
+    )
+
+    assert result.rejected_count == 1
+    assert "evidence_not_observed" in {
+        failure.code for failure in result.results[0].failures
+    }
 
 
 def _manifest_context(manifest: CandidateContextManifest) -> dict[str, object]:
@@ -440,8 +547,12 @@ def test_extra_retrieval_creates_new_manifest_and_provenance() -> None:
     assert extension.candidate_id != base.candidate_id
     assert base.candidate_id in extension.parent_manifest_ids
     assert extension.retrieval_provenance[0]["parent_manifest_id"] == base.candidate_id
-    assert added.context_hash in extension.retrieval_provenance[0]["added_context_hashes"]
-    assert extension.included_spans[-1].retrieval_source == "consolidation_extra_retrieval"
+    assert (
+        added.context_hash in extension.retrieval_provenance[0]["added_context_hashes"]
+    )
+    assert (
+        extension.included_spans[-1].retrieval_source == "consolidation_extra_retrieval"
+    )
 
 
 def test_consolidation_extra_retrieval_requires_explicit_config() -> None:
