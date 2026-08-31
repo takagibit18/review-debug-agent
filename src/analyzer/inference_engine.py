@@ -127,8 +127,9 @@ class InferenceEngine:
         budget = max(1, total_prompt_budget - final_feedback_budget)
         cb = ContextBuilder()
         context_telemetry: dict[str, Any] = {}
+        summary_enabled = settings.context_summary_enabled and not submit_only
         if isinstance(request, ReviewRequest):
-            if get_settings().context_summary_enabled:
+            if summary_enabled:
                 messages = await build_review_messages_async(
                     request,
                     state,
@@ -155,7 +156,7 @@ class InferenceEngine:
                     telemetry_sink=context_telemetry,
                 )
         else:
-            if get_settings().context_summary_enabled:
+            if summary_enabled:
                 messages = await build_debug_messages_async(
                     request,
                     state,

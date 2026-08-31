@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from src.analyzer.context_builder import ContextPart
 from src.models.client import ModelClient
+from src.models.compat import ModelCallPolicy
 from src.models.exceptions import ModelClientError
 from src.models.schemas import Message, ModelConfig
 
@@ -83,6 +84,7 @@ class ContextCompressor:
                     temperature=0.0,
                     max_tokens=max_summary_tokens,
                 ),
+                policy=ModelCallPolicy(thinking="off"),
             )
         except ModelClientError:
             return None

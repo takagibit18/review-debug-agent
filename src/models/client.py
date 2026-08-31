@@ -103,7 +103,23 @@ class ModelClient:
             runtime_policy.thinking == "high"
             and profile.compat.supports_reasoning_effort
         ):
-            payload["reasoning_effort"] = "high"
+            payload["reasoning_effort"] = (
+                "low"
+                if (
+                    profile.compat.thinking_format == "zhipu"
+                    and not profile.compat.supports_thinking_disable
+                )
+                else "high"
+            )
+        elif (
+            runtime_policy.thinking == "off"
+            and profile.compat.thinking_format == "zhipu"
+            and not profile.compat.supports_thinking_disable
+            and profile.compat.supports_reasoning_effort
+        ):
+            # GLM-5.3/Flash must keep thinking enabled. ``low`` is the
+            # provider-accepted lower bound for that model family.
+            payload["reasoning_effort"] = "low"
 
         last_error: ModelClientError | None = None
         for attempt in range(self._max_retries):
@@ -262,6 +278,17 @@ class ModelClient:
             updated.extra_body = {
                 **(updated.extra_body or {}),
                 "enable_thinking": effective.thinking == "high",
+            }
+        elif profile.compat.thinking_format == "zhipu":
+            thinking_enabled = (
+                effective.thinking == "high"
+                or not profile.compat.supports_thinking_disable
+            )
+            updated.extra_body = {
+                **(updated.extra_body or {}),
+                "thinking": {
+                    "type": "enabled" if thinking_enabled else "disabled"
+                },
             }
         return updated, effective
 

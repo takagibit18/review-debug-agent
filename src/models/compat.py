@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import Settings
 
-ThinkingFormat = Literal["none", "deepseek", "dashscope"]
+ThinkingFormat = Literal["none", "deepseek", "dashscope", "zhipu"]
 ThinkingPolicy = Literal["off", "high"]
 
 
@@ -19,6 +19,7 @@ class ProviderCompat(BaseModel):
 
     thinking_format: ThinkingFormat = "none"
     supports_reasoning_effort: bool = False
+    supports_thinking_disable: bool = True
     supports_tool_choice_with_thinking: bool = True
     requires_reasoning_replay_for_tool_calls: bool = False
     requires_assistant_content_for_tool_calls: bool = False
@@ -57,6 +58,20 @@ _DASHSCOPE_COMPAT = ProviderCompat(
 )
 
 
+def _zhipu_compat(model: str) -> ProviderCompat:
+    """Resolve the small set of GLM capabilities used by the agent loop."""
+
+    normalized_model = model.strip().lower()
+    glm_53 = normalized_model.startswith("glm-5.3")
+    return ProviderCompat(
+        thinking_format="zhipu",
+        supports_reasoning_effort=normalized_model.startswith(("glm-5.2", "glm-5.3")),
+        supports_thinking_disable=not glm_53,
+        requires_reasoning_replay_for_tool_calls=True,
+        requires_assistant_content_for_tool_calls=True,
+    )
+
+
 def resolve_model_profile(settings: Settings, model: str) -> ModelProfile:
     """Resolve explicit provider metadata with one legacy configuration fallback."""
 
@@ -67,6 +82,9 @@ def resolve_model_profile(settings: Settings, model: str) -> ModelProfile:
         compat = _DEEPSEEK_COMPAT
     elif provider == "dashscope":
         compat = _DASHSCOPE_COMPAT
+    elif provider in {"zhipu", "bigmodel", "zhipuai"}:
+        provider = "zhipu"
+        compat = _zhipu_compat(model)
     else:
         provider = provider or "openai"
         compat = ProviderCompat()
@@ -80,6 +98,8 @@ def _legacy_provider(settings: Settings, model: str) -> str:
     base_url = str(getattr(settings, "openai_base_url", "") or "").strip().lower()
     if normalized_model.startswith("deepseek") or "deepseek" in base_url:
         return "deepseek"
+    if "bigmodel.cn" in base_url or "zhipu" in base_url:
+        return "zhipu"
     if normalized_model.startswith(("qwen", "glm")) or "dashscope" in base_url:
         return "dashscope"
     return "openai"

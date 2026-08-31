@@ -8,6 +8,7 @@ from typing import Any
 
 from src.analyzer.context_builder import ContextPart
 from src.analyzer.context_compressor import ContextCompressor
+from src.models.compat import ModelCallPolicy
 from src.models.exceptions import ModelClientError
 from src.models.schemas import ModelResponse, TokenUsage
 
@@ -23,12 +24,20 @@ class _FakeModelClient:
     def __init__(self, outcomes: dict[str, str | Exception]) -> None:
         self.outcomes = outcomes
         self.calls: list[str] = []
+        self.policies: list[ModelCallPolicy | None] = []
 
-    async def chat(self, messages: list[Any], config: Any = None, tools: Any = None) -> ModelResponse:  # noqa: ARG002
+    async def chat(
+        self,
+        messages: list[Any],
+        config: Any = None,
+        tools: Any = None,
+        policy: ModelCallPolicy | None = None,
+    ) -> ModelResponse:  # noqa: ARG002
         await asyncio.sleep(0)
         user_prompt = str(messages[-1].content)
         label = _extract_label(user_prompt)
         self.calls.append(label)
+        self.policies.append(policy)
         outcome = self.outcomes.get(label, "default summary")
         if isinstance(outcome, Exception):
             raise outcome
@@ -61,6 +70,10 @@ def test_summarize_parts_success() -> None:
     assert summarized[0].content.startswith("[SUMMARIZED]")
     assert summarized[1].label == "[summarized]file:/a.py"
     assert set(client.calls) == {"diff_hunk_0", "file:/a.py"}
+    assert client.policies == [
+        ModelCallPolicy(thinking="off"),
+        ModelCallPolicy(thinking="off"),
+    ]
 
 
 def test_summarize_parts_degrade_on_failure() -> None:
