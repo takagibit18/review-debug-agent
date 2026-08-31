@@ -20,6 +20,7 @@ def test_self_hosted_workflow_template_uses_runtime_checkout() -> None:
     assert "$GITHUB_WORKSPACE/.mergewarden/runtime/cli.py" in text
     assert "运行 MergeWarden 审查" in text
     assert "请设置 repository variable MERGEWARDEN_REPOSITORY" in text
+    assert "MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER || '' }}" in text
     assert "python cli.py" not in text
     assert "pip install -r requirements-dev.txt" not in text
 
@@ -33,6 +34,7 @@ def test_self_hosted_docs_explain_chinese_ten_minute_configuration() -> None:
         assert "MERGEWARDEN_REPOSITORY" in text
         assert "MERGEWARDEN_REF" in text
         assert "MERGEWARDEN_REPOSITORY_TOKEN" in text
+        assert "MODEL_PROVIDER" in text
         assert "docs/examples/github-advisory-self-hosted.yml" in text
 
     assert "10 分钟接入 GitHub Action 自托管审查" in readme
