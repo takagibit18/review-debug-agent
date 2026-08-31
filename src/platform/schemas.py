@@ -31,6 +31,14 @@ class PlatformHealthResponse(BaseModel):
     artifact_root: str
 
 
+class PlatformReadinessResponse(BaseModel):
+    status: str
+    database: str
+    worker: str
+    queue_depth: int | None = None
+    worker_stale_after_seconds: int
+
+
 class TenantSummaryResponse(BaseModel):
     id: int
     name: str

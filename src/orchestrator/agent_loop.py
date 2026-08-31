@@ -132,6 +132,8 @@ class AgentOrchestrator:
         self._agent_run_timeout_seconds = effective_run_timeout
         self._run_timeout_seconds = self._agent_run_timeout_seconds
         self._model_timeout_seen = False
+        self._model_timeout_errors: list[ErrorDetail] = []
+        self._model_timeout_recovered = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
         self._length_recovery_required = False
@@ -249,6 +251,7 @@ class AgentOrchestrator:
         response = await self._maybe_force_submit_review(state, request, response)
         assert isinstance(response, ReviewResponse)
         response = await self._maybe_recover_review_workflow(response, request, state)
+        self._recover_model_timeout_after_valid_review(state)
         self._reviewer_latency_seconds = perf_counter() - reviewer_started
         verifier_started = perf_counter()
         response = await self._verify_review_response(response, request, state)
@@ -990,13 +993,14 @@ class AgentOrchestrator:
                 self._provider_error_seen = True
                 if isinstance(exc, ModelTimeoutError):
                     self._model_timeout_seen = True
-                state.errors.append(
-                    ErrorDetail(
-                        file=request.repo_path,
-                        message=f"Model analysis failed: {exc}",
-                        category="runtime",
-                    )
+                error_detail = ErrorDetail(
+                    file=request.repo_path,
+                    message=f"Model analysis failed: {exc}",
+                    category="runtime",
                 )
+                state.errors.append(error_detail)
+                if isinstance(exc, ModelTimeoutError):
+                    self._model_timeout_errors.append(error_detail)
                 self._record_event(
                     EventType.ERROR,
                     "analyze",
@@ -1578,6 +1582,8 @@ class AgentOrchestrator:
         self._run_started_at = perf_counter()
         self._run_timeout_seconds = self._agent_run_timeout_seconds
         self._model_timeout_seen = False
+        self._model_timeout_errors = []
+        self._model_timeout_recovered = False
         self._model_incomplete_seen = False
         self._model_length_finish_seen = False
         self._length_recovery_required = False
@@ -2143,10 +2149,40 @@ class AgentOrchestrator:
         if plan.draft_review is not None and self._submit_iteration is None:
             self._submit_iteration = self._iteration
 
+    def _recover_model_timeout_after_valid_review(self, state: ContextState) -> None:
+        """Keep a recovered timeout diagnostic from invalidating a valid review."""
+
+        if not self._model_timeout_seen or self._model_timeout_recovered:
+            return
+        plan = self._last_plan
+        if plan is None or not self._has_review_business_output(plan.draft_review):
+            return
+        recoverable_errors = [
+            error
+            for error in self._model_timeout_errors
+            if any(error is state_error for state_error in state.errors)
+        ]
+        if not recoverable_errors:
+            return
+
+        for error in recoverable_errors:
+            error.category = "warning"
+        self._model_timeout_recovered = True
+        self._record_event(
+            EventType.DECISION,
+            "analyze",
+            {
+                "iteration": self._iteration,
+                "reason": "provider_timeout_recovered",
+                "recovered_error_count": len(recoverable_errors),
+                "submit_review_seen_any": self._submit_review_seen_any,
+            },
+        )
+
     def _termination_reason(self) -> str:
         """Normalize the final loop outcome into one stable primary reason."""
 
-        if self._model_timeout_seen:
+        if self._model_timeout_seen and not self._model_timeout_recovered:
             return "provider_timeout"
         if self._run_timeout_hit:
             return "run_timeout"
@@ -2162,7 +2198,9 @@ class AgentOrchestrator:
             return "iteration_guard"
         if self._pre_budget_submit_attempted:
             return "pre_budget_submit"
-        if self._blocking_error or self._provider_error_seen:
+        if self._blocking_error or (
+            self._provider_error_seen and not self._model_timeout_recovered
+        ):
             return "blocking_error"
         if self._last_decision_reason == "model_completed" or self._model_completed:
             return "natural_model_stop"
@@ -2194,6 +2232,7 @@ class AgentOrchestrator:
             "length_recoveries_succeeded": self._length_recovery_succeeded,
             "length_recoveries_failed": self._length_recovery_failed,
             "submit_review_seen_any": self._submit_review_seen_any,
+            "provider_timeout_recovered": self._model_timeout_recovered,
             "budget_exhausted": self._budget_exhausted,
             "budget_state": self._budget_state,
             "grep_calls": self._tool_name_counts.get("grep_files", 0),

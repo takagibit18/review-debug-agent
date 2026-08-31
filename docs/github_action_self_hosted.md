@@ -42,6 +42,7 @@ cp path/to/mergewarden/docs/examples/github-advisory-self-hosted.yml \
 | `MERGEWARDEN_REF` | `main` | 固定到 release tag 或稳定分支 |
 | `MODEL_NAME` | `gpt-4o` | 使用其他 OpenAI-compatible 模型 |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | 使用兼容 OpenAI API 的其他服务 |
+| `MODEL_PROVIDER` | 空 | 显式 provider id；例如智谱 GLM 使用 `zhipu`，避免旧版模型名推断 |
 | `REVIEW_MAX_ITERATIONS` | `4` | 控制审查循环次数 |
 | `TOKEN_BUDGET` | `88000` | 控制 finalize-only 前的软预算 |
 | `PROMPT_INPUT_TOKEN_BUDGET` | `32000` | 控制 prompt 输入截断预算 |

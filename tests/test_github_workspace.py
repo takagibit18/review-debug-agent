@@ -10,6 +10,7 @@ import pytest
 from src.integrations import github_workspace
 from src.integrations.github_workspace import (
     GitHubWorkspaceError,
+    generate_revision_diff,
     materialize_github_workspace,
 )
 
@@ -77,9 +78,12 @@ def test_materializes_exact_pr_head_without_persisting_token_and_cleans_up(
     with materialize_github_workspace(
         owner_repo="owner/repo",
         pull_number=7,
+        base_sha=base_sha,
         head_sha=head_sha,
         token=_FAKE_TOKEN,
     ) as workspace:
+        assert workspace.base_sha == base_sha
+        assert workspace.head_sha == head_sha
         workspace_path = workspace.path
         assert _git(workspace.path, "rev-parse", "HEAD") == head_sha
         assert _git(workspace.path, "rev-parse", "HEAD") != base_sha
@@ -91,6 +95,7 @@ def test_materializes_exact_pr_head_without_persisting_token_and_cleans_up(
         assert _FAKE_TOKEN not in config_text
         assert github_workspace._encoded_credential(_FAKE_TOKEN) not in config_text
         assert _git(workspace.path, "remote", "get-url", "origin") == str(remote)
+        assert "REVISION = 'B'" in generate_revision_diff(workspace)
 
     assert workspace_path is not None
     assert not workspace_path.exists()
@@ -100,7 +105,7 @@ def test_workspace_cleanup_runs_when_consumer_raises(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    remote, _base_sha, head_sha = _build_pull_request_remote(tmp_path)
+    remote, base_sha, head_sha = _build_pull_request_remote(tmp_path)
     monkeypatch.setattr(github_workspace.tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(github_workspace, "_repository_url", lambda _owner_repo: str(remote))
     workspace_path: Path | None = None
@@ -109,6 +114,7 @@ def test_workspace_cleanup_runs_when_consumer_raises(
         with materialize_github_workspace(
             owner_repo="owner/repo",
             pull_number=7,
+            base_sha=base_sha,
             head_sha=head_sha,
             token=_FAKE_TOKEN,
         ) as workspace:
@@ -135,6 +141,7 @@ def test_workspace_cleanup_runs_when_materialization_fails(
         with materialize_github_workspace(
             owner_repo="owner/repo",
             pull_number=7,
+            base_sha="b" * 40,
             head_sha="a" * 40,
             token=_FAKE_TOKEN,
         ):
@@ -169,6 +176,7 @@ def test_workspace_revision_mismatch_is_explicit_and_cleans_up(
         with materialize_github_workspace(
             owner_repo="owner/repo",
             pull_number=7,
+            base_sha="c" * 40,
             head_sha=requested_sha,
             token=_FAKE_TOKEN,
         ):
@@ -210,6 +218,7 @@ def test_workspace_fetch_error_redacts_installation_token(
         with materialize_github_workspace(
             owner_repo="owner/repo",
             pull_number=7,
+            base_sha="a" * 40,
             head_sha="b" * 40,
             token=_FAKE_TOKEN,
         ):

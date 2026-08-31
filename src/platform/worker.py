@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import os
 import socket
 import time
@@ -70,6 +71,7 @@ class PlatformWorker:
 
     def run_once(self) -> bool:
         """Process one queued run if available."""
+        self.repo.upsert_worker_heartbeat(self.worker_id)
         if self.settings.run_checkpoints_enabled:
             self.repo.requeue_expired_runs(
                 datetime.now(UTC),
@@ -215,6 +217,7 @@ class PlatformWorker:
             done, _ = await asyncio.wait({task}, timeout=interval)
             if task in done:
                 return task.result()
+            self.repo.upsert_worker_heartbeat(self.worker_id)
             renewed = self.repo.heartbeat_run(
                 run.run_id,
                 self.worker_id,
@@ -305,3 +308,12 @@ def _summary_total_tokens(payload: Any) -> int:
     if isinstance(payload, dict):
         return int(payload.get("total_tokens", 0) or 0)
     return 0
+
+
+def worker_stale_after_seconds(settings: Settings) -> int:
+    """Derive a safe readiness window from existing worker timing settings."""
+    return max(
+        30,
+        3 * settings.run_heartbeat_seconds,
+        math.ceil(3 * settings.platform_worker_poll_interval_seconds),
+    )

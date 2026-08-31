@@ -1783,7 +1783,7 @@ def test_golden_fixture_distribution_has_required_buckets() -> None:
     )
     manifest = json.loads((Path("eval") / "fixtures" / "manifest.json").read_text())
 
-    assert len(real) == 17
+    assert len(real) == 22
     assert sum(1 for fixture in real if fixture.expected.issues) >= 9
     assert sum(1 for fixture in real if not fixture.expected.issues) >= 4
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+import shutil
 from typing import Any
 
 
@@ -61,7 +62,7 @@ class ArtifactStore:
         return self._write_json(run_id, "pipeline_result.json", result)
 
     def load_pipeline_result(self, relative_path: str) -> dict[str, Any]:
-        path = self.root / relative_path
+        path = self._resolve_artifact_path(relative_path)
         digest = path.with_name(path.name + ".sha256")
         expected = digest.read_text(encoding="ascii").strip()
         if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
@@ -70,6 +71,18 @@ class ArtifactStore:
         if not isinstance(payload, dict):
             raise ValueError("pipeline result artifact must be an object")
         return payload
+
+    def load_event_log_paths(self, relative_path: str) -> tuple[str, ...]:
+        """Load source event-log paths from a persisted pipeline result."""
+        payload = self.load_pipeline_result(relative_path)
+        raw_paths = payload.get("event_log_paths", [])
+        if raw_paths is None:
+            return ()
+        if not isinstance(raw_paths, list) or not all(
+            isinstance(path, str) for path in raw_paths
+        ):
+            raise ValueError("pipeline result event_log_paths must be a list of strings")
+        return tuple(path for path in raw_paths if path.strip())
 
     def metadata_for_run(self, run_id: str) -> dict[str, str]:
         """Return known artifact paths without reading large artifact bodies."""
@@ -95,6 +108,25 @@ class ArtifactStore:
                     f"event_logs/{path.name}",
                 )
         return metadata
+
+    def delete_run_artifacts(self, run_id: str) -> bool:
+        """Delete one run directory without allowing traversal or symlink escapes."""
+        if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
+            raise ValueError("run_id must be a single safe path component")
+
+        root = self.root.resolve()
+        candidate = self.root / run_id
+        if candidate.is_symlink():
+            raise ValueError("refusing to delete a symlinked artifact directory")
+        target = candidate.resolve()
+        if target.parent != root:
+            raise ValueError("artifact directory must be a direct child of artifact root")
+        if not target.exists():
+            return False
+        if not target.is_dir():
+            raise ValueError("run artifact path is not a directory")
+        shutil.rmtree(target)
+        return True
 
     def copy_event_log(self, run_id: str, source: str | Path) -> str:
         src = Path(source)
@@ -122,6 +154,18 @@ class ArtifactStore:
         digest_temp.write_text(digest_text, encoding="ascii")
         digest_temp.replace(digest_path)
         return self._relative(run_id, name)
+
+    def _resolve_artifact_path(self, relative_path: str) -> Path:
+        raw_path = Path(relative_path)
+        if raw_path.is_absolute() or ".." in raw_path.parts:
+            raise ValueError("artifact path must remain below the artifact root")
+        root = self.root.resolve()
+        path = (root / raw_path).resolve(strict=False)
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("artifact path must remain below the artifact root") from exc
+        return path
 
     @staticmethod
     def _relative(run_id: str, name: str) -> str:

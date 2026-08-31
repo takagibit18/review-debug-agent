@@ -31,6 +31,7 @@ class GitHubRepositoryWorkspace:
     """An isolated repository checkout pinned to one pull request revision."""
 
     path: Path
+    base_sha: str
     head_sha: str
 
 
@@ -47,18 +48,25 @@ def materialize_github_workspace(
     *,
     owner_repo: str,
     pull_number: int,
+    base_sha: str,
     head_sha: str,
     token: str,
 ) -> Iterator[GitHubRepositoryWorkspace]:
     """Create, populate, and always clean one exact GitHub PR checkout."""
     repository_url = _repository_url(owner_repo)
-    normalized_sha = head_sha.strip()
+    normalized_base_sha = base_sha.strip()
+    normalized_head_sha = head_sha.strip()
     if pull_number < 1:
         raise GitHubWorkspaceError(
             "workspace_fetch_failed",
             "pull_number must be greater than zero",
         )
-    if not _HEAD_SHA_PATTERN.fullmatch(normalized_sha):
+    if not _HEAD_SHA_PATTERN.fullmatch(normalized_base_sha):
+        raise GitHubWorkspaceError(
+            "workspace_checkout_failed",
+            "base_sha must be a full hexadecimal Git commit id",
+        )
+    if not _HEAD_SHA_PATTERN.fullmatch(normalized_head_sha):
         raise GitHubWorkspaceError(
             "workspace_checkout_failed",
             "head_sha must be a full hexadecimal Git commit id",
@@ -83,12 +91,39 @@ def materialize_github_workspace(
             workspace_path,
             repository_url=repository_url,
             pull_number=pull_number,
-            head_sha=normalized_sha,
+            base_sha=normalized_base_sha,
+            head_sha=normalized_head_sha,
             token=token,
         )
-        yield GitHubRepositoryWorkspace(path=workspace_path, head_sha=normalized_sha)
+        yield GitHubRepositoryWorkspace(
+            path=workspace_path,
+            base_sha=normalized_base_sha,
+            head_sha=normalized_head_sha,
+        )
     finally:
         temporary.cleanup()
+
+
+def generate_revision_diff(workspace: GitHubRepositoryWorkspace) -> str:
+    """Generate the queued pull request diff from the materialized revisions."""
+    result = _run_git(
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            f"{workspace.base_sha}...{workspace.head_sha}",
+            "--",
+        ],
+        cwd=workspace.path,
+        failure_code="workspace_diff_failed",
+    )
+    _require_success(
+        result,
+        code="workspace_diff_failed",
+        message="unable to generate the queued revision diff",
+        secrets=(),
+    )
+    return result.stdout
 
 
 def _materialize_repository(
@@ -96,6 +131,7 @@ def _materialize_repository(
     *,
     repository_url: str,
     pull_number: int,
+    base_sha: str,
     head_sha: str,
     token: str,
 ) -> None:
@@ -123,6 +159,18 @@ def _materialize_repository(
     )
 
     secrets = _credential_secrets(token)
+    base_fetch = _run_git(
+        ["fetch", "--quiet", "--force", "--no-tags", "origin", base_sha],
+        cwd=workspace_path,
+        token=token,
+        failure_code="workspace_fetch_failed",
+    )
+    _require_success(
+        base_fetch,
+        code="workspace_fetch_failed",
+        message="unable to fetch the requested base revision",
+        secrets=secrets,
+    )
     direct_fetch = _run_git(
         ["fetch", "--quiet", "--force", "--no-tags", "origin", head_sha],
         cwd=workspace_path,
@@ -152,13 +200,24 @@ def _materialize_repository(
                 f"pull ref fetch {_result_details(pull_fetch, secrets)}",
             )
 
-    commit_probe = _run_git(
+    base_commit_probe = _run_git(
+        ["cat-file", "-e", f"{base_sha}^{{commit}}"],
+        cwd=workspace_path,
+        failure_code="workspace_fetch_failed",
+    )
+    _require_success(
+        base_commit_probe,
+        code="workspace_fetch_failed",
+        message="the fetched repository does not contain the requested base_sha",
+        secrets=secrets,
+    )
+    head_commit_probe = _run_git(
         ["cat-file", "-e", f"{head_sha}^{{commit}}"],
         cwd=workspace_path,
         failure_code="workspace_fetch_failed",
     )
     _require_success(
-        commit_probe,
+        head_commit_probe,
         code="workspace_fetch_failed",
         message="the fetched pull request does not contain the requested head_sha",
         secrets=secrets,

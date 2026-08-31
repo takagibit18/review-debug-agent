@@ -179,6 +179,7 @@ def test_v020_quality_and_recovery_defaults_are_enforced(monkeypatch) -> None:
     monkeypatch.delenv("RUN_CHECKPOINTS_ENABLED", raising=False)
     monkeypatch.delenv("RUN_LEASE_SECONDS", raising=False)
     monkeypatch.delenv("RUN_HEARTBEAT_SECONDS", raising=False)
+    monkeypatch.delenv("PLATFORM_ARTIFACT_RETENTION_DAYS", raising=False)
 
     settings = get_settings()
 
@@ -186,6 +187,7 @@ def test_v020_quality_and_recovery_defaults_are_enforced(monkeypatch) -> None:
     assert settings.run_checkpoints_enabled is True
     assert settings.run_lease_seconds == 180
     assert settings.run_heartbeat_seconds == 30
+    assert settings.platform_artifact_retention_days == 30
     assert not hasattr(settings, "finding_verifier_mode")
     assert not hasattr(settings, "verifier_max_repair_rounds")
 

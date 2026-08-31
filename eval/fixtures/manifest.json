@@ -2,6 +2,33 @@
   "generated_at": "2026-06-04T00:00:00+00:00",
   "entries": [
     {
+      "fixture_id": "golden_fastapi_fastapi_pr15077_reverse",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "fastapi/fastapi",
+      "pr_number": 15077,
+      "path": "eval/fixtures/golden_fastapi_fastapi_pr15077_reverse.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic-ai_pr6205_reverse",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pydantic/pydantic-ai",
+      "pr_number": 6205,
+      "path": "eval/fixtures/golden_pydantic_pydantic-ai_pr6205_reverse.json",
+      "reviewed": true
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic-ai_pr7374",
+      "suite": "golden",
+      "fixture_type": "review",
+      "repo_full_name": "pydantic/pydantic-ai",
+      "pr_number": 7374,
+      "path": "eval/fixtures/golden_pydantic_pydantic-ai_pr7374.json",
+      "reviewed": true
+    },
+    {
       "fixture_id": "golden_deepset-ai_haystack_pr12208_reverse",
       "suite": "golden",
       "fixture_type": "review",

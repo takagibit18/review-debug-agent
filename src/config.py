@@ -614,6 +614,14 @@ class Settings(BaseModel):
         min_length=1,
         description="Root directory for platform run artifacts.",
     )
+    platform_artifact_retention_days: int = Field(
+        default_factory=lambda: int(
+            os.getenv("PLATFORM_ARTIFACT_RETENTION_DAYS", "30")
+        ),
+        ge=0,
+        le=3650,
+        description="Days to retain artifacts for terminal platform runs.",
+    )
     platform_init_db_on_startup: bool = Field(
         default_factory=lambda: _parse_bool_env("PLATFORM_INIT_DB_ON_STARTUP", True),
         description="Initialize platform tables on API/worker startup.",

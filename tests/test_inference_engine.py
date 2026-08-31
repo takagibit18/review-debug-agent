@@ -551,6 +551,35 @@ def test_analyze_summary_disabled_only_one_main_call(monkeypatch) -> None:
     assert user_payload["truncated"].get("summarized", []) == []
 
 
+def test_analyze_submit_only_skips_hidden_summary_calls(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "true")
+    client = RecordingFakeModelClient()
+    engine = InferenceEngine(model_client=client)  # type: ignore[arg-type]
+    state = ContextState(goal="Run structured code review")
+    diff_text = (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,3 @@\n"
+        + ("+x\n" * 5000)
+    )
+    request = ReviewRequest(repo_path=".", diff_text=diff_text)
+
+    asyncio.run(
+        engine.analyze(
+            state=state,
+            request=request,
+            tool_specs=[],
+            tool_schemas=[
+                {"type": "function", "function": {"name": "submit_review"}}
+            ],
+            diff_text=diff_text,
+            prompt_input_token_budget=80,
+            force_submit=True,
+        )
+    )
+
+    assert len(client.calls) == 1
+    assert client.summary_call_count() == 0
+
+
 def test_analyze_review_overflow_uses_summary(monkeypatch) -> None:
     monkeypatch.setenv("CONTEXT_SUMMARY_ENABLED", "true")
     client = RecordingFakeModelClient()

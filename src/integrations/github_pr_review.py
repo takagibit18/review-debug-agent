@@ -24,6 +24,7 @@ from src.integrations.github_publisher import (
 )
 from src.integrations.github_workspace import (
     GitHubRepositoryWorkspace,
+    generate_revision_diff,
     materialize_github_workspace,
 )
 from src.orchestrator.agent_loop import AgentOrchestrator
@@ -98,21 +99,21 @@ async def execute_github_pull_request_review(
             "pull_request review started",
             extra=_log_context(trigger),
         )
-        diff_text = await client.get_pull_diff(trigger.owner_repo, trigger.pull_number)
-        changed_lines = {
-            path: sorted(lines)
-            for path, lines in changed_new_lines_by_file(diff_text).items()
-        }
-        logger.info(
-            "diff fetched",
-            extra={
-                **_log_context(trigger),
-                "diff_bytes": len(diff_text.encode("utf-8")),
-                "changed_file_count": len(changed_lines),
-            },
-        )
-
         async with _materialize_review_workspace(trigger, token) as workspace:
+            diff_text = await asyncio.to_thread(generate_revision_diff, workspace)
+            changed_lines = {
+                path: sorted(lines)
+                for path, lines in changed_new_lines_by_file(diff_text).items()
+            }
+            logger.info(
+                "revision diff generated",
+                extra={
+                    **_log_context(trigger),
+                    "base_sha": workspace.base_sha,
+                    "diff_bytes": len(diff_text.encode("utf-8")),
+                    "changed_file_count": len(changed_lines),
+                },
+            )
             response = await AgentOrchestrator().run_review(
                 ReviewRequest(
                     repo_path=str(workspace.path),
@@ -192,6 +193,7 @@ async def _materialize_review_workspace(
     manager = materialize_github_workspace(
         owner_repo=trigger.owner_repo,
         pull_number=trigger.pull_number,
+        base_sha=trigger.base_sha,
         head_sha=trigger.head_sha,
         token=token,
     )

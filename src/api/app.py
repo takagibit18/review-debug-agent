@@ -6,9 +6,11 @@ from typing import Any, Awaitable, Callable, Literal
 
 import json
 import logging
+import sqlite3
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 
@@ -30,6 +32,7 @@ from src.platform.repositories import PlatformRepository
 from src.platform.schemas import (
     InstallationResponse,
     PlatformHealthResponse,
+    PlatformReadinessResponse,
     RepositoryResponse,
     RetryRunResponse,
     TenantContextResponse,
@@ -40,6 +43,7 @@ from src.platform.schemas import (
     WebhookDeliveryResponse,
 )
 from src.platform.services import WebhookIngestionService
+from src.platform.worker import worker_stale_after_seconds
 from src.platform.tenancy import (
     TENANT_HEADER,
     TenantContext,
@@ -54,6 +58,7 @@ _initialized_platform_databases: set[str] = set()
 _PUBLIC_GITHUB_APP_ROUTES = frozenset(
     {
         ("GET", "/health"),
+        ("GET", "/ready"),
         ("POST", "/github/webhook"),
     }
 )
@@ -105,6 +110,58 @@ def health() -> dict[str, str]:
         "version": __version__,
         "model_name": settings.model_name,
     }
+
+
+@app.get("/ready", response_model=PlatformReadinessResponse)
+def readiness(response: Response) -> PlatformReadinessResponse:
+    """Report DB reachability and whether a worker service is polling."""
+    settings = get_settings()
+    stale_after = worker_stale_after_seconds(settings)
+    try:
+        with _platform_repo(settings) as repo:
+            repo.conn.execute("SELECT 1").fetchone()
+            queue_depth = repo.queue_depth()
+            heartbeat = repo.freshest_worker_heartbeat()
+    except (OSError, sqlite3.Error):
+        response.status_code = 503
+        return PlatformReadinessResponse(
+            status="unready",
+            database="unavailable",
+            worker="unknown",
+            queue_depth=None,
+            worker_stale_after_seconds=stale_after,
+        )
+
+    if heartbeat is None:
+        response.status_code = 503
+        return PlatformReadinessResponse(
+            status="unready",
+            database="ok",
+            worker="missing",
+            queue_depth=queue_depth,
+            worker_stale_after_seconds=stale_after,
+        )
+
+    last_seen = _parse_database_timestamp(heartbeat.last_seen_at)
+    if (
+        last_seen is None
+        or (datetime.now(UTC) - last_seen).total_seconds() > stale_after
+    ):
+        response.status_code = 503
+        return PlatformReadinessResponse(
+            status="unready",
+            database="ok",
+            worker="stale",
+            queue_depth=queue_depth,
+            worker_stale_after_seconds=stale_after,
+        )
+    return PlatformReadinessResponse(
+        status="ready",
+        database="ok",
+        worker="healthy",
+        queue_depth=queue_depth,
+        worker_stale_after_seconds=stale_after,
+    )
 
 
 @app.post("/review", response_model=ReviewResponse)
@@ -363,6 +420,16 @@ def _resolve_event_log_path(log_dir: str, run_id: str) -> str:
     from pathlib import Path
 
     return str(Path(log_dir) / f"{run_id}.jsonl")
+
+
+def _parse_database_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 @contextmanager

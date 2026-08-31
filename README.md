@@ -169,11 +169,16 @@ uvicorn src.api.app:app --reload
 
 ### GitHub Actions
 
+#### 10 分钟接入 GitHub Action 自托管审查
+
 在目标仓库中复制[自托管 workflow 模板](docs/examples/github-advisory-self-hosted.yml)，并配置：
 
 1. Repository secret：<code>OPENAI_API_KEY</code>。
 2. Repository variable：<code>MERGEWARDEN_REPOSITORY</code>，例如 <code>takagibit18/MergeWarden</code>。
-3. 私有 runtime 仓库可额外配置 <code>MERGEWARDEN_REPOSITORY_TOKEN</code>。
+3. Repository variable：<code>MERGEWARDEN_REF</code>，建议固定到 release tag 或稳定分支。
+4. 私有 runtime 仓库可额外配置 <code>MERGEWARDEN_REPOSITORY_TOKEN</code>。
+5. 非 OpenAI provider 可配置 <code>OPENAI_BASE_URL</code>、<code>MODEL_NAME</code> 和
+   <code>MODEL_PROVIDER</code>；例如智谱 GLM 使用 provider id <code>zhipu</code>。
 
 成功运行后，PR 中会出现 neutral check 和变更行建议评论，同时上传审查 JSON、运行摘要、diff、发布结果和事件日志。Fork PR 默认只保留 dry-run artifact，不直接写评论。
 

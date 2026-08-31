@@ -99,6 +99,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           MODEL_NAME: ${{ vars.MODEL_NAME || 'gpt-4o' }}
+          MODEL_PROVIDER: ${{ vars.MODEL_PROVIDER || '' }}
           EVENT_LOG_DIR: ${{ github.workspace }}/artifacts/mergewarden/event_logs
           REVIEW_MAX_ITERATIONS: ${{ vars.REVIEW_MAX_ITERATIONS || '4' }}
           TOKEN_BUDGET: ${{ vars.TOKEN_BUDGET || '88000' }}
