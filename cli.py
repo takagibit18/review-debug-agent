@@ -382,6 +382,7 @@ def platform_cleanup(dry_run: bool, retention_days: int | None) -> None:
             ArtifactStore(settings.platform_artifact_root),
             retention_days=effective_retention_days,
             dry_run=dry_run,
+            event_log_dir=settings.event_log_dir,
         )
     finally:
         conn.close()
