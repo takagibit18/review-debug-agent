@@ -8,9 +8,11 @@ from pathlib import Path
 
 from eval.run_summary import extract_review_process_metrics
 from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.review_failures import find_blocking_review_error
 from src.analyzer.run_summary import summarize_event_log
 from src.analyzer.schemas import AnalysisPlan, ReviewRequest
 from src.models.exceptions import ModelTimeoutError
+from src.models.schemas import TokenUsage
 from src.orchestrator.agent_loop import AgentOrchestrator
 from src.tools.base import BaseTool, ToolRegistry, ToolSafety, ToolSpec
 from src.tools.file_read import FileReadTool
@@ -223,6 +225,43 @@ def test_provider_timeout_is_not_reported_as_natural_completion(
     telemetry = _telemetry(tmp_path, response.run_id)
     assert telemetry["natural_completion"] is False
     assert telemetry["termination_reason"] == "provider_timeout"
+
+
+def test_provider_timeout_recovered_by_valid_review_is_not_blocking(
+    tmp_path: Path, monkeypatch
+) -> None:
+    orchestrator = _orchestrator(
+        review_max_iterations=3,
+        review_min_tool_iterations=1,
+    )
+
+    class _TimeoutThenSubmitEngine:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def analyze(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise ModelTimeoutError("provider timed out", code="timeout")
+            return (
+                AnalysisPlan(draft_review=ReviewReport(summary="complete")),
+                TokenUsage(total_tokens=1),
+            )
+
+    engine = _TimeoutThenSubmitEngine()
+    monkeypatch.setattr(orchestrator, "_build_engine", lambda: engine)
+    response = asyncio.run(
+        orchestrator.run_review(ReviewRequest(repo_path=str(tmp_path)))
+    )
+
+    assert engine.calls == 2
+    assert response.context.errors[0].category == "warning"
+    assert find_blocking_review_error(response) is None
+    telemetry = _telemetry(tmp_path, response.run_id)
+    assert telemetry["provider_timeout_recovered"] is True
+    assert telemetry["natural_completion"] is True
+    assert telemetry["termination_reason"] == "natural_model_stop"
 
 
 def test_synthetic_prefetch_does_not_count_as_tool_bearing_iteration(
