@@ -172,6 +172,10 @@ def _select_binding(
     declared_manifest = evidence.context_manifest_id.strip()
     declared_hash = evidence.context_hash.strip()
     if declared_manifest:
+        if not declared_hash:
+            # An explicit manifest claim is only authoritative when its hash is
+            # also declared; otherwise there is no exact provenance to select.
+            return None
         manifest_matches = [
             item
             for item in matches

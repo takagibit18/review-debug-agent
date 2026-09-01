@@ -97,6 +97,8 @@ def build_candidate_verifier_context(
             "enclosing_symbols": [],
             "symbol_contexts": [],
             "context_manifest_id": "",
+            "context_manifest_ids": [],
+            "manifest_envelopes": [],
             "included_spans": [],
             "included_graph_paths": [],
             "excluded_low_confidence_paths": [],
@@ -108,13 +110,28 @@ def build_candidate_verifier_context(
         start = location.line if location.valid else None
         end = (location.end_line or start) if location.valid else None
 
-        manifest = None
+        manifests: list[dict[str, Any]] = []
         if location.valid and location.path:
-            manifest = _select_context_manifest(
+            manifests = _select_context_manifests(
                 candidate, context_manifests or [], location.path, start, end
             )
-        if manifest is not None:
-            context["context_manifest_id"] = str(manifest.get("candidate_id", ""))
+        manifest_ids = [
+            str(manifest.get("candidate_id", "")).strip()
+            for manifest in manifests
+            if str(manifest.get("candidate_id", "")).strip()
+        ]
+        context["context_manifest_ids"] = manifest_ids
+        if manifest_ids:
+            # Keep the scalar field as a compatibility alias for older callers.
+            context["context_manifest_id"] = manifest_ids[0]
+            context["manifest_envelopes"] = [
+                _manifest_envelope(manifest) for manifest in manifests
+            ]
+        manifests_by_id = {
+            str(manifest.get("candidate_id", "")).strip(): manifest
+            for manifest in manifests
+            if str(manifest.get("candidate_id", "")).strip()
+        }
 
         # Retain actual finding citations in semantic order. Once the bounded
         # envelope is full, later roles are omitted without displacing the bug
@@ -123,6 +140,7 @@ def build_candidate_verifier_context(
         # the compatible best-effort search across available source types.
         for requested in requested_locations:
             if requested.context_manifest_id:
+                manifest = manifests_by_id.get(requested.context_manifest_id)
                 if manifest is not None:
                     _append_matching_manifest_context(
                         context,
@@ -162,24 +180,37 @@ def build_candidate_verifier_context(
                     requested=requested,
                     budget=budget,
                 )
-            if manifest is not None:
+            for manifest in manifests:
                 _append_matching_manifest_context(
                     context, manifest, requested=requested, budget=budget
                 )
 
         # Preserve the prior manifest envelope when budget remains, but only
         # after every explicitly cited location has had a chance to be retained.
-        if manifest is not None:
+        for manifest in manifests:
             for span in manifest.get("included_spans", []):
                 if isinstance(span, dict):
-                    _append_bounded(context, "included_spans", span, budget)
+                    _append_bounded(
+                        context,
+                        "included_spans",
+                        _with_manifest_id(manifest, span),
+                        budget,
+                    )
             for path in manifest.get("included_graph_paths", []):
                 if isinstance(path, dict):
-                    _append_bounded(context, "included_graph_paths", path, budget)
+                    _append_bounded(
+                        context,
+                        "included_graph_paths",
+                        _with_manifest_id(manifest, path),
+                        budget,
+                    )
             for path in manifest.get("excluded_low_confidence_paths", []):
                 if isinstance(path, dict):
                     _append_bounded(
-                        context, "excluded_low_confidence_paths", path, budget
+                        context,
+                        "excluded_low_confidence_paths",
+                        _with_manifest_id(manifest, path),
+                        budget,
                     )
         contexts.append(context)
     return contexts
@@ -285,7 +316,12 @@ def _append_matching_manifest_context(
             requested.end_line,
             span,
         ):
-            _append_bounded(context, "included_spans", span, budget)
+            _append_bounded(
+                context,
+                "included_spans",
+                _with_manifest_id(manifest, span),
+                budget,
+            )
     for path in manifest.get("included_graph_paths", []):
         if not isinstance(path, dict):
             continue
@@ -300,7 +336,12 @@ def _append_matching_manifest_context(
             )
             for edge in edges
         ):
-            _append_bounded(context, "included_graph_paths", path, budget)
+            _append_bounded(
+                context,
+                "included_graph_paths",
+                _with_manifest_id(manifest, path),
+                budget,
+            )
 
 
 def _append_matching_diff_context(
@@ -715,7 +756,19 @@ def provenance_in_candidate_context(
             policy = evidence_policy_for_mode(
                 "agent_search" if mode == "agent_search" else "graph_hybrid"
             )
-    manifest_id = str(context.get("context_manifest_id", ""))
+    manifest_id = str(context.get("context_manifest_id", "")).strip()
+    raw_manifest_ids = context.get("context_manifest_ids")
+    manifest_ids = (
+        {
+            str(item).strip()
+            for item in raw_manifest_ids
+            if str(item).strip()
+        }
+        if isinstance(raw_manifest_ids, list)
+        else set()
+    )
+    if not manifest_ids and manifest_id:
+        manifest_ids.add(manifest_id)
     evidence_manifest = str(getattr(evidence, "context_manifest_id", ""))
     file = _normalized_path(getattr(evidence, "file", ""))
     line = _as_int(getattr(evidence, "line", None))
@@ -728,7 +781,7 @@ def provenance_in_candidate_context(
     if evidence_manifest:
         if not policy.allow_manifest_evidence:
             return False
-        if not manifest_id or evidence_manifest != manifest_id:
+        if not manifest_ids or evidence_manifest not in manifest_ids:
             return False
         if policy.require_context_hash_for_manifest and not digest:
             return False
@@ -779,6 +832,11 @@ def _manifest_provenance_valid(
         for span in spans:
             if not isinstance(span, dict):
                 continue
+            span_manifest = str(span.get("context_manifest_id", "")).strip()
+            if span_manifest and span_manifest != str(
+                getattr(evidence, "context_manifest_id", "")
+            ).strip():
+                continue
             if str(span.get("context_hash", "")) != digest:
                 continue
             if _location_overlaps_record(file, line, end_line, span):
@@ -804,6 +862,11 @@ def _manifest_provenance_valid(
         return False
     for path in graph_paths:
         if not isinstance(path, dict) or path.get("evidence_eligibility") != "strong":
+            continue
+        path_manifest = str(path.get("context_manifest_id", "")).strip()
+        if path_manifest and path_manifest != str(
+            getattr(evidence, "context_manifest_id", "")
+        ).strip():
             continue
         for edge in path.get("edges", []):
             if not isinstance(edge, dict):
@@ -857,18 +920,30 @@ def _location_in_tool_context(
     return False
 
 
-def _select_context_manifest(
+def _select_context_manifests(
     candidate: FindingCandidate,
     manifests: list[dict[str, Any]],
     path: str,
     start: int | None,
     end: int | None,
-) -> dict[str, Any] | None:
-    requested = candidate.issue.context_manifest_id
-    if requested:
-        for manifest in manifests:
-            if str(manifest.get("candidate_id", "")) == requested:
-                return manifest
+) -> list[dict[str, Any]]:
+    """Select every explicitly declared manifest, with one legacy fallback."""
+
+    requested_ids = {str(candidate.issue.context_manifest_id or "").strip()}
+    requested_ids.update(
+        str(evidence.context_manifest_id or "").strip()
+        for evidence in candidate.issue.all_evidence()
+        if str(evidence.context_manifest_id or "").strip()
+    )
+    if requested_ids:
+        return [
+            manifest
+            for manifest in manifests
+            if str(manifest.get("candidate_id", "")).strip() in requested_ids
+        ]
+
+    # Legacy evidence has no manifest id. Retain the prior deterministic anchor
+    # fallback, but never broaden an explicitly identified manifest to another.
     for manifest in manifests:
         anchor = manifest.get("changed_anchor")
         if (
@@ -879,8 +954,62 @@ def _select_context_manifest(
         anchor_start = _as_int(anchor.get("line"))
         anchor_end = _as_int(anchor.get("end_line")) or anchor_start
         if _ranges_overlap(start, end, anchor_start, anchor_end):
-            return manifest
-    return None
+            return [manifest]
+    return []
+
+
+def _select_context_manifest(
+    candidate: FindingCandidate,
+    manifests: list[dict[str, Any]],
+    path: str,
+    start: int | None,
+    end: int | None,
+) -> dict[str, Any] | None:
+    """Compatibility wrapper for callers that still expect one manifest."""
+
+    return next(
+        iter(_select_context_manifests(candidate, manifests, path, start, end)),
+        None,
+    )
+
+
+def _with_manifest_id(
+    manifest: dict[str, Any], value: dict[str, Any]
+) -> dict[str, Any]:
+    """Tag flattened retained records so provenance can distinguish manifests."""
+
+    manifest_id = str(manifest.get("candidate_id", "")).strip()
+    if not manifest_id:
+        return dict(value)
+    return {**value, "context_manifest_id": manifest_id}
+
+
+def _manifest_envelope(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact prompt-visible manifest identity and hash envelope."""
+
+    spans = manifest.get("included_spans", [])
+    span_envelopes = [
+        {
+            "span_id": span.get("span_id", ""),
+            "file": span.get("file", span.get("path", "")),
+            "start_line": span.get("start_line", span.get("line")),
+            "end_line": span.get("end_line", span.get("line")),
+            "context_hash": span.get("context_hash", ""),
+        }
+        for span in spans
+        if isinstance(span, dict)
+    ]
+    paths = manifest.get("included_graph_paths", [])
+    return {
+        "context_manifest_id": str(manifest.get("candidate_id", "")).strip(),
+        "changed_anchor": manifest.get("changed_anchor", {}),
+        "included_spans": span_envelopes,
+        "included_graph_path_ids": [
+            path.get("path_id", "")
+            for path in paths
+            if isinstance(path, dict) and path.get("path_id")
+        ],
+    }
 
 
 def _location_overlaps_record(
