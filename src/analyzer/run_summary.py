@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, computed_field
 
 from src.analyzer.finding_funnel import FindingFunnel
+from src.analyzer.schemas import ReviewOutcome
 
 EventLogStatus = Literal["ok", "missing", "parse_error"]
 PublishStatus = Literal["not_requested", "dry_run", "published", "failed"]
@@ -49,6 +50,11 @@ class RunSummary(BaseModel):
     finding_candidate_count: int = 0
     finding_accepted_count: int = 0
     finding_rejected_count: int = 0
+    review_outcome: ReviewOutcome = "no_candidates"
+    integrity_failure_codes: dict[str, list[str]] = Field(default_factory=dict)
+    integrity_failure_details: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     deterministic_evidence_checked_count: int = 0
     deterministic_evidence_passed_count: int = 0
     deterministic_evidence_rejected_count: int = 0
@@ -296,6 +302,30 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         summary.deterministic_evidence_rejected_count = int(
             payload.get("deterministic_evidence_rejected_count", 0) or 0
         )
+        raw_outcome = str(payload.get("review_outcome", "") or "")
+        if raw_outcome in {
+            "no_candidates",
+            "accepted",
+            "partially_rejected",
+            "all_candidates_rejected",
+        }:
+            summary.review_outcome = raw_outcome  # type: ignore[assignment]
+        raw_codes = payload.get("integrity_failures")
+        if isinstance(raw_codes, dict):
+            summary.integrity_failure_codes = {
+                str(candidate_id): [str(code) for code in codes]
+                for candidate_id, codes in raw_codes.items()
+                if isinstance(codes, list)
+            }
+        raw_details = payload.get("integrity_failure_details")
+        if isinstance(raw_details, dict):
+            summary.integrity_failure_details = {
+                str(candidate_id): [
+                    dict(detail) for detail in details if isinstance(detail, dict)
+                ]
+                for candidate_id, details in raw_details.items()
+                if isinstance(details, list)
+            }
     if event_type == "finding_funnel_completed":
         summary.finding_funnel = FindingFunnel.model_validate(payload)
 

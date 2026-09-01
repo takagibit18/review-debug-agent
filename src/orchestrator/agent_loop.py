@@ -28,6 +28,7 @@ from src.analyzer.schemas import (
     DebugRequest,
     DebugResponse,
     ReviewRequest,
+    ReviewOutcome,
     ReviewResponse,
 )
 from src.analyzer.trace import TraceRecorder
@@ -61,6 +62,18 @@ from src.tools.base import BaseTool, ToolRegistry, ToolResult, ToolSafety, ToolS
 from src.tools.exceptions import ToolError
 from src.tools.path_utils import tool_workspace_root
 from src.tools.review_context import ReviewToolContext
+
+
+def _review_outcome_for_counts(checked: int, accepted: int) -> ReviewOutcome:
+    """Map verifier counts to the stable run-level outcome vocabulary."""
+
+    if checked <= 0:
+        return "no_candidates"
+    if accepted >= checked:
+        return "accepted"
+    if accepted > 0:
+        return "partially_rejected"
+    return "all_candidates_rejected"
 
 
 class AgentOrchestrator:
@@ -174,6 +187,9 @@ class AgentOrchestrator:
         self._deterministic_rejected_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
+        self._review_outcome: ReviewOutcome = "no_candidates"
+        self._integrity_failure_codes: dict[str, list[str]] = {}
+        self._integrity_failure_details: dict[str, list[dict[str, Any]]] = {}
         self._consolidator_block_count = 0
         self._consolidator_proposal_count = 0
         self._consolidator_accepted_cluster_count = 0
@@ -397,6 +413,16 @@ class AgentOrchestrator:
         self._deterministic_rejected_count = guard_result.rejected_count
         self._verifier_accepted_count = guard_result.passed_count
         self._verifier_rejected_count = guard_result.rejected_count
+        self._review_outcome = _review_outcome_for_counts(
+            guard_result.checked_count,
+            guard_result.passed_count,
+        )
+        response.review_outcome = self._review_outcome
+        self._integrity_failure_codes = {
+            candidate_id: [failure.code for failure in failures]
+            for candidate_id, failures in guard_result.failures.items()
+        }
+        self._integrity_failure_details = guard_result.failure_details
         self._record_event(
             EventType.FINDING_VERIFICATION_COMPLETED,
             "verify_findings",
@@ -411,11 +437,11 @@ class AgentOrchestrator:
                 "deterministic_evidence_passed_count": guard_result.passed_count,
                 "deterministic_evidence_rejected_count": guard_result.rejected_count,
                 "integrity_failures": {
-                    candidate_id: [
-                        failure.code for failure in failures
-                    ]
-                    for candidate_id, failures in guard_result.failures.items()
+                    candidate_id: codes
+                    for candidate_id, codes in self._integrity_failure_codes.items()
                 },
+                "integrity_failure_details": self._integrity_failure_details,
+                "review_outcome": self._review_outcome,
                 "verifier_kind": "integrity_guard",
             },
         )
@@ -578,6 +604,7 @@ class AgentOrchestrator:
                 "workflow_filtered_issue_count": workflow_filtered_issue_count,
                 "final_effective_issue_count": len(response.report.issues),
                 "workflow_invalid": workflow_invalid,
+                "review_outcome": self._review_outcome,
             }
         )
         self._record_event(EventType.WORKFLOW_SUMMARY, "workflow", summary)
@@ -1607,6 +1634,9 @@ class AgentOrchestrator:
         self._deterministic_rejected_count = 0
         self._verifier_accepted_count = 0
         self._verifier_rejected_count = 0
+        self._review_outcome = "no_candidates"
+        self._integrity_failure_codes = {}
+        self._integrity_failure_details = {}
         self._consolidator_block_count = 0
         self._consolidator_proposal_count = 0
         self._consolidator_accepted_cluster_count = 0
@@ -2251,6 +2281,9 @@ class AgentOrchestrator:
             "candidate_finding_count": self._verifier_candidate_count,
             "accepted_finding_count": self._verifier_accepted_count,
             "verifier_rejection_count": self._verifier_rejected_count,
+            "review_outcome": self._review_outcome,
+            "integrity_failures": self._integrity_failure_codes,
+            "integrity_failure_details": self._integrity_failure_details,
             "final_root_cause_finding_count": self._final_root_cause_count,
             "graph_status": graph.get("graph_status", graph.get("status")),
             "graph_cache_mode": graph.get("graph_cache_mode", "not_applicable"),
@@ -2283,6 +2316,7 @@ class AgentOrchestrator:
             ),
             "risk_candidate_count": self._risk_candidate_count,
             "deterministic_rejected_count": self._deterministic_rejected_count,
+            "review_outcome": self._review_outcome,
             "final_risk_finding_count": sum(
                 issue.severity.value in {"critical", "warning"}
                 for issue in response.report.issues

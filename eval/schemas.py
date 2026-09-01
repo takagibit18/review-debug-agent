@@ -340,6 +340,16 @@ class ReviewProcessMetrics(BaseModel):
     evidence_bound_issue_count: int = Field(default=0, ge=0)
     verifier_accepted_count: int = Field(default=0, ge=0)
     verifier_rejected_count: int = Field(default=0, ge=0)
+    review_outcome: Literal[
+        "no_candidates",
+        "accepted",
+        "partially_rejected",
+        "all_candidates_rejected",
+    ] = "no_candidates"
+    integrity_failure_codes: dict[str, list[str]] = Field(default_factory=dict)
+    integrity_failure_details: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     deterministic_evidence_checked_count: int = Field(default=0, ge=0)
     deterministic_evidence_passed_count: int = Field(default=0, ge=0)
     deterministic_evidence_rejected_count: int = Field(default=0, ge=0)

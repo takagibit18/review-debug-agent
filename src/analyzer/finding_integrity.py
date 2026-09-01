@@ -9,7 +9,7 @@ It intentionally does not decide whether the reported behavior is a bug.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,28 @@ class IntegrityFailure:
     message: str
     field: str = ""
     location: str = ""
+    file: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
+    retrieval_source: str = ""
+    context_manifest_id: str = ""
+    manifest_hash_prefix: str = ""
+
+    def as_detail(self) -> dict[str, Any]:
+        """Return a stable structured representation for event logs and reports."""
+
+        return {
+            "code": self.code,
+            "message": self.message,
+            "field": self.field,
+            "location": self.location,
+            "file": self.file,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "retrieval_source": self.retrieval_source,
+            "context_manifest_id": self.context_manifest_id,
+            "manifest_hash_prefix": self.manifest_hash_prefix,
+        }
 
 
 @dataclass(frozen=True)
@@ -130,6 +152,15 @@ class IntegrityGuardResult:
             item.candidate_id: item.failures
             for item in self.results
             if item.failures
+        }
+
+    @property
+    def failure_details(self) -> dict[str, list[dict[str, Any]]]:
+        """Return detailed failures keyed by candidate while preserving code views."""
+
+        return {
+            candidate_id: [failure.as_detail() for failure in failures]
+            for candidate_id, failures in self.failures.items()
         }
 
 
@@ -247,6 +278,7 @@ class FindingIntegrityGuard:
                         "Evidence candidate_id does not match its finding candidate.",
                         field="evidence.candidate_id",
                         location=evidence.location,
+                        **_evidence_failure_metadata(evidence),
                     )
                 )
 
@@ -320,11 +352,14 @@ class FindingIntegrityGuard:
                 field = f"{role}_evidence[{index}]"
                 evidence_location = self._evidence_location(evidence_item)
                 failures.extend(
-                    self._validate_location(
-                        evidence_location,
-                        repo_root=repo_root,
-                        field=field,
-                        require_line=True,
+                    _decorate_failures(
+                        self._validate_location(
+                            evidence_location,
+                            repo_root=repo_root,
+                            field=field,
+                            require_line=True,
+                        ),
+                        evidence=evidence_item,
                     )
                 )
                 if not evidence_item.retrieval_source:
@@ -334,6 +369,7 @@ class FindingIntegrityGuard:
                             "Evidence does not identify a retrieval source.",
                             field=f"{field}.retrieval_source",
                             location=evidence_item.location,
+                            **_evidence_failure_metadata(evidence_item),
                         )
                     )
                 if not evidence_item.statement.strip():
@@ -343,6 +379,7 @@ class FindingIntegrityGuard:
                             "Evidence has no statement tying the location to the finding.",
                             field=f"{field}.statement",
                             location=evidence_item.location,
+                            **_evidence_failure_metadata(evidence_item),
                         )
                     )
                 if evidence_location.valid:
@@ -353,6 +390,7 @@ class FindingIntegrityGuard:
                                 "Evidence provenance is not present in retained reviewer context.",
                                 field=field,
                                 location=evidence_item.location,
+                                **_evidence_failure_metadata(evidence_item),
                             )
                         )
 
@@ -399,6 +437,7 @@ class FindingIntegrityGuard:
                             "Evidence candidate_id does not match its finding candidate.",
                             field="evidence.candidate_id",
                             location=evidence.location,
+                            **_evidence_failure_metadata(evidence),
                         )
                     )
         return tuple(failures)
@@ -576,11 +615,63 @@ class FindingIntegrityGuard:
                 "Referenced code was not present in retained reviewer context.",
                 field=field,
                 location=location.canonical,
+                **_location_failure_metadata(location),
             )
         ]
 
     def _root_for(self, request: ReviewRequest) -> Path:
         return self._repo_root or Path(request.repo_path).resolve()
+
+
+def _evidence_failure_metadata(evidence: Any) -> dict[str, Any]:
+    """Extract safe provenance fields for structured failure telemetry."""
+
+    digest = str(getattr(evidence, "context_hash", "") or "").strip()
+    file = normalize_repo_path(str(getattr(evidence, "file", "") or ""))
+    start_line = getattr(evidence, "line", None)
+    end_line = getattr(evidence, "end_line", None) or start_line
+    return {
+        "file": file,
+        "start_line": start_line if isinstance(start_line, int) else None,
+        "end_line": end_line if isinstance(end_line, int) else None,
+        "retrieval_source": str(
+            getattr(evidence, "retrieval_source", "") or ""
+        ).strip(),
+        "context_manifest_id": str(
+            getattr(evidence, "context_manifest_id", "") or ""
+        ).strip(),
+        "manifest_hash_prefix": digest[:12],
+    }
+
+
+def _location_failure_metadata(location: LocationParseResult) -> dict[str, Any]:
+    """Extract structured location fields for non-evidence failures."""
+
+    return {
+        "file": location.path or "",
+        "start_line": location.line,
+        "end_line": location.end_line or location.line,
+    }
+
+
+def _decorate_failures(
+    failures: list[IntegrityFailure],
+    *,
+    evidence: Any,
+) -> list[IntegrityFailure]:
+    """Fill structured evidence metadata without changing failure identity."""
+
+    metadata = _evidence_failure_metadata(evidence)
+    decorated: list[IntegrityFailure] = []
+    for failure in failures:
+        updates = {
+            key: value
+            for key, value in metadata.items()
+            if not getattr(failure, key)
+            and value not in ("", None)
+        }
+        decorated.append(replace(failure, **updates) if updates else failure)
+    return decorated
 
 
 def _location_intersects_changed_lines(

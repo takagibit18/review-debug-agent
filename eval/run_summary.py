@@ -126,6 +126,30 @@ def extract_review_process_metrics(
                     "verifier_candidate_count", metrics.verifier_candidate_count
                 )
             )
+            raw_outcome = str(payload.get("review_outcome", "") or "")
+            if raw_outcome in {
+                "no_candidates",
+                "accepted",
+                "partially_rejected",
+                "all_candidates_rejected",
+            }:
+                metrics.review_outcome = raw_outcome  # type: ignore[assignment]
+            raw_codes = payload.get("integrity_failures")
+            if isinstance(raw_codes, dict):
+                metrics.integrity_failure_codes = {
+                    str(candidate_id): [str(code) for code in codes]
+                    for candidate_id, codes in raw_codes.items()
+                    if isinstance(codes, list)
+                }
+            raw_details = payload.get("integrity_failure_details")
+            if isinstance(raw_details, dict):
+                metrics.integrity_failure_details = {
+                    str(candidate_id): [
+                        dict(detail) for detail in details if isinstance(detail, dict)
+                    ]
+                    for candidate_id, details in raw_details.items()
+                    if isinstance(details, list)
+                }
         elif event_type == "workflow_summary":
             metrics.required_step_count = _non_negative_int(
                 payload.get("required_step_count")
