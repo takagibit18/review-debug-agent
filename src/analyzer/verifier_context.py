@@ -102,6 +102,8 @@ def build_candidate_verifier_context(
             "included_spans": [],
             "included_graph_paths": [],
             "excluded_low_confidence_paths": [],
+            "verifier_context_budget_exhausted": False,
+            "budget_exhausted_locations": [],
             "context_mode": context_mode,
             "evidence_policy": evidence_policy_for_mode(
                 "agent_search" if context_mode == "agent_search" else "graph_hybrid"
@@ -148,6 +150,16 @@ def build_candidate_verifier_context(
                         requested=requested,
                         budget=budget,
                     )
+                _mark_budget_exhaustion_if_needed(
+                    context,
+                    requested,
+                    available=_requested_location_available(
+                        requested,
+                        hunks_by_file=hunks_by_file,
+                        tool_evidence=tool_evidence,
+                        manifests=manifests,
+                    ),
+                )
                 continue
             if _is_diff_retrieval_source(requested.retrieval_source):
                 _append_matching_diff_context(
@@ -155,6 +167,16 @@ def build_candidate_verifier_context(
                     hunks_by_file,
                     requested=requested,
                     budget=budget,
+                )
+                _mark_budget_exhaustion_if_needed(
+                    context,
+                    requested,
+                    available=_requested_location_available(
+                        requested,
+                        hunks_by_file=hunks_by_file,
+                        tool_evidence=tool_evidence,
+                        manifests=manifests,
+                    ),
                 )
                 continue
             if requested.retrieval_source:
@@ -165,6 +187,16 @@ def build_candidate_verifier_context(
                         requested=requested,
                         budget=budget,
                     )
+                _mark_budget_exhaustion_if_needed(
+                    context,
+                    requested,
+                    available=_requested_location_available(
+                        requested,
+                        hunks_by_file=hunks_by_file,
+                        tool_evidence=tool_evidence,
+                        manifests=manifests,
+                    ),
+                )
                 continue
 
             _append_matching_diff_context(
@@ -184,6 +216,16 @@ def build_candidate_verifier_context(
                 _append_matching_manifest_context(
                     context, manifest, requested=requested, budget=budget
                 )
+            _mark_budget_exhaustion_if_needed(
+                context,
+                requested,
+                available=_requested_location_available(
+                    requested,
+                    hunks_by_file=hunks_by_file,
+                    tool_evidence=tool_evidence,
+                    manifests=manifests,
+                ),
+            )
 
         # Preserve the prior manifest envelope when budget remains, but only
         # after every explicitly cited location has had a chance to be retained.
@@ -690,6 +732,188 @@ def _append_bounded(
         bucket.pop()
         return False
     return True
+
+
+def context_budget_exhausted_for_location(
+    context: dict[str, Any] | None,
+    location: Any,
+) -> bool:
+    """Return whether a cited location was observed but omitted by the budget."""
+
+    if not context or not context.get("verifier_context_budget_exhausted"):
+        return False
+    path = _normalized_path(getattr(location, "path", ""))
+    line = _as_int(getattr(location, "line", None))
+    if not path or line is None:
+        return False
+    end_line = _as_int(getattr(location, "end_line", None)) or line
+    records = context.get("budget_exhausted_locations")
+    return isinstance(records, list) and any(
+        _location_overlaps_record(path, line, end_line, record)
+        for record in records
+        if isinstance(record, dict)
+    )
+
+
+def _mark_budget_exhaustion_if_needed(
+    context: dict[str, Any],
+    requested: _EvidenceLocationRequest,
+    *,
+    available: bool,
+) -> None:
+    if not available:
+        return
+    location = normalize_location(
+        f"{requested.path}:{requested.start_line}-{requested.end_line}"
+    )
+    if location_in_candidate_context(context, location):
+        return
+    context["verifier_context_budget_exhausted"] = True
+    records = context.setdefault("budget_exhausted_locations", [])
+    if not isinstance(records, list):
+        records = []
+        context["budget_exhausted_locations"] = records
+    record = {
+        "path": requested.path,
+        "start_line": requested.start_line,
+        "end_line": requested.end_line,
+        "role": requested.role,
+        "retrieval_source": requested.retrieval_source,
+        "context_manifest_id": requested.context_manifest_id,
+        "code": "verifier_context_budget_exhausted",
+    }
+    if record not in records:
+        records.append(record)
+
+
+def _requested_location_available(
+    requested: _EvidenceLocationRequest,
+    *,
+    hunks_by_file: dict[str, list[ParsedDiffHunk]],
+    tool_evidence: list[dict[str, Any]],
+    manifests: list[dict[str, Any]],
+) -> bool:
+    """Check source availability independently from bounded retention."""
+
+    if requested.context_manifest_id:
+        return any(
+            str(manifest.get("candidate_id", "")).strip()
+            == requested.context_manifest_id
+            and _manifest_covers_location(manifest, requested)
+            for manifest in manifests
+        )
+    if _is_diff_retrieval_source(requested.retrieval_source):
+        return _diff_covers_location(hunks_by_file, requested)
+    if requested.retrieval_source:
+        return any(
+            _tool_covers_location(entry, requested) for entry in tool_evidence
+        )
+    return _diff_covers_location(hunks_by_file, requested) or any(
+        _tool_covers_location(entry, requested) for entry in tool_evidence
+    ) or any(_manifest_covers_location(manifest, requested) for manifest in manifests)
+
+
+def _diff_covers_location(
+    hunks_by_file: dict[str, list[ParsedDiffHunk]],
+    requested: _EvidenceLocationRequest,
+) -> bool:
+    return any(
+        _ranges_overlap(
+            requested.start_line,
+            requested.end_line,
+            hunk.new_start,
+            hunk.new_start + max(0, hunk.new_count - 1),
+        )
+        for hunk in hunks_by_file.get(requested.path, [])
+    )
+
+
+def _manifest_covers_location(
+    manifest: dict[str, Any],
+    requested: _EvidenceLocationRequest,
+) -> bool:
+    spans = manifest.get("included_spans", [])
+    if isinstance(spans, list) and any(
+        _location_overlaps_record(
+            requested.path,
+            requested.start_line,
+            requested.end_line,
+            span,
+        )
+        for span in spans
+        if isinstance(span, dict)
+    ):
+        return True
+    paths = manifest.get("included_graph_paths", [])
+    return isinstance(paths, list) and any(
+        any(
+            _location_overlaps_record(
+                requested.path,
+                requested.start_line,
+                requested.end_line,
+                edge,
+            )
+            for edge in path.get("edges", [])
+            if isinstance(edge, dict)
+        )
+        for path in paths
+        if isinstance(path, dict)
+    )
+
+
+def _tool_covers_location(
+    entry: dict[str, Any],
+    requested: _EvidenceLocationRequest,
+) -> bool:
+    tool_name = str(entry.get("tool_name", "")).strip()
+    if tool_name not in VERIFIER_CONTEXT_TOOL_NAMES:
+        return False
+    if requested.retrieval_source and not _tool_source_matches(
+        requested.retrieval_source, tool_name
+    ):
+        return False
+    arguments = entry.get("arguments")
+    data = entry.get("data")
+    if not isinstance(arguments, dict) or not isinstance(data, dict):
+        return False
+    if _entry_path(data, arguments) != requested.path:
+        return False
+    if tool_name in {"get_changed_context", "changed_context"}:
+        return any(
+            isinstance(data.get(key), dict)
+            and _payload_matches_range(
+                data[key], requested.start_line, requested.end_line
+            )
+            for key in ("hunk", "file_window")
+        )
+    if tool_name == "read_file":
+        start_line = _as_int(data.get("start_line"))
+        line_count = _as_int(data.get("line_count")) or 0
+        return (
+            isinstance(data.get("content"), str)
+            and start_line is not None
+            and _ranges_overlap(
+                requested.start_line,
+                requested.end_line,
+                start_line,
+                start_line + max(0, line_count - 1),
+            )
+        )
+    records = [
+        item
+        for key in ("definitions", "references", "enclosing_symbols")
+        for item in data.get(key, [])
+        if isinstance(data.get(key), list) and isinstance(item, dict)
+    ]
+    return any(
+        _location_overlaps_record(
+            requested.path,
+            requested.start_line,
+            requested.end_line,
+            record,
+        )
+        for record in records
+    )
 
 
 def location_in_candidate_context(

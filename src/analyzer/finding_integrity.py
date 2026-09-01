@@ -21,6 +21,7 @@ from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
 from src.analyzer.verifier_context import (
     build_candidate_verifier_context,
+    context_budget_exhausted_for_location,
     location_in_candidate_context,
     provenance_in_candidate_context,
 )
@@ -384,10 +385,22 @@ class FindingIntegrityGuard:
                     )
                 if evidence_location.valid:
                     if not provenance_in_candidate_context(context, evidence_item):
+                        budget_exhausted = context_budget_exhausted_for_location(
+                            context, evidence_location
+                        )
                         failures.append(
                             IntegrityFailure(
-                                "evidence_not_observed",
-                                "Evidence provenance is not present in retained reviewer context.",
+                                (
+                                    "verifier_context_budget_exhausted"
+                                    if budget_exhausted
+                                    else "evidence_not_observed"
+                                ),
+                                (
+                                    "Evidence was observed but omitted from retained "
+                                    "reviewer context by the verifier budget."
+                                    if budget_exhausted
+                                    else "Evidence provenance is not present in retained reviewer context."
+                                ),
                                 field=field,
                                 location=evidence_item.location,
                                 **_evidence_failure_metadata(evidence_item),
@@ -609,10 +622,20 @@ class FindingIntegrityGuard:
             return []
         if location_in_candidate_context(context, location):
             return []
+        budget_exhausted = context_budget_exhausted_for_location(context, location)
         return [
             IntegrityFailure(
-                "evidence_not_observed",
-                "Referenced code was not present in retained reviewer context.",
+                (
+                    "verifier_context_budget_exhausted"
+                    if budget_exhausted
+                    else "evidence_not_observed"
+                ),
+                (
+                    "Referenced code was observed but omitted from retained reviewer "
+                    "context by the verifier budget."
+                    if budget_exhausted
+                    else "Referenced code was not present in retained reviewer context."
+                ),
                 field=field,
                 location=location.canonical,
                 **_location_failure_metadata(location),
