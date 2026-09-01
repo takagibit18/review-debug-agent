@@ -366,6 +366,12 @@ class ReviewProcessMetrics(BaseModel):
     included_graph_nodes: int = Field(default=0, ge=0)
     included_graph_paths: int = Field(default=0, ge=0)
     discarded_graph_paths: int = Field(default=0, ge=0)
+    graph_available_path_count: int = Field(default=0, ge=0)
+    graph_selected_path_count: int = Field(default=0, ge=0)
+    graph_dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
+    graph_selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     reviewer_tool_call_count: int = Field(default=0, ge=0)
     unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     edge_confidence_contribution: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -572,6 +578,12 @@ class MetricSummary(BaseModel):
     included_graph_nodes: int = Field(default=0, ge=0)
     included_graph_paths: int = Field(default=0, ge=0)
     discarded_graph_paths: int = Field(default=0, ge=0)
+    graph_available_path_count: int = Field(default=0, ge=0)
+    graph_selected_path_count: int = Field(default=0, ge=0)
+    graph_dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
+    graph_selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     reviewer_tool_call_count: int = Field(default=0, ge=0)
     unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     edge_confidence_contribution: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -799,6 +811,31 @@ def _aggregate_process_metrics(
     discarded_paths = sum(
         item.process_metrics.discarded_graph_paths for item in results
     )
+    available_paths = sum(
+        item.process_metrics.graph_available_path_count for item in results
+    )
+    selected_paths = sum(
+        item.process_metrics.graph_selected_path_count for item in results
+    )
+    repeated_prefix_paths = sum(
+        item.process_metrics.graph_dropped_repeated_prefix_path_count
+        for item in results
+    )
+    direct_paths = sum(
+        item.process_metrics.graph_selected_direct_path_count for item in results
+    )
+    graph_reviewer_tokens = sum(
+        item.process_metrics.graph_reviewer_context_token_estimate
+        for item in results
+    )
+    path_selection_reasons: dict[str, int] = {}
+    for item in results:
+        for reason, count in (
+            item.process_metrics.graph_path_selection_reason_counts.items()
+        ):
+            path_selection_reasons[reason] = (
+                path_selection_reasons.get(reason, 0) + count
+            )
     reviewer_tools = sum(
         item.process_metrics.reviewer_tool_call_count for item in results
     )
@@ -860,6 +897,12 @@ def _aggregate_process_metrics(
         "included_graph_nodes": included_nodes,
         "included_graph_paths": included_paths,
         "discarded_graph_paths": discarded_paths,
+        "graph_available_path_count": available_paths,
+        "graph_selected_path_count": selected_paths,
+        "graph_dropped_repeated_prefix_path_count": repeated_prefix_paths,
+        "graph_selected_direct_path_count": direct_paths,
+        "graph_reviewer_context_token_estimate": graph_reviewer_tokens,
+        "graph_path_selection_reason_counts": path_selection_reasons,
         "reviewer_tool_call_count": reviewer_tools,
         "unused_context_ratio": float(mean(unused_ratios)) if unused_ratios else 0.0,
         "edge_confidence_contribution": (

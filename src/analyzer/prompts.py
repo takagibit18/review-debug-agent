@@ -480,6 +480,39 @@ def _populate_planner_telemetry(
         if isinstance(item.get("discarded_paths", []), list)
         and isinstance(item.get("excluded_low_confidence_paths", []), list)
     )
+    sink["candidate_context_graph_path_available_count"] = sum(
+        int(item.get("available_graph_path_count", 0) or 0)
+        for item in manifests
+        if isinstance(item, dict)
+    )
+    sink["candidate_context_graph_path_repeated_prefix_dropped_count"] = sum(
+        int(item.get("dropped_repeated_prefix_path_count", 0) or 0)
+        for item in manifests
+        if isinstance(item, dict)
+    )
+    sink["candidate_context_graph_path_direct_selected_count"] = sum(
+        int(item.get("selected_direct_path_count", 0) or 0)
+        for item in manifests
+        if isinstance(item, dict)
+    )
+    sink["candidate_context_graph_reviewer_token_estimate"] = sum(
+        int(item.get("graph_reviewer_context_token_estimate", 0) or 0)
+        for item in manifests
+        if isinstance(item, dict)
+    )
+    reason_counts: dict[str, int] = {}
+    for item in manifests:
+        raw_reasons = item.get("path_selection_reason_counts", {})
+        if not isinstance(raw_reasons, dict):
+            continue
+        for reason, count in raw_reasons.items():
+            try:
+                reason_counts[str(reason)] = reason_counts.get(str(reason), 0) + max(
+                    0, int(count)
+                )
+            except (TypeError, ValueError):
+                continue
+    sink["candidate_context_graph_path_selection_reasons"] = reason_counts
 
 
 def _measure_context_parts(

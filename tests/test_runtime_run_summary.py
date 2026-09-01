@@ -147,6 +147,42 @@ def test_runtime_summary_collects_integrity_and_workflow_outcomes(
     assert summary.workflow_reprompt_count == 1
 
 
+def test_runtime_summary_collects_graph_path_diversity_metrics(tmp_path: Path) -> None:
+    log = tmp_path / "graph.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "event_type": "context_plan_completed",
+                "phase": "context_planner",
+                "payload": {
+                    "available_graph_path_count": 12,
+                    "selected_reviewer_path_count": 7,
+                    "dropped_repeated_prefix_path_count": 4,
+                    "selected_direct_path_count": 3,
+                    "graph_reviewer_context_token_estimate": 321,
+                    "path_selection_reason_counts": {
+                        "selected_direct": 3,
+                        "repeated_first_hop_prefix": 4,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = summarize_event_log(log)
+
+    assert summary.graph_available_path_count == 12
+    assert summary.graph_selected_path_count == 7
+    assert summary.graph_dropped_repeated_prefix_path_count == 4
+    assert summary.graph_selected_direct_path_count == 3
+    assert summary.graph_reviewer_context_token_estimate == 321
+    assert summary.graph_path_selection_reason_counts == {
+        "selected_direct": 3,
+        "repeated_first_hop_prefix": 4,
+    }
+
+
 def test_runtime_summary_ignores_retired_verifier_fields(tmp_path: Path) -> None:
     log = tmp_path / "historical.jsonl"
     log.write_text(

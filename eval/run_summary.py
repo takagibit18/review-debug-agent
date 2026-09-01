@@ -171,6 +171,7 @@ def extract_review_process_metrics(
                 else []
             )
         elif event_type == "context_plan_completed":
+            _update_graph_selection_metrics(metrics, payload)
             metrics.candidate_context_tokens = _non_negative_int(
                 payload.get("token_cost")
             )
@@ -323,7 +324,53 @@ def extract_review_process_metrics(
                 bool(raw_cache_hit) if isinstance(raw_cache_hit, bool) else None
             )
             metrics.graph_fallback_reason = str(payload.get("fallback_reason", ""))
+            _update_graph_selection_metrics(metrics, payload)
     return metrics
+
+
+def _update_graph_selection_metrics(
+    metrics: ReviewProcessMetrics, payload: dict[str, object]
+) -> None:
+    """Copy graph path diversity counters from planner or review telemetry."""
+
+    field_keys = {
+        "graph_available_path_count": (
+            "graph_available_path_count",
+            "available_graph_path_count",
+        ),
+        "graph_selected_path_count": (
+            "graph_selected_path_count",
+            "selected_reviewer_path_count",
+            "included_graph_path_count",
+            "included_path_count",
+        ),
+        "graph_dropped_repeated_prefix_path_count": (
+            "graph_dropped_repeated_prefix_path_count",
+            "dropped_repeated_prefix_path_count",
+        ),
+        "graph_selected_direct_path_count": (
+            "graph_selected_direct_path_count",
+            "selected_direct_path_count",
+        ),
+        "graph_reviewer_context_token_estimate": (
+            "graph_reviewer_context_token_estimate",
+        ),
+    }
+    for field_name, keys in field_keys.items():
+        for key in keys:
+            if key in payload:
+                setattr(metrics, field_name, _non_negative_int(payload.get(key)))
+                break
+
+    raw_reasons = payload.get(
+        "graph_path_selection_reason_counts",
+        payload.get("path_selection_reason_counts"),
+    )
+    if isinstance(raw_reasons, dict):
+        metrics.graph_path_selection_reason_counts = {
+            str(reason): _non_negative_int(count)
+            for reason, count in raw_reasons.items()
+        }
 
 
 def _non_negative_int(value: object) -> int:

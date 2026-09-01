@@ -94,6 +94,14 @@ def test_graph_hybrid_strategy_still_builds_valid_manifests(tmp_path: Path) -> N
         for manifest in result.candidate_context_manifests
         for span in manifest.get("included_spans", [])
     )
+    assert {
+        "available_graph_path_count",
+        "selected_reviewer_path_count",
+        "dropped_repeated_prefix_path_count",
+        "selected_direct_path_count",
+        "graph_reviewer_context_token_estimate",
+        "path_selection_reason_counts",
+    } <= result.graph_telemetry.keys()
     assert EventType.RELATION_GRAPH_BUILT in events
 
 

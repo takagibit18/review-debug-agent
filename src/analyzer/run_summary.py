@@ -55,6 +55,12 @@ class RunSummary(BaseModel):
     integrity_failure_details: dict[str, list[dict[str, Any]]] = Field(
         default_factory=dict
     )
+    graph_available_path_count: int = 0
+    graph_selected_path_count: int = 0
+    graph_dropped_repeated_prefix_path_count: int = 0
+    graph_selected_direct_path_count: int = 0
+    graph_reviewer_context_token_estimate: int = 0
+    graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     deterministic_evidence_checked_count: int = 0
     deterministic_evidence_passed_count: int = 0
     deterministic_evidence_rejected_count: int = 0
@@ -232,6 +238,7 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         summary.pre_budget_submit_triggered = True
 
     if event_type == "phase_end" and phase == "review_complete":
+        _update_graph_selection_summary(summary, payload)
         review_iterations = _non_negative_int(
             payload.get("review_iterations", payload.get("actual_review_iterations"))
         )
@@ -282,6 +289,9 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
             or 0
         )
         summary.finding_candidate_count = int(payload.get("candidate_count", 0) or 0)
+
+    if event_type == "context_plan_completed":
+        _update_graph_selection_summary(summary, payload)
 
     if event_type == "finding_verification_completed":
         summary.model_raw_issue_count = int(
@@ -384,3 +394,48 @@ def _normalize_termination_reason(reason: str) -> str:
         "model_timeout": "provider_timeout",
         "pre_budget_submit_attempted": "pre_budget_submit",
     }.get(reason, "")
+
+
+def _update_graph_selection_summary(
+    summary: RunSummary, payload: dict[str, Any]
+) -> None:
+    """Copy graph path diversity counters from planner or review telemetry."""
+
+    field_keys = {
+        "graph_available_path_count": (
+            "graph_available_path_count",
+            "available_graph_path_count",
+        ),
+        "graph_selected_path_count": (
+            "graph_selected_path_count",
+            "selected_reviewer_path_count",
+            "included_graph_path_count",
+            "included_path_count",
+        ),
+        "graph_dropped_repeated_prefix_path_count": (
+            "graph_dropped_repeated_prefix_path_count",
+            "dropped_repeated_prefix_path_count",
+        ),
+        "graph_selected_direct_path_count": (
+            "graph_selected_direct_path_count",
+            "selected_direct_path_count",
+        ),
+        "graph_reviewer_context_token_estimate": (
+            "graph_reviewer_context_token_estimate",
+        ),
+    }
+    for field_name, keys in field_keys.items():
+        for key in keys:
+            if key in payload:
+                setattr(summary, field_name, _non_negative_int(payload.get(key)))
+                break
+
+    raw_reasons = payload.get(
+        "graph_path_selection_reason_counts",
+        payload.get("path_selection_reason_counts"),
+    )
+    if isinstance(raw_reasons, dict):
+        summary.graph_path_selection_reason_counts = {
+            str(reason): _non_negative_int(count)
+            for reason, count in raw_reasons.items()
+        }

@@ -2301,6 +2301,20 @@ class AgentOrchestrator:
             "cache_hit": graph.get("cache_hit"),
             "cache_hit_rate": graph.get("cache_hit_rate"),
             "fallback_reason": graph.get("fallback_reason", ""),
+            "available_graph_path_count": graph.get("available_graph_path_count", 0),
+            "selected_reviewer_path_count": graph.get(
+                "selected_reviewer_path_count", 0
+            ),
+            "dropped_repeated_prefix_path_count": graph.get(
+                "dropped_repeated_prefix_path_count", 0
+            ),
+            "selected_direct_path_count": graph.get("selected_direct_path_count", 0),
+            "graph_reviewer_context_token_estimate": graph.get(
+                "graph_reviewer_context_token_estimate", 0
+            ),
+            "path_selection_reason_counts": graph.get(
+                "path_selection_reason_counts", {}
+            ),
         }
         self._record_event(EventType.PHASE_END, "review_complete", payload)
 
