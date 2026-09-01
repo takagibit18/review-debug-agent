@@ -143,6 +143,11 @@ GRAPH_CONTEXT_POLICY = (
     "read-only tool results outside a "
     "manifest remain valid independent tool provenance. Low-confidence or exploratory "
     "graph edges cannot alone support warning or critical findings. "
+    "For Python changes that add or edit __eq__ or __hash__, inspect the equality/hash "
+    "contract together: wrapper-to-wrapper equality, hashable-but-raising values, and "
+    "every dict/set/tuple key consumer. Do not assume collections.abc.Hashable means "
+    "hash(value) succeeds; treat hash exceptions and equality symmetry as concrete "
+    "contract checks. "
 )
 
 

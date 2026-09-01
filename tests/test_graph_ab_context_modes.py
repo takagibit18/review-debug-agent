@@ -138,6 +138,17 @@ def test_graph_policy_guides_joint_analysis_of_related_spans() -> None:
         assert phrase not in review_system_prompt("agent_search")
 
 
+def test_python_equality_hash_contract_guidance_is_graph_only() -> None:
+    agent_common, agent_policy = review_prompt_parts("agent_search")
+    graph_common, graph_policy = review_prompt_parts("graph_hybrid")
+
+    assert agent_common == graph_common
+    for phrase in ("__eq__", "__hash__", "Hashable", "hash(value)"):
+        assert phrase in graph_policy
+        assert phrase not in agent_common
+        assert phrase not in agent_policy
+
+
 def test_eval_matcher_is_variant_independent_and_semantic() -> None:
     fixture = Fixture.model_validate(
         {
