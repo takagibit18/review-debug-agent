@@ -243,3 +243,6 @@ class FindingCandidate(BaseModel):
     evidence_locations: list[str] = Field(default_factory=list)
     originating_iteration: int = Field(ge=0)
     source_issue_index: int = Field(default=0, ge=0)
+    verification_status: Literal[
+        "pending", "accepted", "rejected", "verification_blocked"
+    ] = "pending"
