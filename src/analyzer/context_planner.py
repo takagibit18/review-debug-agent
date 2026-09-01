@@ -81,6 +81,7 @@ class ExcludedGraphPath(BaseModel):
     edge_kinds: list[str]
     reason: str
     max_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    first_hop_prefix: str = ""
 
 
 class CandidateContextManifest(BaseModel):
@@ -99,6 +100,12 @@ class CandidateContextManifest(BaseModel):
     truncation_reasons: list[str] = Field(default_factory=list)
     parent_manifest_ids: list[str] = Field(default_factory=list)
     retrieval_provenance: list[dict[str, Any]] = Field(default_factory=list)
+    available_graph_path_count: int = Field(default=0, ge=0)
+    selected_reviewer_path_count: int = Field(default=0, ge=0)
+    dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
+    selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
 
     def prompt_payload(self) -> dict[str, Any]:
         """Return the evidence envelope eligible for the reviewer prompt."""
@@ -132,6 +139,12 @@ class ContextPlanResult(BaseModel):
     total_included_nodes: int = Field(default=0, ge=0)
     total_included_paths: int = Field(default=0, ge=0)
     total_discarded_paths: int = Field(default=0, ge=0)
+    available_graph_path_count: int = Field(default=0, ge=0)
+    selected_reviewer_path_count: int = Field(default=0, ge=0)
+    dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
+    selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ChangeCenteredContextPlanner:
@@ -146,6 +159,7 @@ class ChangeCenteredContextPlanner:
         max_context_tokens: int = 4_000,
         max_context_chars: int | None = None,
         min_evidence_confidence: float = 0.65,
+        max_paths_per_prefix: int = 2,
         edge_weights: dict[EdgeKind, float] | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
@@ -154,6 +168,7 @@ class ChangeCenteredContextPlanner:
         self.max_context_tokens = max(1, max_context_tokens)
         self.max_context_chars = max_context_chars or max_context_tokens * 4
         self.min_evidence_confidence = min(1.0, max(0.0, min_evidence_confidence))
+        self.max_paths_per_prefix = max(1, max_paths_per_prefix)
         self.edge_weights = {**DEFAULT_EDGE_WEIGHTS, **(edge_weights or {})}
 
     def plan(
@@ -165,6 +180,10 @@ class ChangeCenteredContextPlanner:
             self.plan_candidate(graph, anchor, index)
             for index, anchor in enumerate(anchors, start=1)
         ]
+        reason_counts: dict[str, int] = {}
+        for manifest in manifests:
+            for reason, count in manifest.path_selection_reason_counts.items():
+                reason_counts[reason] = reason_counts.get(reason, 0) + count
         return ContextPlanResult(
             manifests=manifests,
             total_token_cost=sum(item.token_cost for item in manifests),
@@ -176,6 +195,22 @@ class ChangeCenteredContextPlanner:
                 len(item.discarded_paths) + len(item.excluded_low_confidence_paths)
                 for item in manifests
             ),
+            available_graph_path_count=sum(
+                item.available_graph_path_count for item in manifests
+            ),
+            selected_reviewer_path_count=sum(
+                item.selected_reviewer_path_count for item in manifests
+            ),
+            dropped_repeated_prefix_path_count=sum(
+                item.dropped_repeated_prefix_path_count for item in manifests
+            ),
+            selected_direct_path_count=sum(
+                item.selected_direct_path_count for item in manifests
+            ),
+            graph_reviewer_context_token_estimate=sum(
+                item.graph_reviewer_context_token_estimate for item in manifests
+            ),
+            path_selection_reason_counts=reason_counts,
         )
 
     def plan_candidate(
@@ -210,9 +245,11 @@ class ChangeCenteredContextPlanner:
             self._include_class_context(
                 graph, start, manifest, selected_nodes, used_spans
             )
-            self._include_direct_fields(
+            direct_path_ids = self._include_direct_fields(
                 graph, start, manifest, selected_nodes, used_spans
             )
+        else:
+            direct_path_ids = set()
 
         if start is not None and self.max_depth > 0:
             paths: list[list[RelationEdge]] = []
@@ -232,10 +269,25 @@ class ChangeCenteredContextPlanner:
                     max_paths=max(50, self.max_nodes * 4),
                 )
             )
+            unique_paths: list[list[RelationEdge]] = []
+            seen_path_ids = set(direct_path_ids)
+            for path in paths:
+                path_id = self._path_id(path)
+                if path_id in seen_path_ids:
+                    continue
+                seen_path_ids.add(path_id)
+                unique_paths.append(path)
+            manifest.available_graph_path_count = len(seen_path_ids)
             scored = sorted(
-                ((self._path_score(anchor, path), path) for path in paths),
-                key=lambda item: (-item[0], self._path_id(item[1])),
+                ((self._path_score(anchor, path), path) for path in unique_paths),
+                key=lambda item: (
+                    0 if len(item[1]) == 1 else 1,
+                    len(item[1]),
+                    -item[0],
+                    self._path_id(item[1]),
+                ),
             )
+            prefix_counts: dict[str, int] = {}
             for score, path in scored:
                 self._consider_path(
                     graph,
@@ -245,11 +297,27 @@ class ChangeCenteredContextPlanner:
                     score,
                     selected_nodes,
                     used_spans,
+                    prefix_counts,
                 )
+        else:
+            manifest.available_graph_path_count = len(direct_path_ids)
 
         manifest.included_node_count = len(selected_nodes)
         manifest.char_cost = sum(len(span.content) for span in manifest.included_spans)
         manifest.token_cost = sum(span.token_cost for span in manifest.included_spans)
+        manifest.selected_reviewer_path_count = len(manifest.included_graph_paths)
+        manifest.selected_direct_path_count = sum(
+            len(path.edges) == 1 for path in manifest.included_graph_paths
+        )
+        manifest.dropped_repeated_prefix_path_count = manifest.path_selection_reason_counts.get(
+            "repeated_first_hop_prefix", 0
+        )
+        manifest.graph_reviewer_context_token_estimate = sum(
+            self._estimate_tokens(
+                json.dumps(path.model_dump(mode="json"), ensure_ascii=True, sort_keys=True)
+            )
+            for path in manifest.included_graph_paths
+        )
         if manifest.token_cost > self.max_context_tokens:
             manifest.truncation_reasons.append("forced_context_exceeds_token_budget")
         if manifest.char_cost > self.max_context_chars:
@@ -265,9 +333,11 @@ class ChangeCenteredContextPlanner:
         score: float,
         selected_nodes: set[str],
         used_spans: set[tuple[str, int, int, str]],
+        prefix_counts: dict[str, int],
     ) -> None:
         path_id = self._path_id(path)
         node_ids = [path[0].source, *[edge.target for edge in path]]
+        first_hop_prefix = self._path_prefix_key(path)
         confidence = min((edge.confidence for edge in path), default=0.0)
         eligibility = (
             "strong"
@@ -283,7 +353,30 @@ class ChangeCenteredContextPlanner:
                     edge_kinds=[edge.kind.value for edge in path],
                     reason="low_confidence_or_exploratory_edge",
                     max_confidence=max((edge.confidence for edge in path), default=0.0),
+                    first_hop_prefix=first_hop_prefix,
                 )
+            )
+            self._record_path_selection_reason(
+                manifest, "low_confidence_or_exploratory_edge"
+            )
+            return
+
+        is_direct = len(path) == 1
+        if not is_direct and prefix_counts.get(first_hop_prefix, 0) >= (
+            self.max_paths_per_prefix
+        ):
+            manifest.discarded_paths.append(
+                ExcludedGraphPath(
+                    path_id=path_id,
+                    node_ids=node_ids,
+                    edge_kinds=[edge.kind.value for edge in path],
+                    reason="repeated_first_hop_prefix",
+                    max_confidence=max(edge.confidence for edge in path),
+                    first_hop_prefix=first_hop_prefix,
+                )
+            )
+            self._record_path_selection_reason(
+                manifest, "repeated_first_hop_prefix"
             )
             return
         new_nodes = [node_id for node_id in node_ids if node_id not in selected_nodes]
@@ -295,9 +388,11 @@ class ChangeCenteredContextPlanner:
                     edge_kinds=[edge.kind.value for edge in path],
                     reason="max_nodes",
                     max_confidence=max(edge.confidence for edge in path),
+                    first_hop_prefix=first_hop_prefix,
                 )
             )
             self._append_once(manifest.truncation_reasons, "max_nodes")
+            self._record_path_selection_reason(manifest, "max_nodes")
             return
 
         candidate_spans: list[IncludedSpan] = []
@@ -328,9 +423,11 @@ class ChangeCenteredContextPlanner:
                     edge_kinds=[edge.kind.value for edge in path],
                     reason="token_budget",
                     max_confidence=max(edge.confidence for edge in path),
+                    first_hop_prefix=first_hop_prefix,
                 )
             )
             self._append_once(manifest.truncation_reasons, "token_budget")
+            self._record_path_selection_reason(manifest, "token_budget")
             return
         if current_chars + additional_chars > self.max_context_chars:
             manifest.discarded_paths.append(
@@ -340,9 +437,11 @@ class ChangeCenteredContextPlanner:
                     edge_kinds=[edge.kind.value for edge in path],
                     reason="character_budget",
                     max_confidence=max(edge.confidence for edge in path),
+                    first_hop_prefix=first_hop_prefix,
                 )
             )
             self._append_once(manifest.truncation_reasons, "character_budget")
+            self._record_path_selection_reason(manifest, "character_budget")
             return
 
         selected_nodes.update(node_ids)
@@ -358,6 +457,12 @@ class ChangeCenteredContextPlanner:
                 evidence_eligibility=eligibility,
                 explanation=self._path_explanation(anchor, path, score),
             )
+        )
+        if not is_direct:
+            prefix_counts[first_hop_prefix] = prefix_counts.get(first_hop_prefix, 0) + 1
+        self._record_path_selection_reason(
+            manifest,
+            "selected_direct" if is_direct else "selected_low_hop" if len(path) == 2 else "selected",
         )
 
     def _include_class_context(
@@ -396,7 +501,8 @@ class ChangeCenteredContextPlanner:
         manifest: CandidateContextManifest,
         selected_nodes: set[str],
         used_spans: set[tuple[str, int, int, str]],
-    ) -> None:
+    ) -> set[str]:
+        direct_path_ids: set[str] = set()
         field_edges = graph.outgoing(
             start.node_id, {EdgeKind.READS_FIELD, EdgeKind.WRITES_FIELD}
         )
@@ -411,7 +517,22 @@ class ChangeCenteredContextPlanner:
             target = graph.nodes.get(edge.target)
             if target is None or target.kind != NodeKind.FIELD:
                 continue
+            path_id = self._path_id([edge])
+            direct_path_ids.add(path_id)
             if edge.confidence < self.min_evidence_confidence:
+                manifest.excluded_low_confidence_paths.append(
+                    ExcludedGraphPath(
+                        path_id=path_id,
+                        node_ids=[edge.source, edge.target],
+                        edge_kinds=[edge.kind.value],
+                        reason="low_confidence_or_exploratory_edge",
+                        max_confidence=edge.confidence,
+                        first_hop_prefix=self._path_prefix_key([edge]),
+                    )
+                )
+                self._record_path_selection_reason(
+                    manifest, "low_confidence_or_exploratory_edge"
+                )
                 continue
             selected_nodes.add(target.node_id)
             self._append_if_budget(
@@ -420,7 +541,6 @@ class ChangeCenteredContextPlanner:
                 used_spans,
                 "field_context_budget",
             )
-            path_id = self._path_id([edge])
             if not any(
                 item.path_id == path_id for item in manifest.included_graph_paths
             ):
@@ -437,6 +557,8 @@ class ChangeCenteredContextPlanner:
                         ),
                     )
                 )
+                self._record_path_selection_reason(manifest, "selected_direct")
+        return direct_path_ids
 
     def _fit_required_symbol(
         self,
@@ -663,6 +785,23 @@ class ChangeCenteredContextPlanner:
     def _path_id(path: list[RelationEdge]) -> str:
         raw = "|".join(edge.edge_id for edge in path)
         return "path-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _path_prefix_key(path: list[RelationEdge]) -> str:
+        """Return the stable first-hop prefix used for diversity capping."""
+
+        if not path:
+            return ""
+        first = path[0]
+        return f"{first.target}|{normalize_repo_path(first.path)}"
+
+    @staticmethod
+    def _record_path_selection_reason(
+        manifest: CandidateContextManifest, reason: str
+    ) -> None:
+        manifest.path_selection_reason_counts[reason] = (
+            manifest.path_selection_reason_counts.get(reason, 0) + 1
+        )
 
     @staticmethod
     def _path_explanation(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 from src.analyzer.code_graph import (
@@ -157,6 +158,86 @@ def test_node_and_span_deduplication(tmp_path: Path) -> None:
     assert len({path.path_id for path in manifest.included_graph_paths}) == len(
         manifest.included_graph_paths
     )
+
+
+def test_repeated_first_hop_prefixes_are_capped_with_audit_counts(
+    tmp_path: Path,
+) -> None:
+    source = _write(
+        tmp_path / "fanout.py",
+        "def leaf_0():\n    return 0\n\n"
+        "def leaf_1():\n    return 1\n\n"
+        "def leaf_2():\n    return 2\n\n"
+        "def leaf_3():\n    return 3\n\n"
+        "def hub():\n"
+        "    return leaf_0() + leaf_1() + leaf_2() + leaf_3()\n\n"
+        "def changed():\n    return hub()  # changed\n",
+    )
+    diff = _diff("fanout.py", 17, "    return hub()", "    return hub()  # changed")
+
+    graph, _, result = _plan(
+        tmp_path,
+        [source],
+        diff,
+        max_depth=2,
+        max_nodes=100,
+        max_context_tokens=10_000,
+        max_paths_per_prefix=2,
+    )
+    manifest = result.manifests[0]
+
+    selected_prefixes = Counter(
+        (path.edges[0].target, path.edges[0].path)
+        for path in manifest.included_graph_paths
+        if len(path.edges) > 1
+    )
+
+    assert manifest.available_graph_path_count > manifest.selected_reviewer_path_count
+    assert manifest.dropped_repeated_prefix_path_count >= 1
+    assert manifest.path_selection_reason_counts["repeated_first_hop_prefix"] >= 1
+    assert selected_prefixes
+    assert max(selected_prefixes.values()) <= 2
+    assert any(
+        graph.nodes[path.edges[-1].target].name.startswith("leaf_")
+        for path in manifest.included_graph_paths
+        if len(path.edges) > 1
+    )
+
+
+def test_direct_production_paths_are_retained_before_redundant_fanout(
+    tmp_path: Path,
+) -> None:
+    source = _write(
+        tmp_path / "ordering.py",
+        "def SafeHashWrapper(value):\n    return value\n\n"
+        "def reorder_items(items):\n    return list(items)\n\n"
+        "def changed(items):\n    return SafeHashWrapper(reorder_items(items))\n",
+    )
+    diff = _diff(
+        "ordering.py",
+        7,
+        "    return SafeHashWrapper(items)",
+        "    return SafeHashWrapper(reorder_items(items))",
+    )
+
+    graph, _, result = _plan(
+        tmp_path,
+        [source],
+        diff,
+        max_depth=2,
+        max_nodes=20,
+        max_context_tokens=2_000,
+        max_paths_per_prefix=1,
+    )
+    manifest = result.manifests[0]
+    direct_targets = {
+        graph.nodes[path.edges[0].target].name
+        for path in manifest.included_graph_paths
+        if len(path.edges) == 1
+    }
+
+    assert {"SafeHashWrapper", "reorder_items"} <= direct_targets
+    assert manifest.selected_direct_path_count >= 2
 
 
 def test_low_confidence_ambiguous_call_is_excluded_from_evidence_paths(
