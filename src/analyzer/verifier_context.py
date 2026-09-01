@@ -1019,6 +1019,9 @@ def provenance_in_candidate_context(
             min_edge_confidence=min_edge_confidence,
         )
 
+    if digest:
+        # A hash without its manifest identity is not an auditable claim.
+        return False
     if policy.require_manifest:
         return False
     if getattr(evidence, "edge_kind", ""):
