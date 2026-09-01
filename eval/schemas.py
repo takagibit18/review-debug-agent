@@ -17,7 +17,14 @@ FixtureType = Literal["review", "debug"]
 EvalGraphCacheMode = Literal["disabled", "cold", "warm"]
 StructuralScope = Literal["local", "direct_cross_file", "multi_hop"]
 ReviewPatchScope = Literal["legacy", "full_pr", "partial_pr"]
+# ``semantic-v2`` is retained as the frozen baseline matcher.  New evals use
+# the strict matcher by default, while callers can explicitly select v2 when
+# replaying historical artifacts.
+EvalMatcherVersion = Literal["semantic-v2", "semantic-v3"]
 EVAL_MATCHER_VERSION = "semantic-v2"
+LEGACY_EVAL_MATCHER_VERSION = EVAL_MATCHER_VERSION
+DEFAULT_EVAL_MATCHER_VERSION = "semantic-v3"
+EVAL_MATCHER_VERSIONS = (LEGACY_EVAL_MATCHER_VERSION, DEFAULT_EVAL_MATCHER_VERSION)
 
 
 class EvalVariant(BaseModel):
@@ -360,6 +367,7 @@ class ReviewProcessMetrics(BaseModel):
     consolidator_proposal_count: int = Field(default=0, ge=0)
     consolidator_accepted_cluster_count: int = Field(default=0, ge=0)
     consolidator_rejected_cluster_count: int = Field(default=0, ge=0)
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     final_root_cause_count: int = Field(default=0, ge=0)
     finding_inflation_ratio: float = Field(default=0.0, ge=0.0)
     event_log_status: Literal["ok", "missing", "parse_error"] = "missing"
@@ -406,19 +414,19 @@ class EvalResult(BaseModel):
     variant_id: str = ""
     context_mode: ReviewContextMode = "graph_hybrid"
     graph_cache_mode: EvalGraphCacheMode = "warm"
-    matcher_version: str = EVAL_MATCHER_VERSION
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     run_id: str = Field(default="")
     schema_valid: bool = Field(default=False)
     expected_count: int = Field(default=0, ge=0)
     actual_count: int = Field(default=0, ge=0)
     matched_count: int = Field(default=0, ge=0)
     false_positive_count: int = Field(default=0, ge=0)
-    expected_root_cause_count: int = Field(default=0, ge=0)
-    matched_root_cause_count: int = Field(default=0, ge=0)
-    over_merge_count: int = Field(default=0, ge=0)
-    under_merge_count: int = Field(default=0, ge=0)
-    repair_unit_expected_count: int = Field(default=0, ge=0)
-    repair_unit_matched_count: int = Field(default=0, ge=0)
+    expected_root_cause_count: int | None = Field(default=None, ge=0)
+    matched_root_cause_count: int | None = Field(default=None, ge=0)
+    over_merge_count: int | None = Field(default=None, ge=0)
+    under_merge_count: int | None = Field(default=None, ge=0)
+    repair_unit_expected_count: int | None = Field(default=None, ge=0)
+    repair_unit_matched_count: int | None = Field(default=None, ge=0)
     evidence_complete_count: int = Field(default=0, ge=0)
     final_finding_count: int = Field(default=0, ge=0)
     latency_seconds: float = Field(default=0.0, ge=0.0)
@@ -493,7 +501,7 @@ class SampledFixtureResult(BaseModel):
     variant_id: str = ""
     context_mode: ReviewContextMode = "graph_hybrid"
     graph_cache_mode: EvalGraphCacheMode = "warm"
-    matcher_version: str = EVAL_MATCHER_VERSION
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     expected_count: int = Field(default=0, ge=0)
     samples: int = Field(default=1, ge=1)
     runs: list[EvalResult] = Field(default_factory=list)
@@ -695,8 +703,10 @@ def _aggregate_structural_metrics(
     expected = sum(item.expected_count for item in results)
     matched = sum(item.matched_count for item in results)
     false_positives = sum(item.false_positive_count for item in results)
-    expected_roots = sum(item.expected_root_cause_count for item in results)
-    matched_roots = sum(item.matched_root_cause_count for item in results)
+    expected_roots = sum(
+        item.expected_root_cause_count or 0 for item in results
+    )
+    matched_roots = sum(item.matched_root_cause_count or 0 for item in results)
     structural = [item.structural_metrics for item in results]
 
     def total(field: str) -> int:
@@ -731,8 +741,8 @@ def _aggregate_structural_metrics(
             total("graph_observability_annotated_count"), expected
         ),
         "root_cause_recall": ratio(matched_roots, expected_roots),
-        "over_merge_count": sum(item.over_merge_count for item in results),
-        "under_merge_count": sum(item.under_merge_count for item in results),
+        "over_merge_count": sum(item.over_merge_count or 0 for item in results),
+        "under_merge_count": sum(item.under_merge_count or 0 for item in results),
     }
 
 
@@ -863,12 +873,12 @@ def _aggregate_process_metrics(
 
 
 def _aggregate_quality_metrics(results: list[EvalResult]) -> dict[str, int | float]:
-    expected_roots = sum(item.expected_root_cause_count for item in results)
-    matched_roots = sum(item.matched_root_cause_count for item in results)
-    over_merges = sum(item.over_merge_count for item in results)
-    under_merges = sum(item.under_merge_count for item in results)
-    repair_expected = sum(item.repair_unit_expected_count for item in results)
-    repair_matched = sum(item.repair_unit_matched_count for item in results)
+    expected_roots = sum(item.expected_root_cause_count or 0 for item in results)
+    matched_roots = sum(item.matched_root_cause_count or 0 for item in results)
+    over_merges = sum(item.over_merge_count or 0 for item in results)
+    under_merges = sum(item.under_merge_count or 0 for item in results)
+    repair_expected = sum(item.repair_unit_expected_count or 0 for item in results)
+    repair_matched = sum(item.repair_unit_matched_count or 0 for item in results)
     evidence_complete = sum(item.evidence_complete_count for item in results)
     final_findings = sum(item.final_finding_count for item in results)
     return {
@@ -895,7 +905,7 @@ class EvalReport(BaseModel):
 
     suite: str = Field(default="golden")
     variant: EvalVariant | None = None
-    matcher_version: str = EVAL_MATCHER_VERSION
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     fixture_count: int = Field(default=0, ge=0)
     metrics: MetricSummary = Field(default_factory=MetricSummary)

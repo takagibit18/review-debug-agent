@@ -36,6 +36,7 @@ from eval.graph_ab_checkpoint import (
 )
 from eval.run_summary import extract_review_process_metrics
 from eval.schemas import (
+    DEFAULT_EVAL_MATCHER_VERSION,
     EvalResult,
     EvalVariant,
     Fixture,
@@ -338,6 +339,7 @@ async def run_single_lifecycle(
     temperature: float,
     review_max_iterations: int,
     agent_run_timeout_seconds: float | None = None,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
     diagnostic_artifact_dir: Path | None = None,
     defer_workspace_cleanup: bool = False,
     deferred_workspace_dir: Path | None = None,
@@ -384,7 +386,9 @@ async def run_single_lifecycle(
                     EvalResult(
                         fixture_id=fixture.id,
                         fixture_type=fixture.type,
-                        **base_runner._variant_result_fields(variant),
+                        **base_runner._variant_result_fields(
+                            variant, matcher_version=matcher_version
+                        ),
                         schema_valid=False,
                         expected_count=expected_count,
                         stage_timings=stage_timings,
@@ -526,12 +530,16 @@ async def run_single_lifecycle(
                     )
                     shutil.copy2(journal_source, journal_target)
                     lifecycle["run_journal_path"] = str(journal_target.resolve())
-            matches, matched_count, false_positive_count = base_runner._match_issues(
-                fixture, parsed_response
+            matches, matched_count, false_positive_count = (
+                base_runner._match_issues_for_version(
+                    fixture, parsed_response, matcher_version
+                )
             )
             structural_metrics = base_runner._structural_issue_metrics(fixture, matches)
             root_quality = (
-                base_runner._root_cause_quality(fixture, parsed_response, matches)
+                base_runner._root_cause_quality_for_version(
+                    fixture, parsed_response, matches, matcher_version
+                )
                 if isinstance(parsed_response, ReviewResponse)
                 else {}
             )
@@ -558,7 +566,9 @@ async def run_single_lifecycle(
             result = EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
-                **base_runner._variant_result_fields(variant),
+                **base_runner._variant_result_fields(
+                    variant, matcher_version=matcher_version
+                ),
                 run_id=parsed_response.run_id,
                 schema_valid=base_runner._eval_schema_valid(parsed_response),
                 expected_count=expected_count,
@@ -598,7 +608,9 @@ async def run_single_lifecycle(
                     if isinstance(parsed_response, ReviewResponse)
                     else []
                 ),
-                process_metrics=extract_review_process_metrics(event_log_path),
+                process_metrics=extract_review_process_metrics(
+                    event_log_path, matcher_version=matcher_version
+                ),
             )
             return result, lifecycle
     except Exception as exc:  # noqa: BLE001
@@ -606,7 +618,9 @@ async def run_single_lifecycle(
             EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
-                **base_runner._variant_result_fields(variant),
+                **base_runner._variant_result_fields(
+                    variant, matcher_version=matcher_version
+                ),
                 schema_valid=False,
                 expected_count=expected_count,
                 stage_timings=stage_timings,

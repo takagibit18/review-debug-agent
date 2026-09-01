@@ -7,7 +7,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from eval.schemas import EvalReport, ReviewProcessMetrics
+from eval.schemas import (
+    DEFAULT_EVAL_MATCHER_VERSION,
+    EvalReport,
+    ReviewProcessMetrics,
+)
 from src.analyzer.finding_funnel import FindingFunnel
 from src.analyzer.run_summary import RunSummary, summarize_event_log
 
@@ -17,6 +21,7 @@ class EvalRunSummaryReport(BaseModel):
 
     suite: str
     generated_at: str
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     report_path: str = ""
     runs: list[RunSummary] = Field(default_factory=list)
 
@@ -30,6 +35,7 @@ def summarize_eval_report(
     return EvalRunSummaryReport(
         suite=report.suite,
         generated_at=report.generated_at,
+        matcher_version=report.matcher_version,
         report_path=str(report_path or ""),
         runs=[summarize_event_log(item.event_log_path) for item in report.results],
     )
@@ -37,9 +43,11 @@ def summarize_eval_report(
 
 def extract_review_process_metrics(
     event_log_path: str | Path | None,
+    *,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
 ) -> ReviewProcessMetrics:
     """Extract process metrics from one JSONL event timeline."""
-    metrics = ReviewProcessMetrics()
+    metrics = ReviewProcessMetrics(matcher_version=matcher_version)
     if not event_log_path:
         return metrics
     path = Path(event_log_path)
@@ -57,6 +65,9 @@ def extract_review_process_metrics(
         payload = event.get("payload", {}) or {}
         event_type = str(event.get("event_type", ""))
         phase = str(event.get("phase", ""))
+        payload_matcher_version = payload.get("matcher_version")
+        if isinstance(payload_matcher_version, str) and payload_matcher_version:
+            metrics.matcher_version = payload_matcher_version
         if event_type == "decision" and phase == "continue":
             reason = str(payload.get("reason", "") or "").strip()
             normalized = _normalize_termination_reason(reason)
