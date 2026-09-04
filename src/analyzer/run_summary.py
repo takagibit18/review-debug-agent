@@ -44,6 +44,17 @@ class RunSummary(BaseModel):
     length_recoveries_failed: int = 0
     model_names: list[str] = Field(default_factory=list)
     total_tokens: int = 0
+    provider_attempt_count: int = 0
+    successful_prompt_tokens: int = 0
+    successful_completion_tokens: int = 0
+    successful_reasoning_tokens: int = 0
+    successful_total_tokens: int = 0
+    successful_cached_prompt_tokens: int = 0
+    successful_adjacent_common_prefix_tokens: int = 0
+    cache_observation_count: int = 0
+    provider_cache_hit_count: int = 0
+    failed_attempt_count: int = 0
+    failed_unknown_usage_count: int = 0
     publish_status: PublishStatus = "not_requested"
     model_raw_issue_count: int = 0
     verifier_candidate_count: int = 0
@@ -59,6 +70,10 @@ class RunSummary(BaseModel):
     graph_selected_path_count: int = 0
     graph_dropped_repeated_prefix_path_count: int = 0
     graph_selected_direct_path_count: int = 0
+    graph_selected_production_path_count: int = 0
+    graph_selected_low_hop_path_count: int = 0
+    graph_required_production_path_count: int = 0
+    graph_missing_production_path_count: int = 0
     graph_reviewer_context_token_estimate: int = 0
     graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     deterministic_evidence_checked_count: int = 0
@@ -194,11 +209,47 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         if model and model not in summary.model_names:
             summary.model_names.append(model)
         usage = payload.get("usage")
-        if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+        if (
+            summary.provider_attempt_count == 0
+            and isinstance(usage, dict)
+            and isinstance(usage.get("total_tokens"), int)
+        ):
             summary.total_tokens += int(usage["total_tokens"])
         tool_calls = payload.get("tool_call_summaries")
         if isinstance(tool_calls, list):
             summary.tool_call_count += len(tool_calls)
+
+    if event_type == "model_call" and phase == "provider_attempt":
+        summary.provider_attempt_count += 1
+        success = payload.get("success") is True
+        usage_present = payload.get("usage_present") is True
+        if not success:
+            summary.failed_attempt_count += 1
+            if payload.get("usage_unknown") is True:
+                summary.failed_unknown_usage_count += 1
+        elif usage_present:
+            summary.successful_prompt_tokens += _non_negative_int(
+                payload.get("prompt_tokens")
+            )
+            summary.successful_completion_tokens += _non_negative_int(
+                payload.get("completion_tokens")
+            )
+            summary.successful_reasoning_tokens += _non_negative_int(
+                payload.get("reasoning_tokens")
+            )
+            summary.successful_total_tokens += _non_negative_int(
+                payload.get("total_tokens")
+            )
+            summary.successful_cached_prompt_tokens += _non_negative_int(
+                payload.get("cached_prompt_tokens")
+            )
+            summary.successful_adjacent_common_prefix_tokens += _non_negative_int(
+                payload.get("adjacent_common_prefix_tokens")
+            )
+            if payload.get("cached_prompt_tokens") is not None:
+                summary.cache_observation_count += 1
+                if _non_negative_int(payload.get("cached_prompt_tokens")) > 0:
+                    summary.provider_cache_hit_count += 1
 
     if event_type == "plan_parsed":
         summary.submit_review_seen = summary.submit_review_seen or bool(
@@ -258,6 +309,21 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
             summary.pre_budget_submit_triggered = payload[
                 "pre_budget_submit_triggered"
             ]
+        for field_name in (
+            "provider_attempt_count",
+            "successful_prompt_tokens",
+            "successful_completion_tokens",
+            "successful_reasoning_tokens",
+            "successful_total_tokens",
+            "successful_cached_prompt_tokens",
+            "successful_adjacent_common_prefix_tokens",
+            "cache_observation_count",
+            "provider_cache_hit_count",
+            "failed_attempt_count",
+            "failed_unknown_usage_count",
+        ):
+            if field_name in payload:
+                setattr(summary, field_name, _non_negative_int(payload[field_name]))
         termination_reason = str(payload.get("termination_reason", "") or "").strip()
         if termination_reason:
             summary.termination_reason = termination_reason
@@ -419,6 +485,22 @@ def _update_graph_selection_summary(
         "graph_selected_direct_path_count": (
             "graph_selected_direct_path_count",
             "selected_direct_path_count",
+        ),
+        "graph_selected_production_path_count": (
+            "graph_selected_production_path_count",
+            "selected_production_path_count",
+        ),
+        "graph_selected_low_hop_path_count": (
+            "graph_selected_low_hop_path_count",
+            "selected_low_hop_path_count",
+        ),
+        "graph_required_production_path_count": (
+            "graph_required_production_path_count",
+            "required_production_path_count",
+        ),
+        "graph_missing_production_path_count": (
+            "graph_missing_production_path_count",
+            "missing_production_path_count",
         ),
         "graph_reviewer_context_token_estimate": (
             "graph_reviewer_context_token_estimate",

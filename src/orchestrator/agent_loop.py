@@ -76,6 +76,13 @@ def _review_outcome_for_counts(checked: int, accepted: int) -> ReviewOutcome:
     return "all_candidates_rejected"
 
 
+def _non_negative_int(value: object) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class AgentOrchestrator:
     """5-phase orchestrator for review/debug sessions."""
 
@@ -122,6 +129,17 @@ class AgentOrchestrator:
         self._latest_tokens = 0
         self._model_conversation = ModelConversation()
         self._total_tokens = 0
+        self._successful_prompt_tokens = 0
+        self._successful_completion_tokens = 0
+        self._successful_reasoning_tokens = 0
+        self._successful_total_tokens = 0
+        self._successful_cached_prompt_tokens = 0
+        self._successful_adjacent_common_prefix_tokens = 0
+        self._cache_observation_count = 0
+        self._provider_cache_hit_count = 0
+        self._failed_attempt_count = 0
+        self._failed_unknown_usage_count = 0
+        self._provider_attempt_count = 0
         self._iteration = 0
         self._max_iterations = 1
         self._blocking_error = False
@@ -176,6 +194,13 @@ class AgentOrchestrator:
         )
         self._context_strategy_override = context_strategy
         self._review_workflow = ReviewWorkflowTracker()
+        self._review_stage: Literal[
+            "explore", "validate", "submit_ready", "submit_only", "complete"
+        ] = "explore"
+        self._last_validator_result: dict[str, Any] | None = None
+        self._validator_passed = False
+        self._submit_only_retry_pending = False
+        self._last_actual_reasoning_effort = "unknown"
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
         self._submitted_issue_count = 0
@@ -242,15 +267,35 @@ class AgentOrchestrator:
             tool_specs = (
                 [] if self._permission_mode == "plan" else self._registry.list_specs()
             )
-            plan = await self.analyze(state, request, tool_specs)
+            submit_ready = (
+                isinstance(request, ReviewRequest)
+                and self._review_stage == "submit_ready"
+            )
+            if submit_ready:
+                self._review_stage = "submit_only"
+            plan = await self.analyze(
+                state,
+                request,
+                tool_specs,
+                force_submit=submit_ready,
+            )
             self._last_plan = plan
             self._observe_review_submission(plan)
             self._observe_incomplete_plan(plan, state)
+            if submit_ready:
+                submit_only_failed = (
+                    plan.draft_review is None and not plan.recovery_required
+                )
+                self._review_stage = (
+                    "complete" if plan.draft_review is not None else "explore"
+                )
+                self._submit_only_retry_pending = submit_only_failed
             tool_results = await self.execute_tools(plan, self._registry, state)
             self._observe_workflow_tools(plan, tool_results)
             response = self.format_result(state, tool_results)
             if not self.should_continue(state, response):
                 break
+            self._submit_only_retry_pending = False
             if self._should_pre_budget_submit(state):
                 self._pre_budget_submit_attempted = True
                 self._record_pre_budget_submit("attempt", state)
@@ -537,6 +582,7 @@ class AgentOrchestrator:
         response: ReviewResponse,
         state: ContextState,
     ) -> ReviewResponse:
+        self._review_stage = "complete"
         if self._workflow_enforcement == "off":
             return response
         self._complete_workflow_step("finalize_review")
@@ -615,6 +661,22 @@ class AgentOrchestrator:
         plan: AnalysisPlan,
         results: list[ToolResult],
     ) -> None:
+        tool_names = [self._parse_tool_call(raw)["name"] for raw in plan.tool_calls]
+        if "validate_review_draft" in tool_names:
+            self._review_stage = "validate"
+            validator_index = tool_names.index("validate_review_draft")
+            validator_result = (
+                results[validator_index]
+                if validator_index < len(results)
+                else ToolResult(ok=False, error="validator_result_missing")
+            )
+            self._observe_validator_result(
+                validator_result,
+                all_tools_succeeded=(
+                    len(results) == len(plan.tool_calls)
+                    and all(result.ok for result in results)
+                ),
+            )
         if self._workflow_enforcement == "off":
             return
         successful_names = {
@@ -635,6 +697,112 @@ class AgentOrchestrator:
             self._complete_workflow_step("inspect_changed_context")
         if "validate_review_draft" in successful_names:
             self._complete_workflow_step("validate_candidate_draft")
+
+    def _observe_validator_result(
+        self,
+        result: ToolResult,
+        *,
+        all_tools_succeeded: bool,
+    ) -> None:
+        """Advance to submit-ready only after deterministic validation really passes."""
+
+        data = result.data if isinstance(result.data, dict) else {}
+        validator_payload = dict(data)
+        validator_payload.setdefault(
+            "validated_draft_ids", [draft.id for draft in self._draft_finding_store.all()]
+        )
+        validator_payload.setdefault("validated_finding_ids", [])
+        if not result.ok:
+            validator_payload["validator_passed"] = False
+            validator_payload["submit_allowed"] = False
+            validator_payload.setdefault(
+                "unresolved_evidence_gaps", [result.error or "validator_tool_error"]
+            )
+            self._last_validator_result = validator_payload
+            self._validator_passed = False
+            self._review_stage = "explore"
+            self._record_event(
+                EventType.DECISION,
+                "review_stage",
+                {
+                    "iteration": self._iteration,
+                    "stage": self._review_stage,
+                    "validator_passed": False,
+                    "submit_allowed": False,
+                    "validated_draft_count": len(self._draft_finding_store.all()),
+                    "unresolved_evidence_gap_count": 1,
+                    "policy_warning_count": 0,
+                    "failed_issue_count": 0,
+                },
+            )
+            return
+
+        issue_results = data.get("issue_results", [])
+        issue_results = issue_results if isinstance(issue_results, list) else []
+        summary_warnings = data.get("summary_warnings", [])
+        summary_warnings = (
+            [str(item) for item in summary_warnings]
+            if isinstance(summary_warnings, list)
+            else []
+        )
+        unresolved = data.get("unresolved_evidence_gaps", [])
+        unresolved = (
+            [str(item) for item in unresolved]
+            if isinstance(unresolved, list)
+            else []
+        )
+        failed_issues = [
+            item
+            for item in issue_results
+            if isinstance(item, dict) and item.get("passes_current_filter") is not True
+        ]
+        effective_count = int(data.get("effective_issue_count", 0) or 0)
+        empty_submit_allowed = data.get("should_submit_empty_issues") is True
+        has_draft = bool(self._draft_finding_store.all())
+        passed = bool(
+            all_tools_succeeded
+            and not summary_warnings
+            and not unresolved
+            and not failed_issues
+            and (effective_count > 0 or empty_submit_allowed)
+            and has_draft
+        )
+        validator_payload.update(
+            {
+                "validated_draft_ids": [
+                    draft.id for draft in self._draft_finding_store.all()
+                ],
+                "validated_finding_ids": [
+                    str(item.get("finding_id"))
+                    for item in issue_results
+                    if isinstance(item, dict) and item.get("finding_id")
+                ],
+                "unresolved_evidence_gaps": unresolved,
+                "policy_warnings": summary_warnings,
+                "validator_passed": passed,
+                "submit_allowed": passed,
+            }
+        )
+        self._last_validator_result = validator_payload
+        self._validator_passed = passed
+        if passed:
+            self._review_stage = "submit_ready"
+        else:
+            self._review_stage = "explore"
+        self._record_event(
+            EventType.DECISION,
+            "review_stage",
+            {
+                "iteration": self._iteration,
+                "stage": self._review_stage,
+                "validator_passed": passed,
+                "submit_allowed": passed,
+                "validated_draft_count": len(self._draft_finding_store.all()),
+                "unresolved_evidence_gap_count": len(unresolved),
+                "policy_warning_count": len(summary_warnings),
+                "failed_issue_count": len(failed_issues),
+            },
+        )
 
     def _complete_workflow_step(self, step_id: str) -> None:
         state = self._review_workflow.states[step_id]
@@ -924,6 +1092,19 @@ class AgentOrchestrator:
     ) -> AnalysisPlan:
         """Run model analysis and return structured plan."""
         start = perf_counter()
+        self._last_actual_reasoning_effort = "unknown"
+        submit_only_call = force_submit or (
+            self._iteration + 1 >= self._max_iterations
+        )
+        logical_stage = (
+            "submit_only"
+            if submit_only_call
+            else "validate"
+            if any(spec.name == "validate_review_draft" for spec in tool_specs)
+            else "explore"
+        )
+        model_call_success = False
+        wire_tool_schema_count = 0
         state.decisions.append(
             DecisionStep(
                 phase="analyze",
@@ -981,6 +1162,19 @@ class AgentOrchestrator:
                     request=request,
                     defer_submit=defer_review_submit,
                 )
+                near_last_iteration = (self._iteration + 1) >= self._max_iterations
+                submit_only_call = force_submit or near_last_iteration
+                call_stage = (
+                    "submit_only"
+                    if submit_only_call
+                    else "validate"
+                    if any(spec.name == "validate_review_draft" for spec in active_tool_specs)
+                    else "explore"
+                )
+                # The stage must describe the schemas actually sent on the wire;
+                # the initial deferred round may have had validator in the full
+                # registry but intentionally removes it before serialization.
+                logical_stage = call_stage
                 if force_submit:
                     serialized_tools = build_submit_tool_schemas()
                 else:
@@ -992,6 +1186,7 @@ class AgentOrchestrator:
                         serialized_tools.append(build_draft_finding_tool_schema())
                     if not defer_review_submit:
                         serialized_tools += build_submit_tool_schemas()
+                wire_tool_schema_count = len(serialized_tools)
                 result, usage = await engine.analyze(
                     state=state,
                     request=request,
@@ -1004,11 +1199,13 @@ class AgentOrchestrator:
                     tool_feedback=self._tool_feedback,
                     feedback_digest_index=self._feedback_digest_index,
                     draft_findings=self._draft_finding_store.all(),
+                    validator_result=self._last_validator_result,
                     prompt_input_token_budget=self._settings.prompt_input_token_budget,
                     iteration=self._iteration,
                     force_submit=force_submit,
-                    near_last_iteration=(self._iteration + 1) >= self._max_iterations,
+                    near_last_iteration=near_last_iteration,
                     defer_submit=defer_review_submit,
+                    stage=call_stage,
                 )
                 self._latest_tokens = usage.total_tokens
                 self._persist_draft_finding_calls(result)
@@ -1016,6 +1213,7 @@ class AgentOrchestrator:
                     self._submit_review_seen_any = True
                 if result.draft_debug is not None:
                     self._submit_debug_seen_any = True
+                model_call_success = True
             except ModelClientError as exc:
                 self._provider_error_seen = True
                 if isinstance(exc, ModelTimeoutError):
@@ -1070,9 +1268,19 @@ class AgentOrchestrator:
                 "tool_calls": len(result.tool_calls),
                 "elapsed_ms": int((perf_counter() - start) * 1000),
                 "tokens": self._latest_tokens,
+                "total_tokens": self._latest_tokens,
+                "success": model_call_success,
+                "usage_present": model_call_success and self._latest_tokens > 0,
+                "stage": logical_stage,
+                "thinking": "off" if submit_only_call else "high",
+                "actual_reasoning_effort": self._last_actual_reasoning_effort,
+                "forced_tool": (
+                    self._submit_tool_name(request) if submit_only_call else "none"
+                ),
+                "tool_schema_count": wire_tool_schema_count,
                 "model_request_timeout_seconds": self._settings.model_request_timeout_seconds,
                 "model_max_retries": self._settings.model_max_retries,
-                "force_submit": force_submit,
+                "force_submit": submit_only_call,
                 "model_finish_reason": result.model_finish_reason,
                 "model_length_finish_seen": (
                     self._model_length_finish_seen
@@ -1485,14 +1693,22 @@ class AgentOrchestrator:
             and not defer_review_submit
             and not self._model_incomplete_seen
         )
+        submit_ready = self._review_stage == "submit_ready"
         reached_limit = (self._iteration + 1) >= self._max_iterations
         run_timed_out = self._run_timeout_exceeded()
         self._run_timeout_hit = self._run_timeout_hit or run_timed_out
+        submit_recovery_allowed = (
+            self._submit_only_retry_pending and not reached_limit
+        )
 
         stop = (
             self._model_incomplete_seen
-            or self._model_completed
-            or reached_limit
+            or (
+                self._model_completed
+                and not submit_ready
+                and not submit_recovery_allowed
+            )
+            or (reached_limit and not submit_ready and not submit_recovery_allowed)
             or self._budget_exhausted
             or run_timed_out
         )
@@ -1521,8 +1737,12 @@ class AgentOrchestrator:
             reason = "model_incomplete"
         elif run_timed_out:
             reason = "run_timeout"
-        elif self._model_completed:
+        elif self._model_completed and not submit_ready and not submit_recovery_allowed:
             reason = "model_completed"
+        elif submit_ready:
+            reason = "submit_ready"
+        elif submit_recovery_allowed:
+            reason = "submit_only_failed"
         elif reached_limit:
             reason = "max_iterations"
         else:
@@ -1557,6 +1777,7 @@ class AgentOrchestrator:
                 "budget_state": self._budget_state,
                 "reason": reason,
                 "defer_review_submit": defer_review_submit,
+                "review_stage": self._review_stage,
                 "submit_review_seen_any": self._submit_review_seen_any,
                 "submit_debug_seen_any": self._submit_debug_seen_any,
                 "run_id": response.run_id,
@@ -1595,6 +1816,17 @@ class AgentOrchestrator:
         self._latest_tokens = 0
         self._model_conversation = ModelConversation()
         self._total_tokens = 0
+        self._successful_prompt_tokens = 0
+        self._successful_completion_tokens = 0
+        self._successful_reasoning_tokens = 0
+        self._successful_total_tokens = 0
+        self._successful_cached_prompt_tokens = 0
+        self._successful_adjacent_common_prefix_tokens = 0
+        self._cache_observation_count = 0
+        self._provider_cache_hit_count = 0
+        self._failed_attempt_count = 0
+        self._failed_unknown_usage_count = 0
+        self._provider_attempt_count = 0
         self._iteration = 0
         self._max_iterations = max_iterations
         self._blocking_error = False
@@ -1623,6 +1855,11 @@ class AgentOrchestrator:
         self._final_submit_evidence_truncated_count = 0
         self._pre_budget_submit_attempted = False
         self._review_workflow = ReviewWorkflowTracker()
+        self._review_stage = "explore"
+        self._last_validator_result = None
+        self._validator_passed = False
+        self._submit_only_retry_pending = False
+        self._last_actual_reasoning_effort = "unknown"
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
         self._submitted_issue_count = 0
@@ -2178,6 +2415,8 @@ class AgentOrchestrator:
 
         if plan.draft_review is not None and self._submit_iteration is None:
             self._submit_iteration = self._iteration
+        if plan.draft_review is not None:
+            self._review_stage = "complete"
 
     def _recover_model_timeout_after_valid_review(self, state: ContextState) -> None:
         """Keep a recovered timeout diagnostic from invalidating a valid review."""
@@ -2243,6 +2482,7 @@ class AgentOrchestrator:
         termination_reason = self._termination_reason()
         payload: dict[str, Any] = {
             "context_mode": state.context_mode,
+            "review_stage": self._review_stage,
             "model": self._settings.model_name,
             "review_iterations": self._iteration + 1,
             "tool_call_count": self._tool_call_count,
@@ -2277,6 +2517,20 @@ class AgentOrchestrator:
             "end_to_end_latency_seconds": self._run_elapsed_seconds(),
             "prompt_tokens": None,
             "completion_tokens": None,
+            "reasoning_tokens": self._successful_reasoning_tokens,
+            "successful_prompt_tokens": self._successful_prompt_tokens,
+            "successful_completion_tokens": self._successful_completion_tokens,
+            "successful_reasoning_tokens": self._successful_reasoning_tokens,
+            "successful_total_tokens": self._successful_total_tokens,
+            "successful_cached_prompt_tokens": self._successful_cached_prompt_tokens,
+            "successful_adjacent_common_prefix_tokens": (
+                self._successful_adjacent_common_prefix_tokens
+            ),
+            "cache_observation_count": self._cache_observation_count,
+            "provider_cache_hit_count": self._provider_cache_hit_count,
+            "provider_attempt_count": self._provider_attempt_count,
+            "failed_attempt_count": self._failed_attempt_count,
+            "failed_unknown_usage_count": self._failed_unknown_usage_count,
             "total_tokens": self._total_tokens,
             "candidate_finding_count": self._verifier_candidate_count,
             "accepted_finding_count": self._verifier_accepted_count,
@@ -2309,6 +2563,18 @@ class AgentOrchestrator:
                 "dropped_repeated_prefix_path_count", 0
             ),
             "selected_direct_path_count": graph.get("selected_direct_path_count", 0),
+            "selected_production_path_count": graph.get(
+                "selected_production_path_count", 0
+            ),
+            "selected_low_hop_path_count": graph.get(
+                "selected_low_hop_path_count", 0
+            ),
+            "required_production_path_count": graph.get(
+                "required_production_path_count", 0
+            ),
+            "missing_production_path_count": graph.get(
+                "missing_production_path_count", 0
+            ),
             "graph_reviewer_context_token_estimate": graph.get(
                 "graph_reviewer_context_token_estimate", 0
             ),
@@ -2710,9 +2976,20 @@ class AgentOrchestrator:
     def _fallback_plan(request: ReviewRequest | DebugRequest) -> AnalysisPlan:
         return AnalysisPlan(needs_tools=False, tool_calls=[])
 
+    @staticmethod
+    def _submit_tool_name(request: ReviewRequest | DebugRequest) -> str:
+        """Return the sole submission tool for the current workflow mode."""
+
+        return "submit_review" if isinstance(request, ReviewRequest) else "submit_debug"
+
     def _record_event(
         self, event_type: EventType, phase: str, payload: dict[str, Any]
     ) -> None:
+        if event_type == EventType.MODEL_CALL and phase == "provider_attempt":
+            self._accumulate_provider_attempt(payload)
+            self._last_actual_reasoning_effort = str(
+                payload.get("actual_reasoning_effort", "unknown") or "unknown"
+            )
         if self._event_log is None:
             return
         self._event_log.record(
@@ -2723,6 +3000,43 @@ class AgentOrchestrator:
                 payload=payload,
             )
         )
+
+    def _accumulate_provider_attempt(self, payload: dict[str, Any]) -> None:
+        """Aggregate provider usage without treating failed unknown usage as zero."""
+
+        self._provider_attempt_count += 1
+        success = payload.get("success") is True
+        usage_present = payload.get("usage_present") is True
+        if not success:
+            self._failed_attempt_count += 1
+            if payload.get("usage_unknown") is True:
+                self._failed_unknown_usage_count += 1
+            return
+        if not usage_present:
+            return
+        self._successful_prompt_tokens += _non_negative_int(
+            payload.get("prompt_tokens")
+        )
+        self._successful_completion_tokens += _non_negative_int(
+            payload.get("completion_tokens")
+        )
+        self._successful_reasoning_tokens += _non_negative_int(
+            payload.get("reasoning_tokens")
+        )
+        self._successful_total_tokens += _non_negative_int(
+            payload.get("total_tokens")
+        )
+        self._successful_cached_prompt_tokens += _non_negative_int(
+            payload.get("cached_prompt_tokens")
+        )
+        self._successful_adjacent_common_prefix_tokens += _non_negative_int(
+            payload.get("adjacent_common_prefix_tokens")
+        )
+        cached_prompt_tokens = payload.get("cached_prompt_tokens")
+        if cached_prompt_tokens is not None:
+            self._cache_observation_count += 1
+            if _non_negative_int(cached_prompt_tokens) > 0:
+                self._provider_cache_hit_count += 1
 
     def _close_event_log(self) -> None:
         if self._event_log is not None:

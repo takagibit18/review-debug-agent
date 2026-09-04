@@ -29,6 +29,12 @@ from src.models.exceptions import (
 from src.models.compat import ModelCallPolicy, ModelProfile, resolve_model_profile
 from src.models.conversation import ModelConversation
 from src.models.schemas import Message, ModelConfig, ModelResponse, TokenUsage
+from src.models.token_telemetry import (
+    common_prefix_tokens,
+    component_hash,
+    estimate_tokens,
+    serialize_json,
+)
 
 
 class ModelClient:
@@ -63,6 +69,9 @@ class ModelClient:
             if max_retries is not None
             else self._settings.model_max_retries,
         )
+        self._last_call_attempts: list[dict[str, Any]] = []
+        self._last_request_text = ""
+        self._request_telemetry: dict[str, Any] = {}
 
     @property
     def default_config(self) -> ModelConfig:
@@ -80,6 +89,10 @@ class ModelClient:
         """Run one chat-completion request and return normalized output."""
         if not messages:
             raise ModelClientError("messages must not be empty")
+
+        # A chat() call is one logical model call.  The list is retained until
+        # the inference layer consumes it so retries remain individually visible.
+        self._last_call_attempts = []
 
         source_config = config or self._default_config
         profile = self.profile_for(source_config.model)
@@ -121,6 +134,34 @@ class ModelClient:
             # provider-accepted lower bound for that model family.
             payload["reasoning_effort"] = "low"
 
+        actual_reasoning_effort = self._wire_reasoning_effort(payload)
+        request_text = serialize_json(
+            {
+                "model": payload.get("model"),
+                "messages": payload.get("messages", []),
+                "tools": payload.get("tools", []),
+                "tool_choice": payload.get("tool_choice"),
+                "extra_body": payload.get("extra_body"),
+                "reasoning_effort": payload.get("reasoning_effort"),
+            }
+        )
+        previous_request_text = getattr(self, "_last_request_text", "")
+        common_tokens = common_prefix_tokens(previous_request_text, request_text)
+        common_chars = 0
+        for left, right in zip(
+            previous_request_text, request_text, strict=False
+        ):
+            if left != right:
+                break
+            common_chars += 1
+        self._request_telemetry = {
+            "request_hash": component_hash(request_text),
+            "request_estimated_tokens": estimate_tokens(request_text),
+            "adjacent_common_prefix_tokens": common_tokens,
+            "adjacent_prefix_hash": component_hash(request_text[:common_chars]),
+        }
+        self._last_request_text = request_text
+
         last_error: ModelClientError | None = None
         for attempt in range(self._max_retries):
             try:
@@ -132,20 +173,49 @@ class ModelClient:
                     timeout=runtime_config.timeout,
                 )
                 response = self._parse_completion(completion)
+                response.provider_request_id = str(
+                    self._field_value(completion, "id", "") or ""
+                )
+                response.actual_reasoning_effort = actual_reasoning_effort
+                self._last_call_attempts.append(
+                    self._attempt_payload(
+                        attempt=attempt + 1,
+                        success=True,
+                        runtime_policy=runtime_policy,
+                        actual_reasoning_effort=actual_reasoning_effort,
+                        tool_schema_count=len(tools or []),
+                        usage=response.usage,
+                        usage_present=response.usage_present,
+                        provider_request_id=response.provider_request_id,
+                    )
+                )
                 if conversation is not None and response.tool_calls:
                     conversation.add_assistant_tool_turn(
-                        response_id=str(getattr(completion, "id", "") or ""),
+                        response_id=str(
+                            self._field_value(completion, "id", "") or ""
+                        ),
                         content=response.content,
                         thinking=self._extract_thinking(completion),
                         tool_calls=response.tool_calls,
                     )
                 return response
             except OpenAIAuthenticationError as exc:
-                raise AuthenticationError(
+                error = AuthenticationError(
                     "Authentication failed for the model provider",
                     status_code=401,
                     code="auth_failed",
-                ) from exc
+                )
+                self._last_call_attempts.append(
+                    self._attempt_payload(
+                        attempt=attempt + 1,
+                        success=False,
+                        runtime_policy=runtime_policy,
+                        actual_reasoning_effort=actual_reasoning_effort,
+                        tool_schema_count=len(tools or []),
+                        error=error,
+                    )
+                )
+                raise error from exc
             except OpenAIRateLimitError:
                 last_error = RateLimitError(
                     "Rate limit reached while calling model provider",
@@ -164,11 +234,22 @@ class ModelClient:
                 )
             except APIStatusError as exc:
                 if exc.status_code in {401, 403}:
-                    raise AuthenticationError(
+                    error = AuthenticationError(
                         "Authentication failed for the model provider",
                         status_code=exc.status_code,
                         code="auth_failed",
-                    ) from exc
+                    )
+                    self._last_call_attempts.append(
+                        self._attempt_payload(
+                            attempt=attempt + 1,
+                            success=False,
+                            runtime_policy=runtime_policy,
+                            actual_reasoning_effort=actual_reasoning_effort,
+                            tool_schema_count=len(tools or []),
+                            error=error,
+                        )
+                    )
+                    raise error from exc
                 if exc.status_code == 429:
                     last_error = RateLimitError(
                         "Rate limit reached while calling model provider",
@@ -188,22 +269,56 @@ class ModelClient:
                         body_preview = body.decode("utf-8", errors="replace")[:500]
                     except Exception:  # noqa: BLE001
                         pass
-                    raise ModelClientError(
+                    error = ModelClientError(
                         f"Model provider returned status {exc.status_code}"
                         + (f": {body_preview}" if body_preview else ""),
                         status_code=exc.status_code,
                         code="api_status_error",
-                    ) from exc
+                    )
+                    self._last_call_attempts.append(
+                        self._attempt_payload(
+                            attempt=attempt + 1,
+                            success=False,
+                            runtime_policy=runtime_policy,
+                            actual_reasoning_effort=actual_reasoning_effort,
+                            tool_schema_count=len(tools or []),
+                            error=error,
+                        )
+                    )
+                    raise error from exc
             except APIConnectionError:
                 last_error = ServiceUnavailableError(
                     "Failed to connect to the model provider",
                     code="connection_error",
                 )
             except Exception as exc:  # noqa: BLE001
-                raise ModelClientError(
+                error = ModelClientError(
                     "Unexpected model client error",
                     code="unexpected_error",
-                ) from exc
+                )
+                self._last_call_attempts.append(
+                    self._attempt_payload(
+                        attempt=attempt + 1,
+                        success=False,
+                        runtime_policy=runtime_policy,
+                        actual_reasoning_effort=actual_reasoning_effort,
+                        tool_schema_count=len(tools or []),
+                        error=error,
+                    )
+                )
+                raise error from exc
+
+            if last_error is not None:
+                self._last_call_attempts.append(
+                    self._attempt_payload(
+                        attempt=attempt + 1,
+                        success=False,
+                        runtime_policy=runtime_policy,
+                        actual_reasoning_effort=actual_reasoning_effort,
+                        tool_schema_count=len(tools or []),
+                        error=last_error,
+                    )
+                )
 
             if attempt < self._max_retries - 1 and last_error is not None:
                 await asyncio.sleep(2**attempt)
@@ -213,6 +328,13 @@ class ModelClient:
                 raise last_error
 
         raise ModelClientError("Model request failed after retries", code="max_retries")
+
+    def consume_call_telemetry(self) -> list[dict[str, Any]]:
+        """Return and clear the attempt records for the last logical chat call."""
+
+        attempts = list(getattr(self, "_last_call_attempts", []))
+        self._last_call_attempts = []
+        return attempts
 
     def profile_for(self, model: str) -> ModelProfile:
         """Resolve compatibility metadata for a configured model."""
@@ -313,6 +435,67 @@ class ModelClient:
         await self._client.close()
 
     @staticmethod
+    def _wire_reasoning_effort(payload: dict[str, Any]) -> str:
+        """Describe the provider control that was actually placed on the wire."""
+
+        direct = payload.get("reasoning_effort")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        extra_body = payload.get("extra_body")
+        if isinstance(extra_body, dict):
+            thinking = extra_body.get("thinking")
+            if isinstance(thinking, dict) and isinstance(thinking.get("type"), str):
+                return thinking["type"]
+            if isinstance(extra_body.get("enable_thinking"), bool):
+                return "high" if extra_body["enable_thinking"] else "off"
+        return "not_sent"
+
+    def _attempt_payload(
+        self,
+        *,
+        attempt: int,
+        success: bool,
+        runtime_policy: ModelCallPolicy,
+        actual_reasoning_effort: str,
+        tool_schema_count: int,
+        usage: TokenUsage | None = None,
+        usage_present: bool = False,
+        provider_request_id: str = "",
+        error: ModelClientError | None = None,
+    ) -> dict[str, Any]:
+        usage = usage or TokenUsage()
+        payload: dict[str, Any] = {
+            "provider_attempt": attempt,
+            "thinking": runtime_policy.thinking,
+            "actual_reasoning_effort": actual_reasoning_effort,
+            "forced_tool": runtime_policy.forced_tool or "none",
+            "tool_schema_count": tool_schema_count,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+            "cached_prompt_tokens": usage.cached_prompt_tokens,
+            "provider_cache_hit": bool(
+                usage.cached_prompt_tokens is not None
+                and usage.cached_prompt_tokens > 0
+            ),
+            "usage_present": bool(usage_present),
+            "success": success,
+            "provider_request_id": provider_request_id,
+            "usage_unknown": bool(not success and not usage_present),
+        }
+        if error is not None:
+            payload.update(
+                {
+                    "failure_type": error.__class__.__name__,
+                    "failure_status": error.status_code,
+                    "provider_code": error.code or "",
+                }
+            )
+        payload.update(getattr(self, "_request_telemetry", {}))
+        return payload
+
+    @staticmethod
     def _serialize_messages(
         messages: list[Message], profile: ModelProfile
     ) -> list[dict[str, Any]]:
@@ -336,49 +519,95 @@ class ModelClient:
 
     @staticmethod
     def _parse_completion(completion: Any) -> ModelResponse:
-        choice = completion.choices[0] if completion.choices else None
-        response_message = choice.message if choice else None
+        choices = ModelClient._field_value(completion, "choices", []) or []
+        choice = choices[0] if choices else None
+        response_message = ModelClient._field_value(choice, "message")
 
-        content = response_message.content if response_message else ""
+        content = ModelClient._field_value(response_message, "content", "")
         if content is None:
             content = ""
 
         tool_calls: list[dict[str, Any]] = []
-        if response_message and response_message.tool_calls:
-            for tool_call in response_message.tool_calls:
+        raw_tool_calls = ModelClient._field_value(response_message, "tool_calls", [])
+        if raw_tool_calls:
+            for tool_call in raw_tool_calls:
                 if hasattr(tool_call, "model_dump"):
                     tool_calls.append(tool_call.model_dump())
                 elif isinstance(tool_call, dict):
-                    tool_calls.append(tool_call)
+                    tool_calls.append(dict(tool_call))
 
-        usage = completion.usage
-        completion_details = getattr(usage, "completion_tokens_details", None)
-        if isinstance(completion_details, dict):
-            reasoning_tokens = completion_details.get("reasoning_tokens", 0)
-        else:
-            reasoning_tokens = getattr(completion_details, "reasoning_tokens", 0)
+        usage = ModelClient._field_value(completion, "usage")
+        completion_details = ModelClient._field_value(
+            usage, "completion_tokens_details"
+        )
+        reasoning_tokens = ModelClient._field_value(
+            completion_details, "reasoning_tokens", 0
+        )
         token_usage = TokenUsage(
-            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-            completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-            total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+            prompt_tokens=int(ModelClient._field_value(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=int(
+                ModelClient._field_value(usage, "completion_tokens", 0) or 0
+            ),
+            total_tokens=int(ModelClient._field_value(usage, "total_tokens", 0) or 0),
             reasoning_tokens=int(reasoning_tokens or 0),
+            cached_prompt_tokens=ModelClient._extract_cached_prompt_tokens(usage),
         )
 
         finish_reason = ""
-        if choice and choice.finish_reason:
-            finish_reason = str(choice.finish_reason)
+        raw_finish_reason = ModelClient._field_value(choice, "finish_reason", "")
+        if raw_finish_reason:
+            finish_reason = str(raw_finish_reason)
 
         return ModelResponse(
             content=content,
             tool_calls=tool_calls,
             usage=token_usage,
-            model=str(getattr(completion, "model", "") or ""),
+            model=str(ModelClient._field_value(completion, "model", "") or ""),
             finish_reason=finish_reason,
+            usage_present=usage is not None,
         )
 
     @staticmethod
+    def _extract_cached_prompt_tokens(usage: Any) -> int | None:
+        """Read common OpenAI-compatible cached-input usage shapes."""
+
+        if usage is None:
+            return None
+        for name in (
+            "cached_prompt_tokens",
+            "cache_read_input_tokens",
+            "cached_tokens",
+        ):
+            value = ModelClient._field_value(usage, name)
+            if value is not None:
+                try:
+                    return max(0, int(value))
+                except (TypeError, ValueError):
+                    continue
+        for name in ("prompt_tokens_details", "input_tokens_details"):
+            details = ModelClient._field_value(usage, name)
+            value = ModelClient._field_value(details, "cached_tokens")
+            if value is None:
+                value = ModelClient._field_value(details, "cache_read_input_tokens")
+            if value is not None:
+                try:
+                    return max(0, int(value))
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    @staticmethod
+    def _field_value(value: Any, name: str, default: Any = None) -> Any:
+        """Read one field from either an SDK object or a dict response."""
+
+        if isinstance(value, dict):
+            return value.get(name, default)
+        return getattr(value, name, default)
+
+    @staticmethod
     def _extract_thinking(completion: Any) -> str:
-        choice = completion.choices[0] if completion.choices else None
-        response_message = choice.message if choice else None
-        raw = getattr(response_message, "reasoning_content", None)
+        choices = ModelClient._field_value(completion, "choices", []) or []
+        choice = choices[0] if choices else None
+        response_message = ModelClient._field_value(choice, "message")
+        raw = ModelClient._field_value(response_message, "reasoning_content")
         return raw if isinstance(raw, str) else ""

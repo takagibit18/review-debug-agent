@@ -59,6 +59,12 @@ class TokenUsage(BaseModel):
         ge=0,
         description="Provider-reported reasoning token count; never reasoning content",
     )
+    cached_prompt_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        exclude=True,
+        description="Provider-reported cached prompt tokens when available",
+    )
 
 
 class ModelResponse(BaseModel):
@@ -71,6 +77,17 @@ class ModelResponse(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     model: str = Field(default="", description="Provider model id in response")
     finish_reason: str = Field(default="", description="Provider finish reason")
+    usage_present: bool = Field(
+        default=True,
+        description="Whether the provider returned a usage object for this response",
+    )
+    provider_request_id: str = Field(
+        default="", description="Provider request id when exposed by the SDK"
+    )
+    actual_reasoning_effort: str = Field(
+        default="not_sent",
+        description="Actual wire reasoning effort/control after provider compatibility mapping",
+    )
 
 
 class DraftFindingInput(BaseModel):
