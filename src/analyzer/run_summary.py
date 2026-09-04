@@ -75,6 +75,11 @@ class RunSummary(BaseModel):
     graph_required_production_path_count: int = 0
     graph_missing_production_path_count: int = 0
     graph_reviewer_context_token_estimate: int = 0
+    graph_reviewer_available_path_count: int = 0
+    graph_reviewer_selected_path_count: int = 0
+    graph_reviewer_dropped_path_count: int = 0
+    graph_reviewer_selected_token_count: int = 0
+    graph_reviewer_role_coverage: list[str] = Field(default_factory=list)
     graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     deterministic_evidence_checked_count: int = 0
     deterministic_evidence_passed_count: int = 0
@@ -359,6 +364,9 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
     if event_type == "context_plan_completed":
         _update_graph_selection_summary(summary, payload)
 
+    if event_type == "context_telemetry":
+        _update_graph_reviewer_summary(summary, payload)
+
     if event_type == "finding_verification_completed":
         summary.model_raw_issue_count = int(
             payload.get("model_raw_issue_count", summary.model_raw_issue_count) or 0
@@ -521,3 +529,36 @@ def _update_graph_selection_summary(
             str(reason): _non_negative_int(count)
             for reason, count in raw_reasons.items()
         }
+
+
+def _update_graph_reviewer_summary(
+    summary: RunSummary, payload: dict[str, Any]
+) -> None:
+    """Accumulate the Graph parts that reached the reviewer prompt."""
+
+    projection = payload.get("graph_reviewer_prompt_projection")
+    if not isinstance(projection, dict):
+        return
+    summary.graph_reviewer_available_path_count += _non_negative_int(
+        projection.get("available_path_count")
+    )
+    summary.graph_reviewer_selected_path_count += _non_negative_int(
+        projection.get("selected_path_count")
+    )
+    summary.graph_reviewer_dropped_path_count += _non_negative_int(
+        projection.get("dropped_path_count")
+    )
+    selected_tokens = projection.get("selected_token_count")
+    if selected_tokens is None:
+        selected_tokens = projection.get("estimated_tokens")
+    summary.graph_reviewer_selected_token_count += _non_negative_int(
+        selected_tokens
+    )
+    raw_roles = projection.get("selected_role_coverage")
+    if isinstance(raw_roles, list):
+        summary.graph_reviewer_role_coverage = sorted(
+            {
+                *summary.graph_reviewer_role_coverage,
+                *(str(role) for role in raw_roles if str(role)),
+            }
+        )

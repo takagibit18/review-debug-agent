@@ -37,6 +37,28 @@ def component_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def common_prefix_tokens(left: str, right: str) -> int:
+    """Count the token prefix shared by two serialized provider requests."""
+
+    if not left or not right:
+        return 0
+    if _tiktoken is not None:
+        encoding = _tiktoken.get_encoding(TOKENIZER_NAME)
+        left_tokens = encoding.encode(left)
+        right_tokens = encoding.encode(right)
+        limit = min(len(left_tokens), len(right_tokens))
+        index = 0
+        while index < limit and left_tokens[index] == right_tokens[index]:
+            index += 1
+        return index
+    common_chars = 0
+    for left_char, right_char in zip(left, right, strict=False):
+        if left_char != right_char:
+            break
+        common_chars += 1
+    return common_chars // 4
+
+
 def token_component(name: str, text: str) -> dict[str, Any]:
     """Return the safe size/hash record for one prompt component."""
 

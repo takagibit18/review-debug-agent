@@ -862,6 +862,14 @@ _CHECKPOINT_SENSITIVE_PARTS = (
     "event_log_path",
     "relation_graph_index_path",
 )
+_CHECKPOINT_SAFE_TOKEN_FIELDS = {
+    "prompt_tokens",
+    "successful_prompt_tokens",
+    "successful_cached_prompt_tokens",
+    "successful_adjacent_common_prefix_tokens",
+    "cache_observation_count",
+    "provider_cache_hit_count",
+}
 
 
 def _sanitize_checkpoint_value(value: Any) -> Any:
@@ -869,7 +877,9 @@ def _sanitize_checkpoint_value(value: Any) -> Any:
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             normalized = str(key).lower()
-            if any(part in normalized for part in _CHECKPOINT_SENSITIVE_PARTS):
+            if normalized in _CHECKPOINT_SAFE_TOKEN_FIELDS:
+                sanitized[key] = _sanitize_checkpoint_value(item)
+            elif any(part in normalized for part in _CHECKPOINT_SENSITIVE_PARTS):
                 sanitized[key] = {} if normalized == "raw_output" else None
             elif normalized == "path":
                 sanitized[key] = ""
@@ -1253,6 +1263,56 @@ def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
                     "prompt_tokens": metrics.prompt_tokens,
                     "completion_tokens": metrics.completion_tokens,
                     "total_tokens": metrics.total_tokens,
+                    "provider_attempt_count": metrics.provider_attempt_count,
+                    "successful_prompt_tokens": metrics.successful_prompt_tokens,
+                    "successful_completion_tokens": (
+                        metrics.successful_completion_tokens
+                    ),
+                    "successful_reasoning_tokens": metrics.successful_reasoning_tokens,
+                    "successful_total_tokens": metrics.successful_total_tokens,
+                    "successful_cached_prompt_tokens": (
+                        metrics.successful_cached_prompt_tokens
+                    ),
+                    "successful_adjacent_common_prefix_tokens": (
+                        metrics.successful_adjacent_common_prefix_tokens
+                    ),
+                    "cache_observation_count": metrics.cache_observation_count,
+                    "provider_cache_hit_count": metrics.provider_cache_hit_count,
+                    "provider_cache_hit_rate": _ratio(
+                        metrics.provider_cache_hit_count,
+                        metrics.cache_observation_count,
+                    ),
+                    "cached_prompt_token_rate": _ratio(
+                        metrics.successful_cached_prompt_tokens,
+                        metrics.successful_prompt_tokens,
+                    ),
+                    "graph_selected_production_path_count": (
+                        metrics.graph_selected_production_path_count
+                    ),
+                    "graph_selected_low_hop_path_count": (
+                        metrics.graph_selected_low_hop_path_count
+                    ),
+                    "graph_required_production_path_count": (
+                        metrics.graph_required_production_path_count
+                    ),
+                    "graph_missing_production_path_count": (
+                        metrics.graph_missing_production_path_count
+                    ),
+                    "graph_reviewer_available_path_count": (
+                        metrics.graph_reviewer_available_path_count
+                    ),
+                    "graph_reviewer_selected_path_count": (
+                        metrics.graph_reviewer_selected_path_count
+                    ),
+                    "graph_reviewer_dropped_path_count": (
+                        metrics.graph_reviewer_dropped_path_count
+                    ),
+                    "graph_reviewer_selected_token_count": (
+                        metrics.graph_reviewer_selected_token_count
+                    ),
+                    "graph_reviewer_role_coverage": (
+                        metrics.graph_reviewer_role_coverage
+                    ),
                     "manifest_token_cost": metrics.manifest_token_cost,
                     "tool_call_count": metrics.tool_call_count,
                     "read_file_calls": metrics.read_file_calls,
@@ -1288,6 +1348,56 @@ def compact_summary(payload: dict[str, Any]) -> dict[str, Any]:
                 "over_merge_count": aggregate.over_merge_count,
                 "under_merge_count": aggregate.under_merge_count,
                 "repair_unit_accuracy": aggregate.repair_unit_accuracy,
+            },
+            "aggregate_process": {
+                "provider_attempt_count": aggregate.provider_attempt_count,
+                "successful_prompt_tokens": aggregate.successful_prompt_tokens,
+                "successful_completion_tokens": aggregate.successful_completion_tokens,
+                "successful_reasoning_tokens": aggregate.successful_reasoning_tokens,
+                "successful_total_tokens": aggregate.successful_total_tokens,
+                "successful_cached_prompt_tokens": (
+                    aggregate.successful_cached_prompt_tokens
+                ),
+                "successful_adjacent_common_prefix_tokens": (
+                    aggregate.successful_adjacent_common_prefix_tokens
+                ),
+                "cache_observation_count": aggregate.cache_observation_count,
+                "provider_cache_hit_count": aggregate.provider_cache_hit_count,
+                "provider_cache_hit_rate": _ratio(
+                    aggregate.provider_cache_hit_count,
+                    aggregate.cache_observation_count,
+                ),
+                "cached_prompt_token_rate": _ratio(
+                    aggregate.successful_cached_prompt_tokens,
+                    aggregate.successful_prompt_tokens,
+                ),
+                "graph_selected_production_path_count": (
+                    aggregate.graph_selected_production_path_count
+                ),
+                "graph_selected_low_hop_path_count": (
+                    aggregate.graph_selected_low_hop_path_count
+                ),
+                "graph_required_production_path_count": (
+                    aggregate.graph_required_production_path_count
+                ),
+                "graph_missing_production_path_count": (
+                    aggregate.graph_missing_production_path_count
+                ),
+                "graph_reviewer_available_path_count": (
+                    aggregate.graph_reviewer_available_path_count
+                ),
+                "graph_reviewer_selected_path_count": (
+                    aggregate.graph_reviewer_selected_path_count
+                ),
+                "graph_reviewer_dropped_path_count": (
+                    aggregate.graph_reviewer_dropped_path_count
+                ),
+                "graph_reviewer_selected_token_count": (
+                    aggregate.graph_reviewer_selected_token_count
+                ),
+                "graph_reviewer_role_coverage": (
+                    aggregate.graph_reviewer_role_coverage
+                ),
             },
             "structural_metrics": _structural_metrics_payload(
                 _aggregate_run_structural_metrics([item.result for item in valid])

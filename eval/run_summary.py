@@ -184,6 +184,8 @@ def extract_review_process_metrics(
             metrics.discarded_graph_paths = _non_negative_int(
                 payload.get("discarded_path_count")
             )
+        elif event_type == "context_telemetry":
+            _update_graph_reviewer_metrics(metrics, payload)
         elif event_type == "index_lifecycle":
             metrics.graph_build_latency_seconds = _non_negative_float(
                 payload.get("build_latency_seconds")
@@ -229,6 +231,39 @@ def extract_review_process_metrics(
             metrics.reviewer_tool_call_count += 1
             if payload.get("deduplicated") is True:
                 metrics.duplicate_tool_call_count += 1
+        elif event_type == "model_call" and phase == "provider_attempt":
+            metrics.provider_attempt_count += 1
+            success = payload.get("success") is True
+            usage_present = payload.get("usage_present") is True
+            if not success:
+                metrics.failed_attempt_count += 1
+                if payload.get("usage_unknown") is True:
+                    metrics.failed_unknown_usage_count += 1
+            elif usage_present:
+                metrics.successful_prompt_tokens += _non_negative_int(
+                    payload.get("prompt_tokens")
+                )
+                metrics.successful_completion_tokens += _non_negative_int(
+                    payload.get("completion_tokens")
+                )
+                metrics.successful_reasoning_tokens += _non_negative_int(
+                    payload.get("reasoning_tokens")
+                )
+                metrics.successful_total_tokens += _non_negative_int(
+                    payload.get("total_tokens")
+                )
+                metrics.successful_cached_prompt_tokens += _non_negative_int(
+                    payload.get("cached_prompt_tokens")
+                )
+                metrics.successful_adjacent_common_prefix_tokens += (
+                    _non_negative_int(
+                        payload.get("adjacent_common_prefix_tokens")
+                    )
+                )
+                if payload.get("cached_prompt_tokens") is not None:
+                    metrics.cache_observation_count += 1
+                    if _non_negative_int(payload.get("cached_prompt_tokens")) > 0:
+                        metrics.provider_cache_hit_count += 1
         elif (
             event_type == "phase_end"
             and phase == "review_complete"
@@ -302,6 +337,25 @@ def extract_review_process_metrics(
                 payload.get("completion_tokens")
             )
             metrics.total_tokens = _non_negative_int(payload.get("total_tokens"))
+            for field_name in (
+                "provider_attempt_count",
+                "successful_prompt_tokens",
+                "successful_completion_tokens",
+                "successful_reasoning_tokens",
+                "successful_total_tokens",
+                "successful_cached_prompt_tokens",
+                "successful_adjacent_common_prefix_tokens",
+                "cache_observation_count",
+                "provider_cache_hit_count",
+                "failed_attempt_count",
+                "failed_unknown_usage_count",
+            ):
+                if field_name in payload:
+                    setattr(
+                        metrics,
+                        field_name,
+                        _non_negative_int(payload.get(field_name)),
+                    )
             metrics.graph_status = str(payload.get("graph_status", ""))
             metrics.graph_cache_mode = str(
                 payload.get("graph_cache_mode", "not_applicable")
@@ -352,6 +406,22 @@ def _update_graph_selection_metrics(
             "graph_selected_direct_path_count",
             "selected_direct_path_count",
         ),
+        "graph_selected_production_path_count": (
+            "graph_selected_production_path_count",
+            "selected_production_path_count",
+        ),
+        "graph_selected_low_hop_path_count": (
+            "graph_selected_low_hop_path_count",
+            "selected_low_hop_path_count",
+        ),
+        "graph_required_production_path_count": (
+            "graph_required_production_path_count",
+            "required_production_path_count",
+        ),
+        "graph_missing_production_path_count": (
+            "graph_missing_production_path_count",
+            "missing_production_path_count",
+        ),
         "graph_reviewer_context_token_estimate": (
             "graph_reviewer_context_token_estimate",
         ),
@@ -371,6 +441,39 @@ def _update_graph_selection_metrics(
             str(reason): _non_negative_int(count)
             for reason, count in raw_reasons.items()
         }
+
+
+def _update_graph_reviewer_metrics(
+    metrics: ReviewProcessMetrics, payload: dict[str, object]
+) -> None:
+    """Accumulate the Graph parts that reached the reviewer prompt."""
+
+    projection = payload.get("graph_reviewer_prompt_projection")
+    if not isinstance(projection, dict):
+        return
+    metrics.graph_reviewer_available_path_count += _non_negative_int(
+        projection.get("available_path_count")
+    )
+    metrics.graph_reviewer_selected_path_count += _non_negative_int(
+        projection.get("selected_path_count")
+    )
+    metrics.graph_reviewer_dropped_path_count += _non_negative_int(
+        projection.get("dropped_path_count")
+    )
+    selected_tokens = projection.get("selected_token_count")
+    if selected_tokens is None:
+        selected_tokens = projection.get("estimated_tokens")
+    metrics.graph_reviewer_selected_token_count += _non_negative_int(
+        selected_tokens
+    )
+    raw_roles = projection.get("selected_role_coverage")
+    if isinstance(raw_roles, list):
+        metrics.graph_reviewer_role_coverage = sorted(
+            {
+                *metrics.graph_reviewer_role_coverage,
+                *(str(role) for role in raw_roles if str(role)),
+            }
+        )
 
 
 def _non_negative_int(value: object) -> int:

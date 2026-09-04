@@ -1362,7 +1362,10 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
         return 0
 
     model_total = 0
+    provider_total = 0
+    provider_attempt_seen = False
     completed_total: int | None = None
+    completed_successful_total: int | None = None
     for raw_line in log_path.read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
             continue
@@ -1372,7 +1375,15 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
             continue
         payload = event.get("payload", {})
         if event.get("event_type") == "model_call":
-            model_total += int(payload.get("tokens", 0) or 0)
+            if event.get("phase") == "provider_attempt":
+                provider_attempt_seen = True
+                if (
+                    payload.get("success") is True
+                    and payload.get("usage_present") is True
+                ):
+                    provider_total += int(payload.get("total_tokens", 0) or 0)
+            else:
+                model_total += int(payload.get("tokens", 0) or 0)
         elif (
             event.get("event_type") == "phase_end"
             and event.get("phase") == "review_complete"
@@ -1380,6 +1391,13 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
             raw_total = payload.get("total_tokens")
             if isinstance(raw_total, int):
                 completed_total = max(0, raw_total)
+            raw_successful_total = payload.get("successful_total_tokens")
+            if isinstance(raw_successful_total, int):
+                completed_successful_total = max(0, raw_successful_total)
+    if provider_attempt_seen:
+        return provider_total
+    if completed_successful_total is not None:
+        return completed_successful_total
     return completed_total if completed_total is not None else model_total
 
 

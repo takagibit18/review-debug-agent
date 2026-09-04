@@ -326,6 +326,17 @@ class ReviewProcessMetrics(BaseModel):
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    provider_attempt_count: int = Field(default=0, ge=0)
+    successful_prompt_tokens: int = Field(default=0, ge=0)
+    successful_completion_tokens: int = Field(default=0, ge=0)
+    successful_reasoning_tokens: int = Field(default=0, ge=0)
+    successful_total_tokens: int = Field(default=0, ge=0)
+    successful_cached_prompt_tokens: int = Field(default=0, ge=0)
+    successful_adjacent_common_prefix_tokens: int = Field(default=0, ge=0)
+    cache_observation_count: int = Field(default=0, ge=0)
+    provider_cache_hit_count: int = Field(default=0, ge=0)
+    failed_attempt_count: int = Field(default=0, ge=0)
+    failed_unknown_usage_count: int = Field(default=0, ge=0)
     graph_status: str = ""
     graph_cache_mode: str = "not_applicable"
     manifest_count: int = Field(default=0, ge=0)
@@ -370,7 +381,16 @@ class ReviewProcessMetrics(BaseModel):
     graph_selected_path_count: int = Field(default=0, ge=0)
     graph_dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
     graph_selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_selected_production_path_count: int = Field(default=0, ge=0)
+    graph_selected_low_hop_path_count: int = Field(default=0, ge=0)
+    graph_required_production_path_count: int = Field(default=0, ge=0)
+    graph_missing_production_path_count: int = Field(default=0, ge=0)
     graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    graph_reviewer_available_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_dropped_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_token_count: int = Field(default=0, ge=0)
+    graph_reviewer_role_coverage: list[str] = Field(default_factory=list)
     graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     reviewer_tool_call_count: int = Field(default=0, ge=0)
     unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -568,6 +588,17 @@ class MetricSummary(BaseModel):
     avg_total_tokens: float = Field(default=0.0, ge=0.0)
     p50_total_tokens: float = Field(default=0.0, ge=0.0)
     p95_total_tokens: float = Field(default=0.0, ge=0.0)
+    provider_attempt_count: int = Field(default=0, ge=0)
+    successful_prompt_tokens: int = Field(default=0, ge=0)
+    successful_completion_tokens: int = Field(default=0, ge=0)
+    successful_reasoning_tokens: int = Field(default=0, ge=0)
+    successful_total_tokens: int = Field(default=0, ge=0)
+    successful_cached_prompt_tokens: int = Field(default=0, ge=0)
+    successful_adjacent_common_prefix_tokens: int = Field(default=0, ge=0)
+    cache_observation_count: int = Field(default=0, ge=0)
+    provider_cache_hit_count: int = Field(default=0, ge=0)
+    failed_attempt_count: int = Field(default=0, ge=0)
+    failed_unknown_usage_count: int = Field(default=0, ge=0)
     evidence_binding_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     verifier_accept_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     verifier_reject_rate: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -582,7 +613,16 @@ class MetricSummary(BaseModel):
     graph_selected_path_count: int = Field(default=0, ge=0)
     graph_dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
     graph_selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_selected_production_path_count: int = Field(default=0, ge=0)
+    graph_selected_low_hop_path_count: int = Field(default=0, ge=0)
+    graph_required_production_path_count: int = Field(default=0, ge=0)
+    graph_missing_production_path_count: int = Field(default=0, ge=0)
     graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    graph_reviewer_available_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_dropped_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_token_count: int = Field(default=0, ge=0)
+    graph_reviewer_role_coverage: list[str] = Field(default_factory=list)
     graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     reviewer_tool_call_count: int = Field(default=0, ge=0)
     unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -803,6 +843,40 @@ def _aggregate_process_metrics(
     invalid_runs = sum(1 for item in results if item.process_metrics.workflow_invalid)
     duplicates = sum(item.process_metrics.duplicate_tool_call_count for item in results)
     tokens = sum(item.total_tokens for item in results)
+    provider_attempts = sum(
+        item.process_metrics.provider_attempt_count for item in results
+    )
+    successful_prompt_tokens = sum(
+        item.process_metrics.successful_prompt_tokens for item in results
+    )
+    successful_completion_tokens = sum(
+        item.process_metrics.successful_completion_tokens for item in results
+    )
+    successful_reasoning_tokens = sum(
+        item.process_metrics.successful_reasoning_tokens for item in results
+    )
+    successful_total_tokens = sum(
+        item.process_metrics.successful_total_tokens for item in results
+    )
+    successful_cached_prompt_tokens = sum(
+        item.process_metrics.successful_cached_prompt_tokens for item in results
+    )
+    successful_adjacent_common_prefix_tokens = sum(
+        item.process_metrics.successful_adjacent_common_prefix_tokens
+        for item in results
+    )
+    cache_observations = sum(
+        item.process_metrics.cache_observation_count for item in results
+    )
+    provider_cache_hits = sum(
+        item.process_metrics.provider_cache_hit_count for item in results
+    )
+    failed_attempts = sum(
+        item.process_metrics.failed_attempt_count for item in results
+    )
+    failed_unknown_usage = sum(
+        item.process_metrics.failed_unknown_usage_count for item in results
+    )
     context_tokens = sum(
         item.process_metrics.candidate_context_tokens for item in results
     )
@@ -823,6 +897,41 @@ def _aggregate_process_metrics(
     )
     direct_paths = sum(
         item.process_metrics.graph_selected_direct_path_count for item in results
+    )
+    production_paths = sum(
+        item.process_metrics.graph_selected_production_path_count
+        for item in results
+    )
+    low_hop_paths = sum(
+        item.process_metrics.graph_selected_low_hop_path_count for item in results
+    )
+    required_production_paths = sum(
+        item.process_metrics.graph_required_production_path_count
+        for item in results
+    )
+    missing_production_paths = sum(
+        item.process_metrics.graph_missing_production_path_count
+        for item in results
+    )
+    reviewer_available_paths = sum(
+        item.process_metrics.graph_reviewer_available_path_count for item in results
+    )
+    reviewer_selected_paths = sum(
+        item.process_metrics.graph_reviewer_selected_path_count for item in results
+    )
+    reviewer_dropped_paths = sum(
+        item.process_metrics.graph_reviewer_dropped_path_count for item in results
+    )
+    reviewer_selected_tokens = sum(
+        item.process_metrics.graph_reviewer_selected_token_count
+        for item in results
+    )
+    reviewer_role_coverage = sorted(
+        {
+            role
+            for item in results
+            for role in item.process_metrics.graph_reviewer_role_coverage
+        }
     )
     graph_reviewer_tokens = sum(
         item.process_metrics.graph_reviewer_context_token_estimate
@@ -891,6 +1000,19 @@ def _aggregate_process_metrics(
         "required_step_completion_rate": completed / required if required else 1.0,
         "duplicate_tool_call_rate": duplicates / candidates if candidates else 0.0,
         "cost_per_accepted_finding": tokens / accepted if accepted else 0.0,
+        "provider_attempt_count": provider_attempts,
+        "successful_prompt_tokens": successful_prompt_tokens,
+        "successful_completion_tokens": successful_completion_tokens,
+        "successful_reasoning_tokens": successful_reasoning_tokens,
+        "successful_total_tokens": successful_total_tokens,
+        "successful_cached_prompt_tokens": successful_cached_prompt_tokens,
+        "successful_adjacent_common_prefix_tokens": (
+            successful_adjacent_common_prefix_tokens
+        ),
+        "cache_observation_count": cache_observations,
+        "provider_cache_hit_count": provider_cache_hits,
+        "failed_attempt_count": failed_attempts,
+        "failed_unknown_usage_count": failed_unknown_usage,
         "avg_candidate_context_tokens": context_tokens / len(results)
         if results
         else 0.0,
@@ -901,7 +1023,16 @@ def _aggregate_process_metrics(
         "graph_selected_path_count": selected_paths,
         "graph_dropped_repeated_prefix_path_count": repeated_prefix_paths,
         "graph_selected_direct_path_count": direct_paths,
+        "graph_selected_production_path_count": production_paths,
+        "graph_selected_low_hop_path_count": low_hop_paths,
+        "graph_required_production_path_count": required_production_paths,
+        "graph_missing_production_path_count": missing_production_paths,
         "graph_reviewer_context_token_estimate": graph_reviewer_tokens,
+        "graph_reviewer_available_path_count": reviewer_available_paths,
+        "graph_reviewer_selected_path_count": reviewer_selected_paths,
+        "graph_reviewer_dropped_path_count": reviewer_dropped_paths,
+        "graph_reviewer_selected_token_count": reviewer_selected_tokens,
+        "graph_reviewer_role_coverage": reviewer_role_coverage,
         "graph_path_selection_reason_counts": path_selection_reasons,
         "reviewer_tool_call_count": reviewer_tools,
         "unused_context_ratio": float(mean(unused_ratios)) if unused_ratios else 0.0,

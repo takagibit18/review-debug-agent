@@ -20,11 +20,42 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
                 "selected_reviewer_path_count": 7,
                 "dropped_repeated_prefix_path_count": 4,
                 "selected_direct_path_count": 3,
+                "selected_production_path_count": 2,
+                "selected_low_hop_path_count": 1,
+                "required_production_path_count": 2,
+                "missing_production_path_count": 0,
                 "graph_reviewer_context_token_estimate": 321,
                 "path_selection_reason_counts": {
                     "selected_direct": 3,
                     "repeated_first_hop_prefix": 4,
                 },
+            },
+        },
+        {
+            "event_type": "context_telemetry",
+            "phase": "analyze",
+            "payload": {
+                "graph_reviewer_prompt_projection": {
+                    "available_path_count": 9,
+                    "selected_path_count": 4,
+                    "dropped_path_count": 5,
+                    "selected_token_count": 222,
+                    "selected_role_coverage": ["execution_flow", "related_test"],
+                }
+            },
+        },
+        {
+            "event_type": "model_call",
+            "phase": "provider_attempt",
+            "payload": {
+                "success": True,
+                "usage_present": True,
+                "prompt_tokens": 1000,
+                "completion_tokens": 120,
+                "reasoning_tokens": 80,
+                "total_tokens": 1200,
+                "cached_prompt_tokens": 700,
+                "adjacent_common_prefix_tokens": 650,
             },
         },
         {
@@ -118,7 +149,23 @@ def test_extract_review_process_metrics_counts_review_lifecycle(tmp_path: Path) 
     assert metrics.graph_selected_path_count == 7
     assert metrics.graph_dropped_repeated_prefix_path_count == 4
     assert metrics.graph_selected_direct_path_count == 3
+    assert metrics.graph_selected_production_path_count == 2
+    assert metrics.graph_selected_low_hop_path_count == 1
+    assert metrics.graph_required_production_path_count == 2
+    assert metrics.graph_missing_production_path_count == 0
     assert metrics.graph_reviewer_context_token_estimate == 321
+    assert metrics.graph_reviewer_available_path_count == 9
+    assert metrics.graph_reviewer_selected_path_count == 4
+    assert metrics.graph_reviewer_dropped_path_count == 5
+    assert metrics.graph_reviewer_selected_token_count == 222
+    assert metrics.graph_reviewer_role_coverage == ["execution_flow", "related_test"]
+    assert metrics.provider_attempt_count == 1
+    assert metrics.successful_prompt_tokens == 1000
+    assert metrics.successful_total_tokens == 1200
+    assert metrics.successful_cached_prompt_tokens == 700
+    assert metrics.successful_adjacent_common_prefix_tokens == 650
+    assert metrics.cache_observation_count == 1
+    assert metrics.provider_cache_hit_count == 1
     assert metrics.graph_path_selection_reason_counts == {
         "selected_direct": 3,
         "repeated_first_hop_prefix": 4,
@@ -172,7 +219,25 @@ def test_metric_summary_aggregates_process_metrics() -> None:
             graph_selected_path_count=7,
             graph_dropped_repeated_prefix_path_count=4,
             graph_selected_direct_path_count=3,
+            graph_selected_production_path_count=2,
+            graph_selected_low_hop_path_count=1,
+            graph_required_production_path_count=2,
+            graph_missing_production_path_count=0,
             graph_reviewer_context_token_estimate=321,
+            graph_reviewer_available_path_count=9,
+            graph_reviewer_selected_path_count=4,
+            graph_reviewer_dropped_path_count=5,
+            graph_reviewer_selected_token_count=222,
+            graph_reviewer_role_coverage=["execution_flow", "related_test"],
+            provider_attempt_count=1,
+            successful_prompt_tokens=1000,
+            successful_completion_tokens=120,
+            successful_reasoning_tokens=80,
+            successful_total_tokens=1200,
+            successful_cached_prompt_tokens=700,
+            successful_adjacent_common_prefix_tokens=650,
+            cache_observation_count=1,
+            provider_cache_hit_count=1,
             graph_path_selection_reason_counts={
                 "selected_direct": 3,
                 "repeated_first_hop_prefix": 4,
@@ -207,7 +272,23 @@ def test_metric_summary_aggregates_process_metrics() -> None:
     assert summary.graph_selected_path_count == 7
     assert summary.graph_dropped_repeated_prefix_path_count == 4
     assert summary.graph_selected_direct_path_count == 3
+    assert summary.graph_selected_production_path_count == 2
+    assert summary.graph_selected_low_hop_path_count == 1
+    assert summary.graph_required_production_path_count == 2
+    assert summary.graph_missing_production_path_count == 0
     assert summary.graph_reviewer_context_token_estimate == 321
+    assert summary.graph_reviewer_available_path_count == 9
+    assert summary.graph_reviewer_selected_path_count == 4
+    assert summary.graph_reviewer_dropped_path_count == 5
+    assert summary.graph_reviewer_selected_token_count == 222
+    assert summary.graph_reviewer_role_coverage == ["execution_flow", "related_test"]
+    assert summary.provider_attempt_count == 1
+    assert summary.successful_prompt_tokens == 1000
+    assert summary.successful_total_tokens == 1200
+    assert summary.successful_cached_prompt_tokens == 700
+    assert summary.successful_adjacent_common_prefix_tokens == 650
+    assert summary.cache_observation_count == 1
+    assert summary.provider_cache_hit_count == 1
     assert summary.graph_path_selection_reason_counts == {
         "selected_direct": 3,
         "repeated_first_hop_prefix": 4,
