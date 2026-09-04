@@ -46,6 +46,10 @@ class SkillProposal(BaseModel):
     principle: str = Field(min_length=1)
     why: str = Field(min_length=1)
     source_feedback_ids: list[str] = Field(min_length=1)
+    description: str = ""
+    languages: list[str] = Field(default_factory=list)
+    path_globs: list[str] = Field(default_factory=list)
+    triggers: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _require_nonblank_text(self) -> "SkillProposal":
@@ -59,6 +63,10 @@ class SkillProposal(BaseModel):
         ]
         if not self.source_feedback_ids:
             raise ValueError("proposal must cite source feedback ids")
+        self.description = self.description.strip()
+        self.languages = _normalize_optional_metadata(self.languages, lower=True)
+        self.path_globs = _normalize_optional_metadata(self.path_globs, path=True)
+        self.triggers = _normalize_optional_metadata(self.triggers, lower=True)
         return self
 
 
@@ -142,6 +150,10 @@ class SkillStore:
             principle=normalized.principle,
             why=normalized.why,
             source_feedback_ids=tuple(normalized.source_feedback_ids),
+            description=normalized.description or normalized.principle,
+            languages=tuple(normalized.languages),
+            path_globs=tuple(normalized.path_globs),
+            triggers=tuple(normalized.triggers),
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
@@ -166,6 +178,10 @@ class SkillStore:
             principle=target.principle,
             why=target.why,
             source_feedback_ids=target.source_feedback_ids,
+            description=target.description,
+            languages=target.languages,
+            path_globs=target.path_globs,
+            triggers=target.triggers,
         )
         rewritten = [updated if item.id == skill_id else item for item in skills]
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,10 +242,33 @@ def build_contrastive_prompt(feedback: Sequence[FeedbackRecord]) -> str:
         "principle\n"
         "why\n"
         "source_feedback_ids\n"
+        "description\n"
+        "languages\n"
+        "path_globs\n"
+        "triggers\n"
         'Example: {"category":"...","principle":"...","why":"...",'
-        '"source_feedback_ids":["feedback-id"]}\n\n'
+        '"source_feedback_ids":["feedback-id"],"description":"...",'
+        '"languages":["python"],"path_globs":["**/*.py"],'
+        '"triggers":["asyncio"]}\n\n'
         + examples
     )
+
+
+def _normalize_optional_metadata(
+    values: list[str], *, lower: bool = False, path: bool = False
+) -> list[str]:
+    normalized: list[str] = []
+    for item in values:
+        text = item.strip()
+        if path:
+            text = text.replace("\\", "/")
+            while "//" in text:
+                text = text.replace("//", "/")
+        if lower:
+            text = text.lower()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
 
 
 class PromptImprover:

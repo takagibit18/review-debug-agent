@@ -357,4 +357,3 @@ git diff --check codex/review-skill-retrieval-runtime...HEAD
 - PR 2 的即时 rollback 是设置 `REVIEW_SKILL_RETRIEVAL_MODE=sequential`；代码问题再 revert PR 2，不影响 lifecycle data。
 - PR 3 只改 Eval/schema/fixtures，可独立 revert，不影响 production Review。
 - JSONL 新字段为可选；旧代码忽略未知字段的能力需在兼容测试中验证。不得用一次性 destructive migration。
-
