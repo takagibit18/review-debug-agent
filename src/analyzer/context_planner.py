@@ -19,6 +19,8 @@ from src.analyzer.code_graph import (
     iter_execution_paths,
 )
 from src.analyzer.finding_schema import context_hash, normalize_repo_path
+from src.analyzer.reviewer_projection import project_path_for_reviewer
+from src.models.token_telemetry import estimate_tokens, serialize_json
 
 
 DEFAULT_EDGE_WEIGHTS: dict[EdgeKind, float] = {
@@ -63,6 +65,7 @@ class ManifestGraphEdge(BaseModel):
     confidence_tier: str
     evidence_eligibility: str
     reason: str
+    derived_from_edge: str = ""
 
 
 class IncludedGraphPath(BaseModel):
@@ -110,10 +113,9 @@ class CandidateContextManifest(BaseModel):
     def prompt_payload(self) -> dict[str, Any]:
         """Return the evidence envelope eligible for the reviewer prompt."""
 
-        return self.model_dump(
-            mode="json",
-            exclude={"excluded_low_confidence_paths", "discarded_paths"},
-        )
+        from src.analyzer.reviewer_projection import project_manifest_for_reviewer
+
+        return project_manifest_for_reviewer(self.model_dump(mode="json"))
 
     def contains_location(
         self, file: str, line: int, end_line: int | None = None
@@ -314,7 +316,9 @@ class ChangeCenteredContextPlanner:
         )
         manifest.graph_reviewer_context_token_estimate = sum(
             self._estimate_tokens(
-                json.dumps(path.model_dump(mode="json"), ensure_ascii=True, sort_keys=True)
+                serialize_json(
+                    project_path_for_reviewer(path.model_dump(mode="json"))
+                )
             )
             for path in manifest.included_graph_paths
         )
@@ -779,6 +783,7 @@ class ChangeCenteredContextPlanner:
             confidence_tier=edge.confidence_tier.value,
             evidence_eligibility=edge.evidence_eligibility,
             reason=edge.reason,
+            derived_from_edge=str(edge.metadata.get("derived_from_edge", "") or ""),
         )
 
     @staticmethod
@@ -819,7 +824,7 @@ class ChangeCenteredContextPlanner:
 
     @staticmethod
     def _estimate_tokens(content: str) -> int:
-        return max(1, (len(content) + 3) // 4) if content else 0
+        return estimate_tokens(content)
 
     def _read_numbered_span(self, path: str, start: int, end: int) -> str:
         try:

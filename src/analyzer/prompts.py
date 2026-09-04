@@ -14,11 +14,15 @@ from src.analyzer.context_priority import (
     build_debug_context_parts,
     build_review_context_parts,
     compact_review_prompt_parts,
+    select_graph_prompt_parts,
 )
 from src.analyzer.context_state import ContextState
 from src.analyzer.review_skills import ReviewSkillLoader
+from src.analyzer.reviewer_projection import project_manifest_for_reviewer
 from src.analyzer.schemas import DebugRequest, ReviewRequest
+from src.config import get_settings
 from src.models.schemas import Message
+from src.models.token_telemetry import estimate_tokens, serialize_json
 
 if TYPE_CHECKING:
     from src.models.client import ModelClient
@@ -258,13 +262,19 @@ def build_review_messages(
     """Build review-mode messages with optional priority truncation of payload parts."""
     cb = context_builder or ContextBuilder()
     all_parts = build_review_context_parts(
-        request, context, diff, file_contents, project_structure
+        request,
+        context,
+        diff,
+        file_contents,
+        project_structure,
+        projection_telemetry=telemetry_sink,
     )
-    if prompt_token_budget is not None:
-        selected = cb.truncate_context(all_parts, prompt_token_budget)
-    else:
-        selected = all_parts
-    all_parts, selected = compact_review_prompt_parts(all_parts, selected)
+    all_parts, selected = _select_review_context_parts(
+        all_parts,
+        cb,
+        prompt_token_budget=prompt_token_budget,
+        telemetry_sink=telemetry_sink,
+    )
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context, selected)
@@ -278,9 +288,75 @@ def build_review_messages(
         ),
         Message(
             role="user",
-            content=USER_PREFIX_REVIEW + json.dumps(payload, ensure_ascii=True),
+            content=USER_PREFIX_REVIEW + serialize_json(payload),
         ),
     ]
+
+
+def _is_graph_context_part(part: ContextPart) -> bool:
+    return part.label.startswith(("manifest:", "manifest_path:"))
+
+
+def _graph_budget(prompt_token_budget: int | None) -> int | None:
+    configured = get_settings().relation_graph_reviewer_context_token_budget
+    if prompt_token_budget is None:
+        return configured
+    # Keep a bounded Graph reservation while leaving room for diff and source.
+    return min(configured, max(0, int(prompt_token_budget) // 3))
+
+
+def _non_graph_budget(prompt_token_budget: int | None) -> int | None:
+    if prompt_token_budget is None:
+        return None
+    return max(
+        0,
+        int(prompt_token_budget) - int(_graph_budget(prompt_token_budget) or 0),
+    )
+
+
+def _select_review_context_parts(
+    all_parts: list[ContextPart],
+    context_builder: ContextBuilder,
+    *,
+    prompt_token_budget: int | None,
+    telemetry_sink: dict[str, Any] | None,
+) -> tuple[list[ContextPart], list[ContextPart]]:
+    non_graph_parts = [part for part in all_parts if not _is_graph_context_part(part)]
+    if prompt_token_budget is None:
+        selected_non_graph = non_graph_parts
+    else:
+        selected_non_graph = context_builder.truncate_context(
+            non_graph_parts,
+            _non_graph_budget(prompt_token_budget) or 0,
+        )
+    return _finalize_review_context(
+        all_parts,
+        selected_non_graph,
+        prompt_token_budget=prompt_token_budget,
+        telemetry_sink=telemetry_sink,
+    )
+
+
+def _finalize_review_context(
+    all_parts: list[ContextPart],
+    selected_non_graph: list[ContextPart],
+    *,
+    prompt_token_budget: int | None,
+    telemetry_sink: dict[str, Any] | None,
+) -> tuple[list[ContextPart], list[ContextPart]]:
+    all_parts, selected_non_graph = compact_review_prompt_parts(
+        all_parts,
+        selected_non_graph,
+        telemetry_sink=telemetry_sink,
+    )
+    graph_parts = [part for part in all_parts if _is_graph_context_part(part)]
+    selected_graph = select_graph_prompt_parts(
+        all_parts,
+        graph_parts,
+        token_budget=_graph_budget(prompt_token_budget),
+        telemetry_sink=telemetry_sink,
+    )
+    return all_parts, [*selected_non_graph, *selected_graph]
 
 
 async def build_review_messages_async(
@@ -302,21 +378,35 @@ async def build_review_messages_async(
     """Build review-mode messages with optional second-layer summary compaction."""
     cb = context_builder or ContextBuilder()
     all_parts = build_review_context_parts(
-        request, context, diff, file_contents, project_structure
+        request,
+        context,
+        diff,
+        file_contents,
+        project_structure,
+        projection_telemetry=telemetry_sink,
     )
+    non_graph_parts = [part for part in all_parts if not _is_graph_context_part(part)]
     if prompt_token_budget is None:
-        selected = all_parts
+        selected = non_graph_parts
     elif summary_enabled and compressor_model_client is not None:
         selected, _ = await cb.truncate_with_summary(
-            all_parts,
-            prompt_token_budget,
+            non_graph_parts,
+            _non_graph_budget(prompt_token_budget),
             compressor=ContextCompressor(compressor_model_client),
             model_name=summary_model_name,
             max_summary_tokens=summary_max_tokens_per_part,
         )
     else:
-        selected = cb.truncate_context(all_parts, prompt_token_budget)
-    all_parts, selected = compact_review_prompt_parts(all_parts, selected)
+        selected = cb.truncate_context(
+            non_graph_parts,
+            _non_graph_budget(prompt_token_budget) or 0,
+        )
+    all_parts, selected = _finalize_review_context(
+        all_parts,
+        selected,
+        prompt_token_budget=prompt_token_budget,
+        telemetry_sink=telemetry_sink,
+    )
     payload = assemble_review_payload(request, context, all_parts, selected)
     _populate_context_telemetry(telemetry_sink, cb, all_parts, selected)
     _populate_planner_telemetry(telemetry_sink, context, selected)
@@ -330,7 +420,7 @@ async def build_review_messages_async(
         ),
         Message(
             role="user",
-            content=USER_PREFIX_REVIEW + json.dumps(payload, ensure_ascii=True),
+            content=USER_PREFIX_REVIEW + serialize_json(payload),
         ),
     ]
 
@@ -361,7 +451,7 @@ def build_debug_messages(
         Message(role="system", content=SYSTEM_PROMPT_DEBUG),
         Message(
             role="user",
-            content=USER_PREFIX_DEBUG + json.dumps(payload, ensure_ascii=True),
+            content=USER_PREFIX_DEBUG + serialize_json(payload),
         ),
     ]
 
@@ -404,7 +494,7 @@ async def build_debug_messages_async(
         Message(role="system", content=SYSTEM_PROMPT_DEBUG),
         Message(
             role="user",
-            content=USER_PREFIX_DEBUG + json.dumps(payload, ensure_ascii=True),
+            content=USER_PREFIX_DEBUG + serialize_json(payload),
         ),
     ]
 
@@ -417,6 +507,19 @@ def _populate_context_telemetry(
 ) -> None:
     if sink is None:
         return
+    projection_telemetry = {
+        key: value
+        for key, value in sink.items()
+        if key in {
+            "semantic_duplicate_path_count",
+            "dropped_semantic_duplicate_path_count",
+            "semantic_duplicate_prompt_token_cost",
+            "retained_path_ids",
+            "dropped_path_ids",
+            "semantic_duplicate_paths",
+            "graph_reviewer_prompt_projection",
+        }
+    }
     selected_labels = {part.label for part in selected}
     available_labels = {part.label for part in all_parts}
     dropped_count = len(
@@ -433,7 +536,7 @@ def _populate_context_telemetry(
             "available": _measure_context_parts(builder, all_parts),
             "selected": _measure_context_parts(builder, selected),
             "selected_file_complete_lines": {
-                str(part.label)[5:]: str(part.content).count("\n")
+                str(part.label)[5:]: len(str(part.content).splitlines())
                 for part in selected
                 if str(part.label).startswith("file:")
             },
@@ -447,6 +550,7 @@ def _populate_context_telemetry(
             ),
         }
     )
+    sink.update(projection_telemetry)
 
 
 def _populate_planner_telemetry(
@@ -467,9 +571,49 @@ def _populate_planner_telemetry(
     sink["candidate_context_manifest_selected_count"] = len(selected_manifests)
     sink["candidate_context_graph_path_selected_count"] = len(selected_manifest_paths)
     sink["candidate_context_prompt_token_cost"] = sum(
-        int(item.token_count or 0)
+        int(item.token_count or estimate_tokens(item.content))
         for item in [*selected_manifests, *selected_manifest_paths]
     )
+    selected_graph_tokens = sum(
+        int(item.token_count or estimate_tokens(item.content))
+        for item in [*selected_manifests, *selected_manifest_paths]
+    )
+    selected_roles: set[str] = set()
+    for item in selected_manifest_paths:
+        try:
+            decoded = json.loads(item.content)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        path = decoded.get("path") if isinstance(decoded, dict) else None
+        if isinstance(path, dict) and path.get("semantic_role"):
+            selected_roles.add(str(path["semantic_role"]))
+    projection_paths = [
+        path
+        for manifest in manifests
+        if isinstance(manifest, dict)
+        for path in project_manifest_for_reviewer(manifest).get(
+            "included_graph_paths", []
+        )
+        if isinstance(path, dict)
+    ]
+    available_projection_paths = len(projection_paths)
+    sink["candidate_context_manifest_source_span_token_cost"] = sum(
+        int(item.get("token_cost", 0) or 0)
+        for item in manifests
+        if isinstance(item, dict)
+    )
+    sink["candidate_context_manifest_token_cost_scope"] = "source_span_tokens"
+    sink["graph_reviewer_context_token_estimate"] = selected_graph_tokens
+    sink["candidate_context_graph_reviewer_token_estimate"] = selected_graph_tokens
+    sink["graph_reviewer_projection"] = {
+        "available_path_count": available_projection_paths,
+        "selected_path_count": len(selected_manifest_paths),
+        "dropped_path_count": max(
+            0, available_projection_paths - len(selected_manifest_paths)
+        ),
+        "selected_role_coverage": sorted(selected_roles),
+        "estimated_tokens": selected_graph_tokens,
+    }
     sink["candidate_context_token_cost"] = sum(
         int(item.get("token_cost", 0) or 0) for item in manifests
     )
@@ -505,6 +649,30 @@ def _populate_planner_telemetry(
         for item in manifests
         if isinstance(item, dict)
     )
+    sink["candidate_context_graph_source_token_estimate"] = sum(
+        estimate_tokens(
+            serialize_json(path)
+        )
+        for manifest in manifests
+        if isinstance(manifest, dict)
+        for path in manifest.get("included_graph_paths", [])
+        if isinstance(path, dict)
+    )
+    graph_projection = sink.get("graph_reviewer_prompt_projection", {})
+    if not isinstance(graph_projection, dict):
+        graph_projection = {}
+    graph_projection.update(
+        {
+            "available_path_count": available_projection_paths,
+            "selected_path_count": len(selected_manifest_paths),
+            "dropped_path_count": max(
+                0, available_projection_paths - len(selected_manifest_paths)
+            ),
+            "selected_role_coverage": sorted(selected_roles),
+            "estimated_tokens": selected_graph_tokens,
+        }
+    )
+    sink["graph_reviewer_projection"] = graph_projection
     reason_counts: dict[str, int] = {}
     for item in manifests:
         raw_reasons = item.get("path_selection_reason_counts", {})
@@ -529,7 +697,7 @@ def _measure_context_parts(
     total_tokens = 0
     for part in parts:
         chars = len(part.content)
-        tokens = int(part.token_count or builder.estimate_tokens(part.content))
+        tokens = int(part.token_count or estimate_tokens(part.content))
         kind = _context_part_kind(str(part.label))
         bucket = by_kind.setdefault(kind, {"parts": 0, "chars": 0, "tokens": 0})
         bucket["parts"] = int(bucket["parts"]) + 1
