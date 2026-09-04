@@ -319,6 +319,11 @@ class ReviewProcessMetrics(BaseModel):
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    review_skill_loaded_count: int = Field(default=0, ge=0)
+    review_skill_chars: int = Field(default=0, ge=0)
+    review_skill_tokens: int = Field(default=0, ge=0)
+    review_skill_retrieval_latency_ms: float = Field(default=0.0, ge=0.0)
+    review_skill_fallback_count: int = Field(default=0, ge=0)
     graph_status: str = ""
     graph_cache_mode: str = "not_applicable"
     manifest_count: int = Field(default=0, ge=0)

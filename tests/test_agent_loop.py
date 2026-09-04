@@ -14,6 +14,7 @@ from src.analyzer.schemas import (
     DebugResponse,
     ReviewRequest,
 )
+from src.analyzer.review_skills import ReviewSkillLoader
 from src.models.exceptions import ModelTimeoutError
 from src.models.schemas import DraftFindingInput, TokenUsage
 from src.orchestrator.agent_loop import AgentOrchestrator
@@ -101,6 +102,83 @@ class SlowReadonlyTool(BaseTool):
         await asyncio.sleep(self._delay)
         self._events.append(self._name)
         return {"name": self._name}
+
+
+def test_review_skill_selection_is_pinned_across_fake_model_iterations(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("REVIEW_SKILL_RETRIEVAL_MODE", "deterministic")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "core.md").write_text("Core.", encoding="utf-8")
+    bank = skills_dir / "learned.jsonl"
+    first_record = {
+        "id": "skill-first",
+        "status": "active",
+        "category": "contracts",
+        "principle": "Check the Python contract.",
+        "why": "Callers retain it.",
+        "languages": ["python"],
+        "source_feedback_ids": [],
+    }
+    bank.write_text(json.dumps(first_record) + "\n", encoding="utf-8")
+    orchestrator = AgentOrchestrator(
+        review_skill_loader=ReviewSkillLoader(skills_dir),
+        context_mode="agent_search",
+    )
+    captured = []
+
+    class _CaptureEngine:
+        async def analyze(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.append((kwargs["skill_selection"], kwargs["skill_telemetry"]))
+            return AnalysisPlan(), TokenUsage(total_tokens=0)
+
+    monkeypatch.setattr(orchestrator, "_build_engine", lambda: _CaptureEngine())
+    request = ReviewRequest(
+        repo_path=str(tmp_path),
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        ),
+    )
+    orchestrator._reset_run(2, str(tmp_path))  # noqa: SLF001
+    state = orchestrator.prepare_context(request)
+    asyncio.run(orchestrator.analyze(state, request, []))
+    second_record = {**first_record, "id": "skill-second"}
+    bank.write_text(
+        json.dumps(first_record) + "\n" + json.dumps(second_record) + "\n",
+        encoding="utf-8",
+    )
+    orchestrator._iteration = 1  # noqa: SLF001
+    asyncio.run(orchestrator.analyze(state, request, []))
+
+    assert [item.skill.id for item in captured[0][0].selected] == ["skill-first"]
+    assert captured[0][0] is captured[1][0]
+    assert captured[0][1]["reused_pinned_selection"] is False
+    assert captured[1][1]["reused_pinned_selection"] is True
+    assert "old" not in json.dumps(captured[0][1])
+
+
+def test_review_skill_selection_falls_back_to_complete_core(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("REVIEW_SKILL_RETRIEVAL_MODE", "deterministic")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    core = "Core must remain complete."
+    (skills_dir / "core.md").write_text(core, encoding="utf-8")
+    (skills_dir / "learned.jsonl").write_text("", encoding="utf-8")
+    orchestrator = AgentOrchestrator(
+        review_skill_loader=ReviewSkillLoader(skills_dir, max_chars=20)
+    )
+    orchestrator._reset_run(1, str(tmp_path))  # noqa: SLF001
+    selection, telemetry = orchestrator._select_review_skills(  # noqa: SLF001
+        "", orchestrator.prepare_context(ReviewRequest(repo_path=str(tmp_path)))
+    )
+    assert core in selection.context
+    assert telemetry["fallback"] is True
+    assert telemetry["error_class"] == "ValueError"
 
 
 def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:

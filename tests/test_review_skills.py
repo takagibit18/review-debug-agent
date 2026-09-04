@@ -272,6 +272,8 @@ def test_query_extracts_diff_and_optional_graph_signals() -> None:
     assert enriched.changed_symbols == ("load", "view.render")
     assert enriched.change_kinds == ("api_handler",)
     assert enriched.graph_edge_kinds == ("calls",)
+
+
 def test_sequential_selection_accounts_for_records_after_budget_break(
     tmp_path: Path,
 ) -> None:
@@ -288,3 +290,25 @@ def test_sequential_selection_accounts_for_records_after_budget_break(
         ("skill-first", "budget"),
         ("skill-second", "after_budget_break"),
     )
+
+
+def test_prompt_accepts_an_explicit_deterministic_selection(tmp_path: Path) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-python", languages=["python"]),
+            _record("skill-rust", languages=["rust"]),
+        ],
+    )
+    selection = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("app.py",), ("python",), "")
+    )
+    messages = build_review_messages(
+        ReviewRequest(repo_path="."),
+        ContextState(context_mode="agent_search"),
+        "",
+        {},
+        skill_selection=selection,
+    )
+    assert "Principle skill-python" in messages[0].content
+    assert "Principle skill-rust" not in messages[0].content
