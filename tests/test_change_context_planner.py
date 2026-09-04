@@ -405,3 +405,58 @@ def test_manifest_respects_base_prompt_budget(
         expected["candidate_id"]
     ]
     assert payload["truncated"]["any"] is True
+
+
+def test_multi_hop_production_path_keeps_compact_endpoint_signatures_under_budget(
+    tmp_path: Path,
+) -> None:
+    leaf_body = "".join(
+        f"    value_{index} = value + {index}\n" for index in range(80)
+    )
+    source = _write(
+        tmp_path / "flow.py",
+        "def leaf(value):\n"
+        + leaf_body
+        + "    return value_79\n\n"
+        + "def middle(value):\n    return leaf(value)\n\n"
+        + "def entry(value):\n    return middle(value)  # changed\n",
+    )
+    entry_line = source.read_text(encoding="utf-8").splitlines().index(
+        "    return middle(value)  # changed"
+    ) + 1
+    diff = _diff(
+        "flow.py",
+        entry_line,
+        "    return middle(value)",
+        "    return middle(value)  # changed",
+    )
+
+    graph, _, result = _plan(
+        tmp_path,
+        [source],
+        diff,
+        max_depth=2,
+        max_nodes=20,
+        max_context_tokens=180,
+    )
+    manifest = result.manifests[0]
+    production_paths = [
+        path
+        for path in manifest.included_graph_paths
+        if len(path.edges) >= 2 and path.semantic_role == "execution_flow"
+    ]
+
+    assert manifest.required_production_path_count == 1
+    assert manifest.missing_production_path_count == 0
+    assert production_paths
+    leaf_node_ids = {
+        node_id for path in production_paths for node_id in path.node_ids
+        if graph.nodes[node_id].name == "leaf"
+    }
+    assert leaf_node_ids
+    leaf_symbol_ids = {graph.nodes[node_id].symbol_id for node_id in leaf_node_ids}
+    assert any(
+        span.symbol_id in leaf_symbol_ids
+        and span.start_line == span.end_line
+        for span in manifest.included_spans
+    )

@@ -460,12 +460,25 @@ class ChangeCenteredContextPlanner:
             return
 
         candidate_spans: list[IncludedSpan] = []
+        # A multi-hop production path is primarily a navigation contract: it
+        # tells the reviewer which runtime symbols and edges must be followed.
+        # Including every body on that path makes the planner spend its small
+        # source-span budget before the path itself can reach the reviewer.
+        # Keep endpoint signatures for multi-hop production paths; the normal
+        # file/symbol tools can hydrate the full bodies when the path is used.
+        compact_path_evidence = (
+            len(path) >= 2 and self._path_role_priority(anchor, path) == 0
+        )
         for node_id in new_nodes:
             node = graph.nodes.get(node_id)
             if node is None or node.kind in {NodeKind.FILE, NodeKind.CHANGED_HUNK}:
                 continue
             candidate_spans.append(
-                self._node_span(node, role=self._semantic_role(anchor, path))
+                self._node_span(
+                    node,
+                    role=self._semantic_role(anchor, path),
+                    signature_only=compact_path_evidence,
+                )
             )
         additional_tokens = sum(
             span.token_cost
