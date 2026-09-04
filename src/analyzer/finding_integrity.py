@@ -21,6 +21,7 @@ from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
 from src.analyzer.verifier_context import (
     build_candidate_verifier_context,
+    context_budget_exhausted_for_evidence,
     context_budget_exhausted_for_location,
     location_in_candidate_context,
     provenance_in_candidate_context,
@@ -359,8 +360,11 @@ class FindingIntegrityGuard:
         if evidence_location.valid and not provenance_in_candidate_context(
             context, evidence_item
         ):
-            budget_exhausted = context_budget_exhausted_for_location(
-                context, evidence_location
+            evidence_role = field.partition("_evidence")[0]
+            budget_exhausted = context_budget_exhausted_for_evidence(
+                context,
+                evidence_item,
+                role=evidence_role,
             )
             failures.append(
                 IntegrityFailure(
