@@ -65,6 +65,10 @@ class AgentSearchContextStrategy:
                 "selected_reviewer_path_count": 0,
                 "dropped_repeated_prefix_path_count": 0,
                 "selected_direct_path_count": 0,
+                "selected_production_path_count": 0,
+                "selected_low_hop_path_count": 0,
+                "required_production_path_count": 0,
+                "missing_production_path_count": 0,
                 "graph_reviewer_context_token_estimate": 0,
                 "path_selection_reason_counts": {},
             },
@@ -109,6 +113,10 @@ class GraphHybridContextStrategy:
                     "selected_reviewer_path_count": 0,
                     "dropped_repeated_prefix_path_count": 0,
                     "selected_direct_path_count": 0,
+                    "selected_production_path_count": 0,
+                    "selected_low_hop_path_count": 0,
+                    "required_production_path_count": 0,
+                    "missing_production_path_count": 0,
                     "graph_reviewer_context_token_estimate": 0,
                     "path_selection_reason_counts": {},
                 },
@@ -205,6 +213,10 @@ class GraphHybridContextStrategy:
                 plan.dropped_repeated_prefix_path_count
             ),
             "selected_direct_path_count": plan.selected_direct_path_count,
+            "selected_production_path_count": plan.selected_production_path_count,
+            "selected_low_hop_path_count": plan.selected_low_hop_path_count,
+            "required_production_path_count": plan.required_production_path_count,
+            "missing_production_path_count": plan.missing_production_path_count,
             "graph_reviewer_context_token_estimate": (
                 plan.graph_reviewer_context_token_estimate
             ),
@@ -288,6 +300,10 @@ class GraphHybridContextStrategy:
                     plan.dropped_repeated_prefix_path_count
                 ),
                 "selected_direct_path_count": plan.selected_direct_path_count,
+                "selected_production_path_count": plan.selected_production_path_count,
+                "selected_low_hop_path_count": plan.selected_low_hop_path_count,
+                "required_production_path_count": plan.required_production_path_count,
+                "missing_production_path_count": plan.missing_production_path_count,
                 "graph_reviewer_context_token_estimate": (
                     plan.graph_reviewer_context_token_estimate
                 ),
@@ -329,6 +345,16 @@ class GraphHybridContextStrategy:
                         manifest.dropped_repeated_prefix_path_count
                     ),
                     "selected_direct_path_count": manifest.selected_direct_path_count,
+                    "selected_production_path_count": (
+                        manifest.selected_production_path_count
+                    ),
+                    "selected_low_hop_path_count": manifest.selected_low_hop_path_count,
+                    "required_production_path_count": (
+                        manifest.required_production_path_count
+                    ),
+                    "missing_production_path_count": (
+                        manifest.missing_production_path_count
+                    ),
                     "graph_reviewer_context_token_estimate": (
                         manifest.graph_reviewer_context_token_estimate
                     ),

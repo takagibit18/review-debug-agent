@@ -135,6 +135,9 @@ def test_depth_truncation_limits_execution_flow(tmp_path: Path) -> None:
     leaf_id = next(node_id for node_id in deep_nodes if "|leaf|" in node_id)
     assert leaf_id not in shallow_nodes
     assert leaf_id in deep_nodes
+    assert deep.manifests[0].required_production_path_count >= 1
+    assert deep.manifests[0].selected_production_path_count >= 1
+    assert deep.manifests[0].missing_production_path_count == 0
 
 
 def test_node_and_span_deduplication(tmp_path: Path) -> None:

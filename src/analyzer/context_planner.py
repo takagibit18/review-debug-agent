@@ -107,6 +107,10 @@ class CandidateContextManifest(BaseModel):
     selected_reviewer_path_count: int = Field(default=0, ge=0)
     dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
     selected_direct_path_count: int = Field(default=0, ge=0)
+    selected_production_path_count: int = Field(default=0, ge=0)
+    selected_low_hop_path_count: int = Field(default=0, ge=0)
+    required_production_path_count: int = Field(default=0, ge=0)
+    missing_production_path_count: int = Field(default=0, ge=0)
     graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
     path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
 
@@ -145,6 +149,10 @@ class ContextPlanResult(BaseModel):
     selected_reviewer_path_count: int = Field(default=0, ge=0)
     dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
     selected_direct_path_count: int = Field(default=0, ge=0)
+    selected_production_path_count: int = Field(default=0, ge=0)
+    selected_low_hop_path_count: int = Field(default=0, ge=0)
+    required_production_path_count: int = Field(default=0, ge=0)
+    missing_production_path_count: int = Field(default=0, ge=0)
     graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
     path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
 
@@ -208,6 +216,18 @@ class ChangeCenteredContextPlanner:
             ),
             selected_direct_path_count=sum(
                 item.selected_direct_path_count for item in manifests
+            ),
+            selected_production_path_count=sum(
+                item.selected_production_path_count for item in manifests
+            ),
+            selected_low_hop_path_count=sum(
+                item.selected_low_hop_path_count for item in manifests
+            ),
+            required_production_path_count=sum(
+                item.required_production_path_count for item in manifests
+            ),
+            missing_production_path_count=sum(
+                item.missing_production_path_count for item in manifests
             ),
             graph_reviewer_context_token_estimate=sum(
                 item.graph_reviewer_context_token_estimate for item in manifests
@@ -283,14 +303,42 @@ class ChangeCenteredContextPlanner:
             scored = sorted(
                 ((self._path_score(anchor, path), path) for path in unique_paths),
                 key=lambda item: (
+                    self._path_role_priority(anchor, item[1]),
                     0 if len(item[1]) == 1 else 1,
-                    len(item[1]),
                     -item[0],
                     self._path_id(item[1]),
                 ),
             )
             prefix_counts: dict[str, int] = {}
+            required_production_paths = [
+                item
+                for item in sorted(
+                    ((score, path) for score, path in scored),
+                    key=lambda item: (-item[0], len(item[1]), self._path_id(item[1])),
+                )
+                if len(item[1]) >= 2
+                and self._path_role_priority(anchor, item[1]) == 0
+            ]
+            manifest.required_production_path_count = min(
+                1, len(required_production_paths)
+            )
+            required_path_ids: set[str] = set()
+            if required_production_paths:
+                score, path = required_production_paths[0]
+                required_path_ids.add(self._path_id(path))
+                self._consider_path(
+                    graph,
+                    anchor,
+                    manifest,
+                    path,
+                    score,
+                    selected_nodes,
+                    used_spans,
+                    prefix_counts,
+                )
             for score, path in scored:
+                if self._path_id(path) in required_path_ids:
+                    continue
                 self._consider_path(
                     graph,
                     anchor,
@@ -310,6 +358,18 @@ class ChangeCenteredContextPlanner:
         manifest.selected_reviewer_path_count = len(manifest.included_graph_paths)
         manifest.selected_direct_path_count = sum(
             len(path.edges) == 1 for path in manifest.included_graph_paths
+        )
+        manifest.selected_production_path_count = sum(
+            self._is_production_path(path)
+            for path in manifest.included_graph_paths
+        )
+        manifest.selected_low_hop_path_count = sum(
+            len(path.edges) == 2 for path in manifest.included_graph_paths
+        )
+        manifest.missing_production_path_count = max(
+            0,
+            manifest.required_production_path_count
+            - manifest.selected_production_path_count,
         )
         manifest.dropped_repeated_prefix_path_count = manifest.path_selection_reason_counts.get(
             "repeated_first_hop_prefix", 0
@@ -807,6 +867,37 @@ class ChangeCenteredContextPlanner:
         manifest.path_selection_reason_counts[reason] = (
             manifest.path_selection_reason_counts.get(reason, 0) + 1
         )
+
+    @staticmethod
+    def _path_role_priority(
+        anchor: ChangedAnchor, path: list[RelationEdge]
+    ) -> int:
+        """Rank causal production paths ahead of tests and generic navigation."""
+
+        kinds = {edge.kind for edge in path}
+        if kinds & {EdgeKind.READS_FIELD, EdgeKind.WRITES_FIELD}:
+            return 0
+        if kinds & {EdgeKind.CALLS, EdgeKind.CALLED_BY}:
+            return 0
+        if EdgeKind.TESTED_BY in kinds:
+            return 2
+        # Keep the anchor's change type available for future role-specific
+        # ranking without treating generic graph structure as proof.
+        del anchor
+        return 1
+
+    @classmethod
+    def _is_production_path(cls, path: IncludedGraphPath) -> bool:
+        kinds = {edge.kind for edge in path.edges}
+        return bool(
+            kinds
+            & {
+                EdgeKind.CALLS.value,
+                EdgeKind.CALLED_BY.value,
+                EdgeKind.READS_FIELD.value,
+                EdgeKind.WRITES_FIELD.value,
+            }
+        ) and path.semantic_role != "related_test"
 
     @staticmethod
     def _path_explanation(
