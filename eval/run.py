@@ -145,6 +145,18 @@ def crawl_cmd(
     help="Graph cache contract for this variant.",
 )
 @click.option(
+    "--skill-retrieval-mode",
+    default=None,
+    type=click.Choice(["sequential", "deterministic"]),
+    help="Review Skill loading mode for this variant.",
+)
+@click.option(
+    "--skill-bank-path",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Optional fixed Review Skill Bank directory.",
+)
+@click.option(
     "--output-json",
     default=None,
     type=click.Path(exists=False),
@@ -174,6 +186,8 @@ def eval_cmd(
     variant_id: str | None,
     context_mode: str | None,
     graph_cache_mode: str | None,
+    skill_retrieval_mode: str | None,
+    skill_bank_path: str | None,
     output_json: str | None,
     repo_filters: tuple[str, ...],
     fixture_id_filters: tuple[str, ...],
@@ -194,6 +208,10 @@ def eval_cmd(
             ),
             context_mode=selected_mode,
             graph_cache_mode=selected_cache_mode,
+            skill_retrieval_mode=(
+                skill_retrieval_mode or settings.review_skill_retrieval_mode
+            ),
+            skill_bank_path=skill_bank_path or "",
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -424,6 +442,14 @@ async def _evaluate(
     )
     report.variant = variant
     report.matcher_version = EVAL_MATCHER_VERSION
+    bank_digests = {
+        item.skill_bank_digest for item in results if item.skill_bank_digest
+    }
+    if len(bank_digests) > 1:
+        raise click.ClickException(
+            "Skill Bank changed during eval; discard the run and rerun with a fixed bank."
+        )
+    report.skill_bank_digest = next(iter(bank_digests), "")
     report_path = save_report_json(report, output_path=output_json)
     artifact_paths = write_eval_artifacts(report, report_path)
     review_sheet = write_human_review_template(

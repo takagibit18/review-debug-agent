@@ -18,6 +18,7 @@ EvalGraphCacheMode = Literal["disabled", "cold", "warm"]
 StructuralScope = Literal["local", "direct_cross_file", "multi_hop"]
 ReviewPatchScope = Literal["legacy", "full_pr", "partial_pr"]
 EVAL_MATCHER_VERSION = "semantic-v2"
+EvalSkillRetrievalMode = Literal["sequential", "deterministic"]
 
 
 class EvalVariant(BaseModel):
@@ -26,6 +27,8 @@ class EvalVariant(BaseModel):
     id: str = Field(min_length=1)
     context_mode: ReviewContextMode
     graph_cache_mode: EvalGraphCacheMode
+    skill_retrieval_mode: EvalSkillRetrievalMode = "sequential"
+    skill_bank_path: str = ""
 
     @model_validator(mode="after")
     def _mode_cache_contract(self) -> EvalVariant:
@@ -98,6 +101,7 @@ class ExpectedResult(BaseModel):
     min_issues: int = Field(default=0, ge=0)
     max_issues: int | None = Field(default=None, ge=0)
     is_empty_annotation: bool = Field(default=False)
+    expected_skill_ids: list[str] | None = None
 
 
 class FixtureWorkspace(BaseModel):
@@ -411,6 +415,8 @@ class EvalResult(BaseModel):
     variant_id: str = ""
     context_mode: ReviewContextMode = "graph_hybrid"
     graph_cache_mode: EvalGraphCacheMode = "warm"
+    skill_retrieval_mode: EvalSkillRetrievalMode = "sequential"
+    skill_bank_digest: str = ""
     matcher_version: str = EVAL_MATCHER_VERSION
     run_id: str = Field(default="")
     schema_valid: bool = Field(default=False)
@@ -428,6 +434,12 @@ class EvalResult(BaseModel):
     final_finding_count: int = Field(default=0, ge=0)
     latency_seconds: float = Field(default=0.0, ge=0.0)
     total_tokens: int = Field(default=0, ge=0)
+    expected_skill_ids: list[str] | None = None
+    retrieved_skill_ids: list[str] = Field(default_factory=list)
+    skill_recall_at_k: float | None = Field(default=None, ge=0.0, le=1.0)
+    skill_precision_at_k: float | None = Field(default=None, ge=0.0, le=1.0)
+    skill_irrelevant_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    skill_budget_loss_count: int = Field(default=0, ge=0)
     event_log_path: str | None = Field(
         default=None,
         description="Absolute path to persisted event log under eval/outputs/event_logs (if available)",
@@ -585,6 +597,14 @@ class MetricSummary(BaseModel):
     human_acceptability_note: str = Field(
         default="Manual review template generated; scores are filled offline."
     )
+    skill_recall_at_k: float | None = Field(default=None, ge=0.0, le=1.0)
+    skill_precision_at_k: float | None = Field(default=None, ge=0.0, le=1.0)
+    skill_irrelevant_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    skill_budget_loss_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    avg_review_skill_loaded_count: float = Field(default=0.0, ge=0.0)
+    avg_review_skill_chars: float = Field(default=0.0, ge=0.0)
+    avg_review_skill_tokens: float = Field(default=0.0, ge=0.0)
+    avg_review_skill_retrieval_latency_ms: float = Field(default=0.0, ge=0.0)
 
     @staticmethod
     def _percentile(values: list[float], percentile: float) -> float:
@@ -614,6 +634,7 @@ class MetricSummary(BaseModel):
         process = _aggregate_process_metrics(results)
         quality = _aggregate_quality_metrics(results)
         structural = _aggregate_structural_metrics(results)
+        retrieval = _aggregate_skill_retrieval_metrics(results)
 
         return cls(
             schema_validity_rate=valid_count / len(results),
@@ -639,6 +660,7 @@ class MetricSummary(BaseModel):
             **quality,
             **process,
             **structural,
+            **retrieval,
         )
 
     @classmethod
@@ -662,6 +684,7 @@ class MetricSummary(BaseModel):
         process = _aggregate_process_metrics(all_runs)
         quality = _aggregate_quality_metrics(all_runs)
         structural = _aggregate_structural_metrics(all_runs)
+        retrieval = _aggregate_skill_retrieval_metrics(all_runs)
 
         return cls(
             schema_validity_rate=float(mean(schema_valid_values)),
@@ -685,6 +708,7 @@ class MetricSummary(BaseModel):
             **quality,
             **process,
             **structural,
+            **retrieval,
         )
 
 
@@ -864,6 +888,49 @@ def _aggregate_process_metrics(
         "consolidator_proposal_count": proposal_count,
         "consolidator_accepted_cluster_count": accepted_clusters,
         "consolidator_rejected_cluster_count": rejected_clusters,
+        "avg_review_skill_loaded_count": float(
+            mean(item.process_metrics.review_skill_loaded_count for item in results)
+        ),
+        "avg_review_skill_chars": float(
+            mean(item.process_metrics.review_skill_chars for item in results)
+        ),
+        "avg_review_skill_tokens": float(
+            mean(item.process_metrics.review_skill_tokens for item in results)
+        ),
+        "avg_review_skill_retrieval_latency_ms": float(
+            mean(
+                item.process_metrics.review_skill_retrieval_latency_ms
+                for item in results
+            )
+        ),
+    }
+
+
+def _aggregate_skill_retrieval_metrics(
+    results: list[EvalResult],
+) -> dict[str, float | None]:
+    annotated = [item for item in results if item.expected_skill_ids is not None]
+    if not annotated:
+        return {
+            "skill_recall_at_k": None,
+            "skill_precision_at_k": None,
+            "skill_irrelevant_rate": None,
+            "skill_budget_loss_rate": None,
+        }
+    expected = sum(len(set(item.expected_skill_ids or [])) for item in annotated)
+    retrieved = sum(len(set(item.retrieved_skill_ids)) for item in annotated)
+    matched = sum(
+        len(set(item.expected_skill_ids or []) & set(item.retrieved_skill_ids))
+        for item in annotated
+    )
+    budget_losses = sum(item.skill_budget_loss_count for item in annotated)
+    return {
+        "skill_recall_at_k": matched / expected if expected else 1.0,
+        "skill_precision_at_k": matched / retrieved if retrieved else 1.0,
+        "skill_irrelevant_rate": (
+            (retrieved - matched) / retrieved if retrieved else 0.0
+        ),
+        "skill_budget_loss_rate": budget_losses / expected if expected else 0.0,
     }
 
 
@@ -901,6 +968,7 @@ class EvalReport(BaseModel):
     suite: str = Field(default="golden")
     variant: EvalVariant | None = None
     matcher_version: str = EVAL_MATCHER_VERSION
+    skill_bank_digest: str = ""
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     fixture_count: int = Field(default=0, ge=0)
     metrics: MetricSummary = Field(default_factory=MetricSummary)

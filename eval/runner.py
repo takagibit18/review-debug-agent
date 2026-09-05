@@ -41,6 +41,7 @@ from src.analyzer.schemas import (
     ReviewRequest,
     ReviewResponse,
 )
+from src.analyzer.review_skills import ReviewSkillLoader
 from src.config import get_settings
 from src.orchestrator.agent_loop import AgentOrchestrator
 
@@ -767,6 +768,12 @@ async def run_single(
                 review_diff_first_changed_files=True,
                 relation_graph_index_path=relation_graph_index_path,
                 context_mode=selected_variant.context_mode,
+                review_skill_retrieval_mode=selected_variant.skill_retrieval_mode,
+                review_skill_loader=(
+                    ReviewSkillLoader(selected_variant.skill_bank_path)
+                    if selected_variant.skill_bank_path
+                    else None
+                ),
             )
             sandbox_context = _build_fixture_context(fixture, repo_root)
 
@@ -825,10 +832,19 @@ async def run_single(
             placeholder = _is_placeholder_response(parsed_response)
             empty_business_output = _is_empty_business_output(parsed_response)
             schema_valid = _eval_schema_valid(parsed_response)
+            selection = getattr(orchestrator, "review_skill_selection", None)
+            variant_fields = _variant_result_fields(selected_variant)
+            if selection is not None:
+                variant_fields["skill_bank_digest"] = selection.bank_digest
+            skill_metrics = _skill_result_fields(
+                fixture.expected.expected_skill_ids,
+                [item.skill.id for item in selection.selected] if selection else [],
+                selection.skipped if selection else (),
+            )
             return EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
-                **_variant_result_fields(selected_variant),
+                **variant_fields,
                 run_id=parsed_response.run_id,
                 schema_valid=schema_valid,
                 expected_count=expected_count,
@@ -838,6 +854,7 @@ async def run_single(
                 **root_cause_quality,
                 latency_seconds=latency,
                 total_tokens=total_tokens,
+                **skill_metrics,
                 event_log_path=event_log_path,
                 stage_timings=stage_timings,
                 error=(
@@ -1744,11 +1761,48 @@ def _default_eval_variant() -> EvalVariant:
 
 
 def _variant_result_fields(variant: EvalVariant) -> dict[str, str]:
-    return {
+    fields = {
         "variant_id": variant.id,
         "context_mode": variant.context_mode,
         "graph_cache_mode": variant.graph_cache_mode,
+        "skill_retrieval_mode": variant.skill_retrieval_mode,
         "matcher_version": EVAL_MATCHER_VERSION,
+    }
+    if variant.skill_bank_path:
+        fields["skill_bank_digest"] = ReviewSkillLoader(
+            variant.skill_bank_path
+        ).bank_digest()
+    return fields
+
+
+def _skill_result_fields(
+    expected: list[str] | None,
+    retrieved: list[str],
+    skipped: tuple[tuple[str, str], ...],
+) -> dict[str, Any]:
+    if expected is None:
+        return {"expected_skill_ids": None, "retrieved_skill_ids": retrieved}
+    expected_set = set(expected)
+    retrieved_set = set(retrieved)
+    matched = len(expected_set & retrieved_set)
+    irrelevant = len(retrieved_set - expected_set)
+    budget_losses = sum(
+        skill_id in expected_set and reason in {"budget", "after_budget_break"}
+        for skill_id, reason in skipped
+    )
+    return {
+        "expected_skill_ids": expected,
+        "retrieved_skill_ids": retrieved,
+        "skill_recall_at_k": matched / len(expected_set) if expected_set else 1.0,
+        "skill_precision_at_k": (
+            matched / len(retrieved_set)
+            if retrieved_set
+            else (1.0 if not expected_set else 0.0)
+        ),
+        "skill_irrelevant_rate": (
+            irrelevant / len(retrieved_set) if retrieved_set else 0.0
+        ),
+        "skill_budget_loss_count": budget_losses,
     }
 
 
