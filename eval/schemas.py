@@ -29,6 +29,9 @@ class EvalVariant(BaseModel):
     graph_cache_mode: EvalGraphCacheMode
     skill_retrieval_mode: EvalSkillRetrievalMode = "sequential"
     skill_bank_path: str = ""
+    skill_top_k: int | None = Field(default=None, ge=0, le=50)
+    skill_char_budget: int | None = Field(default=None, ge=64, le=100_000)
+    skill_legacy_fallback_limit: int | None = Field(default=None, ge=0, le=50)
 
     @model_validator(mode="after")
     def _mode_cache_contract(self) -> EvalVariant:
@@ -417,6 +420,9 @@ class EvalResult(BaseModel):
     graph_cache_mode: EvalGraphCacheMode = "warm"
     skill_retrieval_mode: EvalSkillRetrievalMode = "sequential"
     skill_bank_digest: str = ""
+    skill_top_k: int = Field(default=5, ge=0, le=50)
+    skill_char_budget: int = Field(default=4_000, ge=64, le=100_000)
+    skill_legacy_fallback_limit: int = Field(default=1, ge=0, le=50)
     matcher_version: str = EVAL_MATCHER_VERSION
     run_id: str = Field(default="")
     schema_valid: bool = Field(default=False)

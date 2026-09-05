@@ -157,6 +157,27 @@ def crawl_cmd(
     help="Optional fixed Review Skill Bank directory.",
 )
 @click.option(
+    "--skill-top-k",
+    default=None,
+    type=click.IntRange(min=0, max=50),
+    help="Optional Review Skill Top-K override; defaults to REVIEW_SKILL_TOP_K.",
+)
+@click.option(
+    "--skill-char-budget",
+    default=None,
+    type=click.IntRange(min=64, max=100_000),
+    help="Optional Review Skill char budget; defaults to REVIEW_SKILL_CHAR_BUDGET.",
+)
+@click.option(
+    "--skill-legacy-fallback-limit",
+    default=None,
+    type=click.IntRange(min=0, max=50),
+    help=(
+        "Optional legacy fallback cap; defaults to "
+        "REVIEW_SKILL_LEGACY_FALLBACK_LIMIT."
+    ),
+)
+@click.option(
     "--output-json",
     default=None,
     type=click.Path(exists=False),
@@ -188,6 +209,9 @@ def eval_cmd(
     graph_cache_mode: str | None,
     skill_retrieval_mode: str | None,
     skill_bank_path: str | None,
+    skill_top_k: int | None,
+    skill_char_budget: int | None,
+    skill_legacy_fallback_limit: int | None,
     output_json: str | None,
     repo_filters: tuple[str, ...],
     fixture_id_filters: tuple[str, ...],
@@ -212,6 +236,9 @@ def eval_cmd(
                 skill_retrieval_mode or settings.review_skill_retrieval_mode
             ),
             skill_bank_path=skill_bank_path or "",
+            skill_top_k=skill_top_k,
+            skill_char_budget=skill_char_budget,
+            skill_legacy_fallback_limit=skill_legacy_fallback_limit,
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
