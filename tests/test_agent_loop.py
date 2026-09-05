@@ -6,6 +6,8 @@ import asyncio
 import json
 from pathlib import Path, PurePath
 
+import pytest
+
 from src.analyzer.event_log import EventType
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import (
@@ -160,7 +162,7 @@ def test_review_skill_selection_is_pinned_across_fake_model_iterations(
     assert "old" not in json.dumps(captured[0][1])
 
 
-def test_review_skill_selection_falls_back_to_complete_core(
+def test_review_skill_selection_rejects_core_over_hard_budget(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("REVIEW_SKILL_RETRIEVAL_MODE", "deterministic")
@@ -173,12 +175,38 @@ def test_review_skill_selection_falls_back_to_complete_core(
         review_skill_loader=ReviewSkillLoader(skills_dir, max_chars=20)
     )
     orchestrator._reset_run(1, str(tmp_path))  # noqa: SLF001
+    with pytest.raises(ValueError, match="Core exceeds"):
+        orchestrator._select_review_skills(  # noqa: SLF001
+            "", orchestrator.prepare_context(ReviewRequest(repo_path=str(tmp_path)))
+        )
+
+
+def test_review_skill_selection_falls_back_to_core_only_on_selector_error(
+    tmp_path: Path,
+) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "core.md").write_text("Core remains available.", encoding="utf-8")
+    (skills_dir / "learned.jsonl").write_text("", encoding="utf-8")
+
+    class _FailingLoader(ReviewSkillLoader):
+        def retrieve(self, query, *, top_k=5):  # type: ignore[no-untyped-def]
+            raise RuntimeError("selector unavailable")
+
+    loader = _FailingLoader(skills_dir, max_chars=128)
+    orchestrator = AgentOrchestrator(
+        review_skill_loader=loader,
+        review_skill_retrieval_mode="deterministic",
+    )
+    orchestrator._reset_run(1, str(tmp_path))  # noqa: SLF001
     selection, telemetry = orchestrator._select_review_skills(  # noqa: SLF001
         "", orchestrator.prepare_context(ReviewRequest(repo_path=str(tmp_path)))
     )
-    assert core in selection.context
+    assert "Core remains available." in selection.context
+    assert selection.selected == ()
     assert telemetry["fallback"] is True
-    assert telemetry["error_class"] == "ValueError"
+    assert telemetry["error_class"] == "RuntimeError"
+    assert telemetry["char_budget"] == 128
 
 
 def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:

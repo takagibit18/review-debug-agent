@@ -23,7 +23,6 @@ from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.output_formatter import ReviewReport
 from src.analyzer.review_policy import evaluate_issue_filter
 from src.analyzer.review_skills import (
-    DEFAULT_SKILL_CHAR_BUDGET,
     RETRIEVAL_VERSION,
     ReviewSkillLoader,
     SkillSelection,
@@ -89,6 +88,7 @@ class AgentOrchestrator:
         context_mode: ReviewContextMode | None = None,
         context_strategy: ContextStrategy | None = None,
         review_skill_loader: ReviewSkillLoader | None = None,
+        review_skill_retrieval_mode: Literal["sequential", "deterministic"] | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -171,6 +171,9 @@ class AgentOrchestrator:
         )
         self._context_strategy_override = context_strategy
         self._review_skill_loader = review_skill_loader
+        self._review_skill_retrieval_mode = (
+            review_skill_retrieval_mode or self._settings.review_skill_retrieval_mode
+        )
         self._review_skill_selection: SkillSelection | None = None
         self._review_skill_telemetry: dict[str, Any] = {}
         self._review_workflow = ReviewWorkflowTracker()
@@ -1100,7 +1103,7 @@ class AgentOrchestrator:
             fallback = False
             error_class = ""
             try:
-                if self._settings.review_skill_retrieval_mode == "deterministic":
+                if self._review_skill_retrieval_mode == "deterministic":
                     query = build_skill_query(
                         diff_text, state.candidate_context_manifests
                     )
@@ -1114,15 +1117,17 @@ class AgentOrchestrator:
                 error_class = exc.__class__.__name__
                 try:
                     selection = loader.core_only()
-                except ValueError:
-                    safe_loader = ReviewSkillLoader(
-                        loader.skills_dir,
-                        max_chars=max(
-                            DEFAULT_SKILL_CHAR_BUDGET,
-                            len(loader.load_core()) + 64,
-                        ),
+                except ValueError as core_exc:
+                    self._record_event(
+                        EventType.ERROR,
+                        "review_skills",
+                        {
+                            "error_type": core_exc.__class__.__name__,
+                            "fallback": "failed",
+                            "reason": "core_exceeds_hard_budget",
+                        },
                     )
-                    selection = safe_loader.core_only()
+                    raise
                 self._record_event(
                     EventType.ERROR,
                     "review_skills",
@@ -1130,7 +1135,7 @@ class AgentOrchestrator:
                 )
             ids = [item.skill.id for item in selection.selected]
             selection_id = hashlib.sha256(
-                f"{self._settings.review_skill_retrieval_mode}:{selection.bank_digest}:{ids}".encode()
+                f"{self._review_skill_retrieval_mode}:{selection.bank_digest}:{ids}".encode()
             ).hexdigest()[:16]
             reason_counts: dict[str, int] = {}
             for _, reason in selection.skipped:
@@ -1138,7 +1143,7 @@ class AgentOrchestrator:
             self._review_skill_selection = selection
             self._review_skill_telemetry = {
                 "retrieval_version": RETRIEVAL_VERSION,
-                "mode": self._settings.review_skill_retrieval_mode,
+                "mode": self._review_skill_retrieval_mode,
                 "selection_id": selection_id,
                 "bank_digest": selection.bank_digest,
                 "total_records": selection.total_records,
@@ -1161,7 +1166,7 @@ class AgentOrchestrator:
                 ],
                 "skipped_count_by_reason": reason_counts,
                 "top_k": self._settings.review_skill_top_k,
-                "char_budget": self._settings.review_skill_char_budget,
+                "char_budget": loader.max_chars,
                 "core_chars": selection.core_chars,
                 "learned_chars": selection.learned_chars,
                 "total_chars": selection.total_chars,
@@ -1176,6 +1181,12 @@ class AgentOrchestrator:
         telemetry["reused_pinned_selection"] = reused
         assert self._review_skill_selection is not None
         return self._review_skill_selection, telemetry
+
+    @property
+    def review_skill_selection(self) -> SkillSelection | None:
+        """Expose the pinned selection for eval artifact generation."""
+
+        return self._review_skill_selection
 
     def _review_tool_specs_for_stage(
         self,
