@@ -13,6 +13,7 @@ from src.analyzer.review_skills import (
     ReviewSkill,
     ReviewSkillLoader,
     SkillQuery,
+    _match_skill,
     build_skill_query,
 )
 from src.analyzer.schemas import ReviewRequest
@@ -156,6 +157,126 @@ def test_optional_metadata_is_normalized_and_malformed_values_fall_back() -> Non
     assert old is not None and old.description == old.principle
     assert malformed is not None
     assert malformed.languages == malformed.path_globs == malformed.triggers == ()
+    assert malformed.metadata_warnings == ("languages", "path_globs", "triggers")
+    assert old.metadata_warnings == ()
+
+
+def test_scoped_trigger_is_a_relevance_gate(tmp_path: Path) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record(
+                "skill-async",
+                languages=["python"],
+                path_globs=["**/*.py"],
+                triggers=["asyncio"],
+            )
+        ],
+    )
+    query = build_skill_query(
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n+++ b/app.py\n"
+        "@@ -1 +1 @@\n-value = old(value)\n+value = format(value)\n"
+    )
+
+    result = ReviewSkillLoader(tmp_path).retrieve(query)
+
+    assert result.selected == ()
+    assert dict(result.skipped)["skill-async"] == "trigger_mismatch"
+
+
+def test_malformed_metadata_is_skipped_but_missing_metadata_remains_legacy(
+    tmp_path: Path,
+) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-missing"),
+            _record(
+                "skill-malformed",
+                languages="python",
+                path_globs=["**/*.py"],
+                triggers=["asyncio"],
+            ),
+        ],
+    )
+
+    result = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("app.py",), ("python",), "app.py ordinary")
+    )
+
+    assert [item.skill.id for item in result.selected] == ["skill-missing"]
+    assert dict(result.skipped)["skill-malformed"] == "malformed_metadata"
+    assert result.unscoped_active_records == 1
+    assert result.malformed_active_records == 1
+    assert result.legacy_only_fallback is True
+
+
+def test_malformed_metadata_changes_bank_digest(tmp_path: Path) -> None:
+    missing = _record("skill-one")
+    malformed = _record("skill-one", languages="python")
+    (tmp_path / "core.md").write_text("Core invariant.", encoding="utf-8")
+    bank = tmp_path / "learned.jsonl"
+
+    bank.write_text(json.dumps(missing) + "\n", encoding="utf-8")
+    missing_digest = ReviewSkillLoader(tmp_path).bank_digest()
+    bank.write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+    malformed_digest = ReviewSkillLoader(tmp_path).bank_digest()
+
+    assert missing_digest != malformed_digest
+
+
+def test_no_scoped_match_respects_legacy_fallback_limit(tmp_path: Path) -> None:
+    _write_records(
+        tmp_path,
+        [_record(f"legacy-{index:02d}") for index in range(20)],
+    )
+
+    result = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("app.py",), ("python",), "app.py"), top_k=5
+    )
+
+    assert [item.skill.id for item in result.selected] == ["legacy-00"]
+    assert len(result.skipped) == 19
+    assert all(reason == "legacy_fallback_limit" for _, reason in result.skipped)
+    assert result.legacy_only_fallback is True
+
+
+def test_score_weights_are_capped_per_signal_category() -> None:
+    query = SkillQuery(
+        ("app.py",),
+        ("python",),
+        "app.py asyncio import",
+        graph_edge_kinds=("calls",),
+    )
+    skills = [
+        _record("skill-trigger", triggers=("asyncio",)),
+        _record("skill-path-language", languages=("python",), path_globs=("**/*.py",)),
+        _record(
+            "skill-graph",
+            languages=("python",),
+            path_globs=("**/*.py",),
+            triggers=("calls",),
+        ),
+        _record("skill-multi-trigger", triggers=("asyncio", "import")),
+        _record(
+            "skill-multi-path",
+            languages=("python",),
+            path_globs=("**/*.py", "app.py"),
+        ),
+    ]
+
+    for record in skills:
+        skill = ReviewSkill.from_record(record)
+        assert skill is not None
+        match, reason = _match_skill(skill, query)
+        assert match is not None, reason
+        if skill.id in {"skill-trigger", "skill-multi-trigger"}:
+            assert match.score == 100
+        elif skill.id == "skill-graph":
+            assert match.score == 75
+        else:
+            assert match.score == 60
 
 
 def test_retrieval_filters_status_and_explicit_scope_then_ranks_signals(

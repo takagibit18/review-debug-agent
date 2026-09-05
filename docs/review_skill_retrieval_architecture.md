@@ -289,12 +289,12 @@ loader.render() -> str  # legacy compatibility only
 
 - missing `description`：使用 `principle` 作为显示/未来 lexical fallback；
 - missing `languages/path_globs/triggers`：视为 `unscoped_legacy`，不报错；
-- malformed optional metadata：规范化失败后回落为空并记录 metadata warning，不丢弃整个合法 principle；
+- malformed optional metadata：保留合法 principle，但记录具体字段 warning；deterministic retrieval 跳过该 record，legacy sequential 仍可兼容加载；
 - existing required fields/status 的错误仍沿用当前 fail/skip 行为；
 - status rewrite 必须保留所有新 metadata，避免 `SkillStore.update_status()` 重建对象时丢字段；
 - migration 不重写全库。新 proposal 开始写 metadata，旧 active skills 逐条回填。
 
-兼容 rollout：如果已有旧 active skill，unscoped records 以最低分进入 fallback pool。存在 scoped match 时最多补 1 条 legacy；完全没有 scoped match 时允许按 Top-K fallback，避免升级后所有旧经验突然消失。Telemetry 暴露 `unscoped_active_count`，完成回填后可收紧策略。当前仓库为 0 learned，迁移负担实际上为零。
+兼容 rollout：如果已有旧 active skill，unscoped records 以最低分进入 fallback pool。存在或不存在 scoped match 时都最多补 `legacy_fallback_limit` 条 legacy；deterministic selection 会记录 `legacy_only_fallback` 与 `unscoped_active_count`，完成回填后可将 limit 收紧到 0。需要保留旧行为时使用 sequential rollback；当前仓库为 0 learned，迁移负担实际上为零。
 
 ## 8. Retrieval algorithm
 
@@ -313,8 +313,8 @@ loader.render() -> str  # legacy compatibility only
 1. status 非 active：硬排除；
 2. `languages` 非空且与 query 无交集：硬排除；
 3. `path_globs` 非空且无 changed path 命中：硬排除；
-4. trigger 作为强正向信号。只有 trigger metadata、没有 language/path scope 的 Skill 在 trigger 完全不命中时排除；已有 language/path scope 的 Skill 可保留低分，避免过严 trigger 导致 recall 损失；
-5. unscoped legacy 进入低分 fallback pool。
+4. `triggers` 是 relevance evidence：只要 Skill 声明了 trigger，lexical 或 graph trigger 至少命中一个，否则硬排除；没有 trigger 的 language/path Skill 才表示 scope 内通用；
+5. unscoped legacy 进入低分 fallback pool，但 deterministic 模式始终遵守 `legacy_fallback_limit`。
 
 ### 8.3 Deterministic score
 
@@ -407,7 +407,8 @@ AgentOrchestrator first analyze
 - oversized ranked skill 不阻塞后续可装 Skill；
 - Top-K respected；
 - deterministic ordering 与 JSONL file order independence；
-- malformed optional metadata fallback；
+- missing optional metadata 的 legacy compatibility；
+- malformed optional metadata 的 fail-safe skip 与 warning telemetry；
 - existing old JSONL compatibility；
 - Core always fully included；
 - selection pinned/bank digest stable；
@@ -429,7 +430,7 @@ AgentOrchestrator first analyze
 
 ### 11.3 Review quality A/B
 
-复用现有 Golden PR harness，不新建评测框架。`EvalVariant` 当前只有 context mode 与 graph cache mode，需要新增 `skill_retrieval_mode = sequential | deterministic` 和固定 Skill Bank fixture/snapshot。
+复用现有 Golden PR harness，不新建评测框架。`EvalVariant` 显式携带 `skill_retrieval_mode = sequential | deterministic`、固定 Skill Bank fixture/snapshot，以及可选的 `skill_top_k`、`skill_char_budget`、`skill_legacy_fallback_limit`。未显式指定时从同一组 Settings 解析，保证 Eval/Production parity。
 
 ```text
 baseline:  相同模型/温度/context mode/graph cache + sequential active loading
@@ -520,7 +521,7 @@ tests/test_review_workflow.py
 ## 14. Risks / open questions
 
 1. **Metadata authoring quality**：模型可提出 metadata，但 activation 前必须由人确认；错误的窄 scope 会造成 false negative。
-2. **Filter recall**：首版只把明确 language/path mismatch 作为 hard filter，trigger 多用于 ranking；等标注证明安全后再收紧。
+2. **Filter recall**：明确 language/path mismatch 与已声明 trigger 的零命中都属于 hard filter；没有 trigger 的 language/path scoped skill 才表示 scope 内通用。holdout 需要覆盖 lexical miss、graph-only hit 与同语言 hard negative，证明该 gate 没有误杀。
 3. **Language mapping fragmentation**：Graph 只支持 py/rs/cs，而 ContextBuilder 已知道 js/ts/tsx 邻居。应有一个 lightweight shared mapper，不能误称 Graph 已覆盖 TypeScript。
 4. **CLI diff timing**：当前本地 `--diff` 在 Graph prepare 后才读取。Retrieval 可在 analyze 覆盖，但若未来要统一 Graph+Skill signals，应单独把 effective diff resolution 前移并做回归测试。
 5. **Core 与 hard budget 冲突**：当前会截断 Core。推荐 CI 保证完整 Core fit；运行时发现超限应 telemetry + 禁止 learned skills，不应静默切断 invariant 文本。

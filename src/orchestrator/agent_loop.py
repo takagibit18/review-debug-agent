@@ -89,6 +89,7 @@ class AgentOrchestrator:
         context_strategy: ContextStrategy | None = None,
         review_skill_loader: ReviewSkillLoader | None = None,
         review_skill_retrieval_mode: Literal["sequential", "deterministic"] | None = None,
+        review_skill_top_k: int | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -173,6 +174,9 @@ class AgentOrchestrator:
         self._review_skill_loader = review_skill_loader
         self._review_skill_retrieval_mode = (
             review_skill_retrieval_mode or self._settings.review_skill_retrieval_mode
+        )
+        self._review_skill_top_k_override = (
+            None if review_skill_top_k is None else max(0, int(review_skill_top_k))
         )
         self._review_skill_selection: SkillSelection | None = None
         self._review_skill_telemetry: dict[str, Any] = {}
@@ -1107,8 +1111,13 @@ class AgentOrchestrator:
                     query = build_skill_query(
                         diff_text, state.candidate_context_manifests
                     )
+                    top_k = (
+                        self._review_skill_top_k_override
+                        if self._review_skill_top_k_override is not None
+                        else self._settings.review_skill_top_k
+                    )
                     selection = loader.retrieve(
-                        query, top_k=self._settings.review_skill_top_k
+                        query, top_k=top_k
                     )
                 else:
                     selection = loader.select_sequential()
@@ -1150,6 +1159,12 @@ class AgentOrchestrator:
                 "active_records": selection.active_records,
                 "scoped_active_records": selection.scoped_active_records,
                 "unscoped_active_records": selection.unscoped_active_records,
+                "malformed_active_records": selection.malformed_active_records,
+                "legacy_only_fallback": selection.legacy_only_fallback,
+                "legacy_fallback_selected_count": sum(
+                    "unscoped_legacy" in item.reasons
+                    for item in selection.selected
+                ),
                 "candidate_count": selection.candidate_count,
                 "loaded_skill_ids": ids,
                 "loaded": [
@@ -1165,7 +1180,11 @@ class AgentOrchestrator:
                     for skill_id, reason in selection.skipped
                 ],
                 "skipped_count_by_reason": reason_counts,
-                "top_k": self._settings.review_skill_top_k,
+                "top_k": (
+                    self._review_skill_top_k_override
+                    if self._review_skill_top_k_override is not None
+                    else self._settings.review_skill_top_k
+                ),
                 "char_budget": loader.max_chars,
                 "core_chars": selection.core_chars,
                 "learned_chars": selection.learned_chars,
@@ -2413,6 +2432,17 @@ class AgentOrchestrator:
             ),
             "review_skill_fallback_count": int(
                 bool(self._review_skill_telemetry.get("fallback"))
+            ),
+            "review_skill_malformed_active_count": int(
+                self._review_skill_telemetry.get("malformed_active_records", 0)
+            ),
+            "review_skill_legacy_only_fallback": bool(
+                self._review_skill_telemetry.get("legacy_only_fallback", False)
+            ),
+            "review_skill_legacy_fallback_selected_count": int(
+                self._review_skill_telemetry.get(
+                    "legacy_fallback_selected_count", 0
+                )
             ),
         }
         self._record_event(EventType.PHASE_END, "review_complete", payload)
