@@ -196,9 +196,13 @@ def build_skill_query(
         for span in _mapping_list(manifest.get("included_spans")):
             _collect_string(symbols, span.get("symbol_id"))
         for graph_path in _mapping_list(manifest.get("included_graph_paths")):
-            for edge_kind in graph_path.get("edge_kinds", ()) or ():
+            for edge in _mapping_list(graph_path.get("edges")):
+                _collect_string(edge_kinds, edge.get("kind"))
+            for edge_kind in _optional_tuple(
+                graph_path.get("edge_kinds"), lower=True
+            ):
                 _collect_string(edge_kinds, edge_kind)
-            for node_id in graph_path.get("node_ids", ()) or ():
+            for node_id in _optional_tuple(graph_path.get("node_ids"), lower=True):
                 _collect_string(symbols, node_id)
     return SkillQuery(
         changed_files=changed_files,
@@ -338,11 +342,12 @@ class ReviewSkillLoader:
         )
 
     def bank_digest(self, skills: Sequence[ReviewSkill] | None = None) -> str:
+        bank_skills = self.load_skills() if skills is None else skills
         payload = {
             "core": self.load_core(),
             "records": [
                 skill.to_record()
-                for skill in sorted(skills or self.load_skills(), key=lambda item: item.id)
+                for skill in sorted(bank_skills, key=lambda item: item.id)
             ],
         }
         canonical = json.dumps(
@@ -365,7 +370,7 @@ class ReviewSkillLoader:
         body = core
         selected: list[SkillMatch] = []
         skipped: list[tuple[str, str]] = []
-        for match in matches:
+        for index, match in enumerate(matches):
             if len(selected) >= top_k:
                 skipped.append((match.skill.id, "top_k"))
                 continue
@@ -373,6 +378,10 @@ class ReviewSkillLoader:
             if len(candidate) > body_budget:
                 skipped.append((match.skill.id, "budget"))
                 if stop_on_budget:
+                    skipped.extend(
+                        (remaining.skill.id, "after_budget_break")
+                        for remaining in matches[index + 1 :]
+                    )
                     break
                 continue
             body = candidate
@@ -454,9 +463,18 @@ def _match_skill(skill: ReviewSkill, query: SkillQuery) -> tuple[SkillMatch | No
 def _path_matches(path: str, pattern: str) -> bool:
     normalized = path.replace("\\", "/")
     glob = pattern.replace("\\", "/")
-    if fnmatch.fnmatchcase(normalized, glob):
-        return True
-    return glob.startswith("**/") and fnmatch.fnmatchcase(normalized, glob[3:])
+    variants = {glob}
+    pending = [glob]
+    while pending:
+        candidate = pending.pop()
+        marker = candidate.find("**/")
+        if marker < 0:
+            continue
+        collapsed = candidate[:marker] + candidate[marker + 3 :]
+        if collapsed not in variants:
+            variants.add(collapsed)
+            pending.append(collapsed)
+    return any(fnmatch.fnmatchcase(normalized, candidate) for candidate in variants)
 
 
 def _literal_hit(trigger: str, corpus: str) -> bool:

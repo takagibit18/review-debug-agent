@@ -225,6 +225,19 @@ def test_budget_skips_oversized_item_and_keeps_full_core(tmp_path: Path) -> None
     assert len(result.context) <= 140
 
 
+def test_recursive_path_glob_also_matches_zero_nested_directories(
+    tmp_path: Path,
+) -> None:
+    _write_records(
+        tmp_path,
+        [_record("skill-path", path_globs=["src/**/*.py"])],
+    )
+    result = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("src/app.py",), ("python",), "")
+    )
+    assert [item.skill.id for item in result.selected] == ["skill-path"]
+
+
 def test_retrieval_rejects_core_that_cannot_fit(tmp_path: Path) -> None:
     _write_records(tmp_path, [])
     tmp_path.joinpath("core.md").write_text("X" * 100, encoding="utf-8")
@@ -247,7 +260,8 @@ def test_query_extracts_diff_and_optional_graph_signals() -> None:
             "changed_anchor": {"symbol_id": "View.render", "change_kind": "api_handler"},
             "included_spans": [{"symbol_id": "load"}],
             "included_graph_paths": [{
-                "edge_kinds": ["calls"], "node_ids": ["View.render", "load"]
+                "node_ids": ["View.render", "load"],
+                "edges": [{"kind": "calls"}],
             }],
         }],
     )
@@ -258,3 +272,19 @@ def test_query_extracts_diff_and_optional_graph_signals() -> None:
     assert enriched.changed_symbols == ("load", "view.render")
     assert enriched.change_kinds == ("api_handler",)
     assert enriched.graph_edge_kinds == ("calls",)
+def test_sequential_selection_accounts_for_records_after_budget_break(
+    tmp_path: Path,
+) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-first", principle="X" * 500),
+            _record("skill-second", principle="Short."),
+        ],
+    )
+    result = ReviewSkillLoader(tmp_path, max_chars=140).select_sequential()
+    assert result.selected == ()
+    assert result.skipped == (
+        ("skill-first", "budget"),
+        ("skill-second", "after_budget_break"),
+    )
