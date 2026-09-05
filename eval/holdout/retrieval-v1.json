@@ -1,0 +1,32 @@
+{
+  "version": "retrieval-holdout-v1",
+  "source_bank": "eval/skill_banks/retrieval-v1",
+  "annotation_policy": "pending_manual_adjudication",
+  "entries": [
+    {
+      "fixture_id": "golden_pydantic_pydantic-ai_pr6205_reverse",
+      "role": "positive_transfer_candidate",
+      "annotation_status": "pending"
+    },
+    {
+      "fixture_id": "golden_pydantic_pydantic-ai_pr7374",
+      "role": "clean_control",
+      "annotation_status": "pending"
+    },
+    {
+      "fixture_id": "golden_real_requests_netrc_pr7205",
+      "role": "same_language_hard_negative",
+      "annotation_status": "pending"
+    },
+    {
+      "fixture_id": "golden_vybestack_llxprt-code_pr3012_reverse",
+      "role": "provider_retry_hard_negative",
+      "annotation_status": "pending"
+    },
+    {
+      "fixture_id": "golden_pytest-dev_pytest_pr8513",
+      "role": "same_framework_hard_negative",
+      "annotation_status": "pending"
+    }
+  ]
+}

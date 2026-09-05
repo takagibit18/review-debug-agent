@@ -84,7 +84,7 @@ triggers: tuple[str, ...] = ()
 兼容规则：
 
 - `description` 缺失时使用 `principle`；
-- metadata 缺失或类型不合法时回落为空 tuple；
+- metadata 缺失时回落为空 tuple，保留旧记录兼容；类型不合法时记录字段 warning，deterministic retrieval 跳过该条，避免把坏 metadata 静默放大成全局适用；
 - required fields/status 仍使用现有校验；
 - `to_record()` round-trip 新字段；
 - 规范化为 lowercase language/trigger，path 使用 `/`。
@@ -126,7 +126,7 @@ Core 超过预算时不得静默切断。建议 `retrieve()` 抛出清晰 `Value
 - total hard budget；
 - oversized higher-ranked item 不阻塞后续 item；
 - file-order-independent deterministic ordering；
-- malformed optional metadata fallback；
+- malformed optional metadata 的 warning、deterministic skip 与 sequential compatibility；
 - old JSONL compatibility；
 - metadata lifecycle round-trip；
 - full Core inclusion；
@@ -260,7 +260,7 @@ git diff --check codex/review-skill-retrieval-core...HEAD
 
 #### `eval/schemas.py`
 
-- `EvalVariant` 增加 `skill_retrieval_mode`，默认 sequential 保持旧 YAML/CLI 兼容；
+- `EvalVariant` 增加 `skill_retrieval_mode`，默认 sequential 保持旧 YAML/CLI 兼容；同时允许显式覆盖 `skill_top_k`、`skill_char_budget`、`skill_legacy_fallback_limit`，未指定时解析同一组 Settings；
 - fixture expected/result 增加可选 `expected_skill_ids`；
 - 增加 retrieval metrics：Recall@K、Precision@K、irrelevant rate、budget-loss rate、loaded count/chars/tokens、latency；
 - 聚合逻辑对未标注 fixture 不计入 retrieval denominator。
@@ -277,7 +277,7 @@ eval/skill_banks/retrieval-v1/
 
 包含少量经过人工可解释的 active/candidate/deprecated skills，覆盖 concurrency、compatibility fallback、precision/boundary、contracts、error handling 等。不得改生产空 bank。
 
-至少为 5 个现有真实 Golden PR fixtures 添加 `expected_skill_ids`，同时包含正样本、clean control、Python 与非 Python/unknown language 路径。标注必须根据 fixture diff/expected findings 手工核对，并在一个 README/manifest 解释理由。
+至少为 5 个现有真实 Golden PR fixtures 添加 `expected_skill_ids`，同时包含正样本、clean control、Python 与非 Python/unknown language 路径。标注必须根据 fixture diff/expected findings 手工核对，并在一个 README/manifest 解释理由。另建独立 holdout manifest，先登记真实 fixture 的候选角色与标注状态；未完成人工 adjudication 的条目不得进入 retrieval denominator。
 
 ### Retrieval-only harness
 
