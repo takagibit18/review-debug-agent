@@ -36,13 +36,13 @@ _LANGUAGE_BY_SUFFIX = {
     ".yaml": "yaml", ".yml": "yaml",
 }
 
+_OPTIONAL_METADATA_FIELDS = ("languages", "path_globs", "triggers")
+
 
 def _optional_tuple(
     value: Any, *, lower: bool = False, path: bool = False
 ) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)) or not all(
-        isinstance(item, str) for item in value
-    ):
+    if not _is_valid_optional_metadata(value):
         return ()
     normalized: list[str] = []
     for item in value:
@@ -56,6 +56,34 @@ def _optional_tuple(
         if text and text not in normalized:
             normalized.append(text)
     return tuple(normalized)
+
+
+def _is_valid_optional_metadata(value: Any) -> bool:
+    """Return whether an optional routing field has the persisted list shape."""
+
+    return isinstance(value, (list, tuple)) and all(
+        isinstance(item, str) for item in value
+    )
+
+
+def _metadata_warnings(value: Mapping[str, Any]) -> tuple[str, ...]:
+    """Identify optional fields that were present but could not be normalized.
+
+    Missing optional metadata remains a supported legacy shape.  A field that is
+    present with a non-list or non-string value is different: treating it as
+    missing silently widens the skill's applicability.  The warning marker is
+    persisted by ``to_record`` so the bank digest remains sensitive to the
+    malformed state after a lifecycle rewrite.
+    """
+
+    warnings: list[str] = []
+    persisted = value.get("metadata_warnings")
+    if _is_valid_optional_metadata(persisted):
+        warnings.extend(item.strip() for item in persisted if item.strip())
+    for field in _OPTIONAL_METADATA_FIELDS:
+        if field in value and not _is_valid_optional_metadata(value[field]):
+            warnings.append(field)
+    return tuple(dict.fromkeys(warnings))
 
 
 @dataclass(frozen=True)
@@ -72,6 +100,7 @@ class ReviewSkill:
     languages: tuple[str, ...] = ()
     path_globs: tuple[str, ...] = ()
     triggers: tuple[str, ...] = ()
+    metadata_warnings: tuple[str, ...] = ()
 
     @classmethod
     def from_record(cls, value: Any) -> "ReviewSkill | None":
@@ -89,6 +118,7 @@ class ReviewSkill:
         ):
             return None
         principle = str(value["principle"]).strip()
+        metadata_warnings = _metadata_warnings(value)
         return cls(
             id=str(value["id"]).strip(),
             status=status,
@@ -100,6 +130,7 @@ class ReviewSkill:
             languages=_optional_tuple(value.get("languages"), lower=True),
             path_globs=_optional_tuple(value.get("path_globs"), path=True),
             triggers=_optional_tuple(value.get("triggers"), lower=True),
+            metadata_warnings=metadata_warnings,
         )
 
     @property
@@ -125,6 +156,8 @@ class ReviewSkill:
             record["path_globs"] = list(self.path_globs)
         if self.triggers:
             record["triggers"] = list(self.triggers)
+        if self.metadata_warnings:
+            record["metadata_warnings"] = list(self.metadata_warnings)
         return record
 
 
@@ -160,6 +193,8 @@ class SkillSelection:
     scoped_active_records: int = 0
     unscoped_active_records: int = 0
     candidate_count: int = 0
+    malformed_active_records: int = 0
+    legacy_only_fallback: bool = False
 
 
 def build_skill_query(
@@ -307,6 +342,9 @@ class ReviewSkillLoader:
             if skill.status != "active":
                 skipped.append((skill.id, "status"))
                 continue
+            if skill.metadata_warnings:
+                skipped.append((skill.id, "malformed_metadata"))
+                continue
             match, reason = _match_skill(skill, query)
             if match is None:
                 skipped.append((skill.id, reason))
@@ -316,6 +354,7 @@ class ReviewSkillLoader:
                 legacy.append(match)
         matches.sort(key=lambda item: (-item.score, item.skill.id))
         legacy.sort(key=lambda item: item.skill.id)
+        legacy_only_fallback = not matches and bool(legacy)
         if matches:
             matches.extend(legacy[: self.legacy_fallback_limit])
             skipped.extend(
@@ -323,7 +362,11 @@ class ReviewSkillLoader:
                 for item in legacy[self.legacy_fallback_limit :]
             )
         else:
-            matches.extend(legacy)
+            matches.extend(legacy[: self.legacy_fallback_limit])
+            skipped.extend(
+                (item.skill.id, "legacy_fallback_limit")
+                for item in legacy[self.legacy_fallback_limit :]
+            )
         selection = self._pack(matches, skills=skills, top_k=max(0, int(top_k)))
         return SkillSelection(
             context=selection.context,
@@ -339,6 +382,8 @@ class ReviewSkillLoader:
             scoped_active_records=selection.scoped_active_records,
             unscoped_active_records=selection.unscoped_active_records,
             candidate_count=selection.candidate_count,
+            malformed_active_records=selection.malformed_active_records,
+            legacy_only_fallback=legacy_only_fallback,
         )
 
     def bank_digest(self, skills: Sequence[ReviewSkill] | None = None) -> str:
@@ -389,6 +434,7 @@ class ReviewSkillLoader:
         context = f"{_PREFIX}{body}{_SUFFIX}"
         learned_chars = max(0, len(body) - len(core) - (2 if core and selected else 0))
         active = [skill for skill in skills if skill.status == "active"]
+        valid_active = [skill for skill in active if not skill.metadata_warnings]
         return SkillSelection(
             context=context,
             selected=tuple(selected),
@@ -400,9 +446,12 @@ class ReviewSkillLoader:
             bank_digest=self.bank_digest(skills),
             total_records=len(skills),
             active_records=len(active),
-            scoped_active_records=sum(skill.scoped for skill in active),
-            unscoped_active_records=sum(not skill.scoped for skill in active),
+            scoped_active_records=sum(skill.scoped for skill in valid_active),
+            unscoped_active_records=sum(not skill.scoped for skill in valid_active),
             candidate_count=sum(skill.status == "candidate" for skill in skills),
+            malformed_active_records=sum(
+                bool(skill.metadata_warnings) for skill in active
+            ),
         )
 
     def load_context(self) -> str:
@@ -431,11 +480,7 @@ def _match_skill(skill: ReviewSkill, query: SkillQuery) -> tuple[SkillMatch | No
         trigger for trigger in skill.triggers if _literal_hit(trigger, query.lexical_corpus)
     ]
     graph_hits = [trigger for trigger in skill.triggers if _literal_hit(trigger, graph_corpus)]
-    if (
-        skill.triggers
-        and not (skill.languages or skill.path_globs)
-        and not (lexical_hits or graph_hits)
-    ):
+    if skill.triggers and not (lexical_hits or graph_hits):
         return None, "trigger_mismatch"
     score = 0
     reasons: list[str] = []

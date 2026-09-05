@@ -9,7 +9,11 @@ from typing import Any
 import click
 
 from eval.schemas import Fixture
-from src.analyzer.review_skills import ReviewSkillLoader, build_skill_query
+from src.analyzer.review_skills import (
+    DEFAULT_LEGACY_FALLBACK_LIMIT,
+    ReviewSkillLoader,
+    build_skill_query,
+)
 
 
 def evaluate_retrieval(
@@ -18,10 +22,15 @@ def evaluate_retrieval(
     *,
     top_k: int = 5,
     char_budget: int = 4_000,
+    legacy_fallback_limit: int = DEFAULT_LEGACY_FALLBACK_LIMIT,
 ) -> dict[str, Any]:
     """Evaluate annotated fixtures without invoking a model provider."""
 
-    loader = ReviewSkillLoader(skill_bank, max_chars=char_budget)
+    loader = ReviewSkillLoader(
+        skill_bank,
+        max_chars=char_budget,
+        legacy_fallback_limit=legacy_fallback_limit,
+    )
     results: list[dict[str, Any]] = []
     expected_total = 0
     retrieved_total = 0
@@ -88,6 +97,7 @@ def evaluate_retrieval(
         "bank_digest": loader.bank_digest(),
         "top_k": top_k,
         "char_budget": char_budget,
+        "legacy_fallback_limit": legacy_fallback_limit,
         "annotated_fixture_count": len(results),
         "metrics": {
             "recall_at_k": matched_total / expected_total if expected_total else 1.0,
@@ -122,16 +132,26 @@ def evaluate_retrieval(
 )
 @click.option("--top-k", default=5, type=click.IntRange(min=0))
 @click.option("--char-budget", default=4_000, type=click.IntRange(min=1))
+@click.option(
+    "--legacy-fallback-limit",
+    default=DEFAULT_LEGACY_FALLBACK_LIMIT,
+    type=click.IntRange(min=0),
+)
 @click.option("--output-json", type=click.Path(dir_okay=False, path_type=Path))
 def main(
     fixtures_dir: Path,
     skill_bank: Path,
     top_k: int,
     char_budget: int,
+    legacy_fallback_limit: int,
     output_json: Path | None,
 ) -> None:
     report = evaluate_retrieval(
-        fixtures_dir, skill_bank, top_k=top_k, char_budget=char_budget
+        fixtures_dir,
+        skill_bank,
+        top_k=top_k,
+        char_budget=char_budget,
+        legacy_fallback_limit=legacy_fallback_limit,
     )
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if output_json is not None:

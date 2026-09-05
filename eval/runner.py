@@ -54,6 +54,29 @@ _CACHE_LOCKS_GUARD = threading.Lock()
 _EVAL_EXPECTED_LOCATION_WARNING_CONFIDENCE = 0.7
 
 
+def _effective_skill_contract(variant: EvalVariant) -> dict[str, int]:
+    """Resolve the loader contract once for both Eval and production wiring."""
+
+    settings = get_settings()
+    return {
+        "skill_top_k": (
+            settings.review_skill_top_k
+            if variant.skill_top_k is None
+            else variant.skill_top_k
+        ),
+        "skill_char_budget": (
+            settings.review_skill_char_budget
+            if variant.skill_char_budget is None
+            else variant.skill_char_budget
+        ),
+        "skill_legacy_fallback_limit": (
+            settings.review_skill_legacy_fallback_limit
+            if variant.skill_legacy_fallback_limit is None
+            else variant.skill_legacy_fallback_limit
+        ),
+    }
+
+
 def load_fixtures(
     fixtures_dir: str | Path = Path("eval") / "fixtures",
     *,
@@ -704,6 +727,7 @@ async def run_single(
     fixture = fixture.model_copy(deep=True)
     expected_count = len(fixture.expected.issues)
     selected_variant = variant or _default_eval_variant()
+    skill_contract = _effective_skill_contract(selected_variant)
     stage_timings: dict[str, float] = {}
     try:
         with tempfile.TemporaryDirectory(prefix="eval-fixture-") as tmp_dir:
@@ -721,7 +745,7 @@ async def run_single(
                 return EvalResult(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
-                    **_variant_result_fields(selected_variant),
+                    **_variant_result_fields(selected_variant, skill_contract),
                     schema_valid=False,
                     expected_count=expected_count,
                     stage_timings=stage_timings,
@@ -743,7 +767,7 @@ async def run_single(
                 return EvalResult(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
-                    **_variant_result_fields(selected_variant),
+                    **_variant_result_fields(selected_variant, skill_contract),
                     schema_valid=False,
                     expected_count=expected_count,
                     stage_timings=stage_timings,
@@ -769,10 +793,13 @@ async def run_single(
                 relation_graph_index_path=relation_graph_index_path,
                 context_mode=selected_variant.context_mode,
                 review_skill_retrieval_mode=selected_variant.skill_retrieval_mode,
-                review_skill_loader=(
-                    ReviewSkillLoader(selected_variant.skill_bank_path)
-                    if selected_variant.skill_bank_path
-                    else None
+                review_skill_top_k=skill_contract["skill_top_k"],
+                review_skill_loader=ReviewSkillLoader(
+                    selected_variant.skill_bank_path or None,
+                    max_chars=skill_contract["skill_char_budget"],
+                    legacy_fallback_limit=skill_contract[
+                        "skill_legacy_fallback_limit"
+                    ],
                 ),
             )
             sandbox_context = _build_fixture_context(fixture, repo_root)
@@ -833,7 +860,7 @@ async def run_single(
             empty_business_output = _is_empty_business_output(parsed_response)
             schema_valid = _eval_schema_valid(parsed_response)
             selection = getattr(orchestrator, "review_skill_selection", None)
-            variant_fields = _variant_result_fields(selected_variant)
+            variant_fields = _variant_result_fields(selected_variant, skill_contract)
             if selection is not None and selected_variant.skill_bank_path:
                 variant_fields["skill_bank_digest"] = selection.bank_digest
             skill_metrics = _skill_result_fields(
@@ -891,7 +918,7 @@ async def run_single(
         return EvalResult(
             fixture_id=fixture.id,
             fixture_type=fixture.type,
-            **_variant_result_fields(selected_variant),
+            **_variant_result_fields(selected_variant, skill_contract),
             schema_valid=False,
             expected_count=expected_count,
             stage_timings=stage_timings,
@@ -1760,13 +1787,17 @@ def _default_eval_variant() -> EvalVariant:
     )
 
 
-def _variant_result_fields(variant: EvalVariant) -> dict[str, str]:
+def _variant_result_fields(
+    variant: EvalVariant, skill_contract: dict[str, int] | None = None
+) -> dict[str, Any]:
+    resolved_contract = skill_contract or _effective_skill_contract(variant)
     fields = {
         "variant_id": variant.id,
         "context_mode": variant.context_mode,
         "graph_cache_mode": variant.graph_cache_mode,
         "skill_retrieval_mode": variant.skill_retrieval_mode,
         "matcher_version": EVAL_MATCHER_VERSION,
+        **resolved_contract,
     }
     if variant.skill_bank_path:
         fields["skill_bank_digest"] = ReviewSkillLoader(

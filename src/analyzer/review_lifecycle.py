@@ -182,6 +182,7 @@ class SkillStore:
             languages=target.languages,
             path_globs=target.path_globs,
             triggers=target.triggers,
+            metadata_warnings=target.metadata_warnings,
         )
         rewritten = [updated if item.id == skill_id else item for item in skills]
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -127,6 +127,7 @@ def test_review_skill_selection_is_pinned_across_fake_model_iterations(
     orchestrator = AgentOrchestrator(
         review_skill_loader=ReviewSkillLoader(skills_dir),
         context_mode="agent_search",
+        review_skill_top_k=1,
     )
     captured = []
 
@@ -159,6 +160,9 @@ def test_review_skill_selection_is_pinned_across_fake_model_iterations(
     assert captured[0][0] is captured[1][0]
     assert captured[0][1]["reused_pinned_selection"] is False
     assert captured[1][1]["reused_pinned_selection"] is True
+    assert captured[0][1]["top_k"] == 1
+    assert captured[0][1]["malformed_active_records"] == 0
+    assert captured[0][1]["legacy_only_fallback"] is False
     assert "old" not in json.dumps(captured[0][1])
 
 

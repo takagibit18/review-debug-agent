@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from eval.compare import compare_reports
-from eval.runner import _skill_result_fields
+from eval.runner import _effective_skill_contract, _skill_result_fields, _variant_result_fields
 from eval.schemas import EvalReport, EvalResult, EvalVariant, MetricSummary
 from eval.skill_retrieval import evaluate_retrieval
 
@@ -21,6 +21,50 @@ def test_old_eval_variant_defaults_to_sequential() -> None:
     )
     assert variant.skill_retrieval_mode == "sequential"
     assert variant.skill_bank_path == ""
+
+
+def test_eval_variant_resolves_the_same_skill_loader_contract_as_production(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("REVIEW_SKILL_TOP_K", "3")
+    monkeypatch.setenv("REVIEW_SKILL_CHAR_BUDGET", "2500")
+    monkeypatch.setenv("REVIEW_SKILL_LEGACY_FALLBACK_LIMIT", "0")
+    variant = EvalVariant(
+        id="deterministic-contract",
+        context_mode="agent_search",
+        graph_cache_mode="disabled",
+        skill_retrieval_mode="deterministic",
+    )
+
+    contract = _effective_skill_contract(variant)
+
+    assert contract == {
+        "skill_top_k": 3,
+        "skill_char_budget": 2500,
+        "skill_legacy_fallback_limit": 0,
+    }
+    result_fields = _variant_result_fields(variant, contract)
+    assert {name: result_fields[name] for name in contract} == contract
+
+
+def test_eval_variant_explicit_skill_contract_overrides_settings(monkeypatch) -> None:
+    monkeypatch.setenv("REVIEW_SKILL_TOP_K", "3")
+    monkeypatch.setenv("REVIEW_SKILL_CHAR_BUDGET", "2500")
+    monkeypatch.setenv("REVIEW_SKILL_LEGACY_FALLBACK_LIMIT", "0")
+    variant = EvalVariant(
+        id="explicit-contract",
+        context_mode="agent_search",
+        graph_cache_mode="disabled",
+        skill_top_k=7,
+        skill_char_budget=1800,
+        skill_legacy_fallback_limit=2,
+    )
+
+    assert _effective_skill_contract(variant) == {
+        "skill_top_k": 7,
+        "skill_char_budget": 1800,
+        "skill_legacy_fallback_limit": 2,
+    }
 
 
 def test_retrieval_only_report_meets_offline_gate_and_is_deterministic() -> None:

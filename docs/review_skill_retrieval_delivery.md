@@ -4,7 +4,7 @@
 
 ## 1. 交付结论
 
-前三个本地 stacked PR 已完成，分支线性、工作区干净，生产默认仍为 `sequential`。确定性 retrieval 通过固定 Skill Bank 的离线门；未执行需要 provider 凭据与预算的 live A/B，因此本次没有把生产默认切到 `deterministic`，也没有 push 或创建远端 PR。
+前三个本地 stacked PR 已完成，分支线性、工作区干净，生产默认仍为 `sequential`。针对真实仓库复核追加的 hardening 也已在独立分支完成：修复 scoped trigger relevance gate、malformed metadata fail-safe、bounded legacy fallback，以及 Eval/Production loader contract parity。确定性 retrieval 通过固定 Skill Bank 的离线门；未执行需要 provider 凭据与预算的 live A/B，因此本次没有把生产默认切到 `deterministic`，也没有 push 或创建远端 PR。
 
 ## 2. Stack 与 PR base
 
@@ -12,7 +12,8 @@
 |---|---|---|---|
 | PR1 | `codex/adapt-stashed-verifier-context` (`803385c`) | `codex/review-skill-retrieval-core` (`831c423`) | metadata、lifecycle round-trip、deterministic filter/rank/packing/digest |
 | PR2 | `codex/review-skill-retrieval-core` | `codex/review-skill-retrieval-runtime` (`99a1d78`) | rollout config、run-scoped pinning、显式 Prompt 注入、telemetry/summary |
-| PR3 | `codex/review-skill-retrieval-runtime` | `codex/review-skill-retrieval-eval` (`8ad79d5`) | Eval variant/metrics、固定 bank、Golden 标签、报告与 A/B readiness |
+| PR3 | `codex/review-skill-retrieval-runtime` | `codex/review-skill-retrieval-eval` (`e1dc81c`) | Eval variant/metrics、固定 bank、Golden 标签、报告与 A/B readiness |
+| Review follow-up | `codex/review-skill-retrieval-eval` | `codex/review-skill-retrieval-hardening` (`630ea53`) | 针对性复核修复、契约对齐、holdout/验收补强 |
 
 三个 `merge-base --is-ancestor` 检查均通过；每层 `base...head` diff 没有跨层内容泄漏。
 
@@ -36,6 +37,12 @@
 - `73d47a8 docs: add review skill retrieval acceptance runbook`
 - `8ad79d5 fix(eval): preserve fixed skill bank digest contracts`
 
+### Review follow-up (`codex/review-skill-retrieval-hardening`)
+
+- `095fbd5 fix: harden review skill retrieval semantics`
+- `7ee2a9d fix(eval): align review skill loader contract`
+- `630ea53 docs: stage review skill retrieval holdout`
+
 ## 4. 验收证据
 
 | 范围 | 结果 |
@@ -45,6 +52,7 @@
 | PR2 targeted B | 37 passed；独立 clean agent 使用其验收集合复跑 87 passed |
 | PR3 targeted | 89 passed |
 | digest 修复回归 | 主 agent 73 passed；独立 clean agent 78 passed |
+| Hardening targeted | `tests/test_review_skills.py tests/test_review_experience.py tests/test_agent_loop.py tests/test_skill_retrieval_eval.py tests/test_eval_runner.py tests/test_eval_run_cli_phase2.py tests/test_graph_ab_pilot.py`：175 passed |
 | Ruff | `src`、`eval`、`tests`（排除既有 `eval/outputs` 历史产物）通过 |
 | Diff hygiene | 三层 `git diff --check base...head` 全部通过 |
 | 离线 retrieval | 6 个已标注真实 fixture；Recall@5 = 1.0；Precision@5 = 1.0；irrelevant rate = 0；budget loss = 0；candidate/deprecated selection = 0；hard-budget violation = 0 |
@@ -55,7 +63,7 @@
 
 ## 5. 全量测试与既有环境阻塞
 
-全量运行结果为 813 passed、1 skipped、3 failed。3 个失败最初都被本机全局 Git SSH signing 配置阻断，因为 `C:/Users/Lenovo/.ssh/id_ed25519` 不存在。仅对测试进程关闭 signing 后，revision-pinning 用例通过；剩余 2 个 provider integration 用例暴露本机 `openai 2.8.0` / `httpx 0.28.1` client wrapper 初始化问题，并在未包含三个 PR 的 `803385c` 基线分支完全复现。因此它们记录为既有环境失败，不是本次回归。
+全量运行结果为 822 passed、1 skipped、3 failed。3 个失败最初都被本机全局 Git SSH signing 配置阻断，因为 `C:/Users/Lenovo/.ssh/id_ed25519` 不存在。仅对测试进程关闭 signing 后，revision-pinning 用例通过；剩余 2 个 provider integration 用例暴露本机 `openai 2.8.0` / `httpx 0.28.1` client wrapper 的 `_mounts` 兼容性问题，并在未包含 hardening 的 `803385c` 基线分支完全复现。因此它们记录为既有环境失败，不是本次回归。
 
 直接对包含历史快照的整个 `eval/outputs` 运行 Ruff 会命中 27 个既有产物问题；源码验收使用 `--exclude eval/outputs`，本次改动文件和 `src/eval/tests` 的有效源码均通过。
 
@@ -66,6 +74,7 @@
 - 未修改依赖 manifest/lockfile。
 - 未新增数据库、embedding、vector store、动态 Skill tool 或网络依赖。
 - Eval Skill Bank 仅存在于 `eval/skill_banks/retrieval-v1/`，不进入生产 lifecycle data。
+- `eval/holdout/retrieval-v1.json` 只登记真实 fixture 的 pending 候选；未完成人工 adjudication 前不进入 retrieval denominator。
 
 ## 7. 未执行 gate
 

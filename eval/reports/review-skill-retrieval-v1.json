@@ -3,6 +3,7 @@
   "bank_digest": "16f444a4756464e59863b0a7a5be79b3fe1f98ed3e22fecdf7ee0651106fa13a",
   "bank_path": "eval/skill_banks/retrieval-v1",
   "char_budget": 4000,
+  "legacy_fallback_limit": 1,
   "metrics": {
     "budget_loss_rate": 0.0,
     "candidate_or_deprecated_selection_count": 0,
