@@ -834,7 +834,7 @@ async def run_single(
             schema_valid = _eval_schema_valid(parsed_response)
             selection = getattr(orchestrator, "review_skill_selection", None)
             variant_fields = _variant_result_fields(selected_variant)
-            if selection is not None:
+            if selection is not None and selected_variant.skill_bank_path:
                 variant_fields["skill_bank_digest"] = selection.bank_digest
             skill_metrics = _skill_result_fields(
                 fixture.expected.expected_skill_ids,

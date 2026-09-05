@@ -322,11 +322,17 @@ def merge_reports_cmd(inputs: tuple[str, ...], suite: str, output_json: str) -> 
     sampled_results = [
         result for report in reports for result in report.sampled_results
     ]
+    bank_digests = {report.skill_bank_digest for report in reports}
+    if len(bank_digests) > 1:
+        raise click.ClickException(
+            "Cannot merge reports produced with different or unspecified Skill Banks."
+        )
     report = build_eval_report(
         suite=suite,
         results=results,
         sampled_results=sampled_results,
     )
+    report.skill_bank_digest = next(iter(bank_digests), "")
     report_path = save_report_json(report, output_path=output_json)
     artifact_paths = write_eval_artifacts(report, report_path)
     render_report(report)
