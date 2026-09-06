@@ -17,7 +17,14 @@ FixtureType = Literal["review", "debug"]
 EvalGraphCacheMode = Literal["disabled", "cold", "warm"]
 StructuralScope = Literal["local", "direct_cross_file", "multi_hop"]
 ReviewPatchScope = Literal["legacy", "full_pr", "partial_pr"]
+# ``semantic-v2`` is retained as the frozen baseline matcher.  New evals use
+# the strict matcher by default, while callers can explicitly select v2 when
+# replaying historical artifacts.
+EvalMatcherVersion = Literal["semantic-v2", "semantic-v3"]
 EVAL_MATCHER_VERSION = "semantic-v2"
+LEGACY_EVAL_MATCHER_VERSION = EVAL_MATCHER_VERSION
+DEFAULT_EVAL_MATCHER_VERSION = "semantic-v3"
+EVAL_MATCHER_VERSIONS = (LEGACY_EVAL_MATCHER_VERSION, DEFAULT_EVAL_MATCHER_VERSION)
 EvalSkillRetrievalMode = Literal["sequential", "deterministic"]
 
 
@@ -326,6 +333,17 @@ class ReviewProcessMetrics(BaseModel):
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+    provider_attempt_count: int = Field(default=0, ge=0)
+    successful_prompt_tokens: int = Field(default=0, ge=0)
+    successful_completion_tokens: int = Field(default=0, ge=0)
+    successful_reasoning_tokens: int = Field(default=0, ge=0)
+    successful_total_tokens: int = Field(default=0, ge=0)
+    successful_cached_prompt_tokens: int = Field(default=0, ge=0)
+    successful_adjacent_common_prefix_tokens: int = Field(default=0, ge=0)
+    cache_observation_count: int = Field(default=0, ge=0)
+    provider_cache_hit_count: int = Field(default=0, ge=0)
+    failed_attempt_count: int = Field(default=0, ge=0)
+    failed_unknown_usage_count: int = Field(default=0, ge=0)
     review_skill_loaded_count: int = Field(default=0, ge=0)
     review_skill_chars: int = Field(default=0, ge=0)
     review_skill_tokens: int = Field(default=0, ge=0)
@@ -345,6 +363,16 @@ class ReviewProcessMetrics(BaseModel):
     evidence_bound_issue_count: int = Field(default=0, ge=0)
     verifier_accepted_count: int = Field(default=0, ge=0)
     verifier_rejected_count: int = Field(default=0, ge=0)
+    review_outcome: Literal[
+        "no_candidates",
+        "accepted",
+        "partially_rejected",
+        "all_candidates_rejected",
+    ] = "no_candidates"
+    integrity_failure_codes: dict[str, list[str]] = Field(default_factory=dict)
+    integrity_failure_details: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict
+    )
     deterministic_evidence_checked_count: int = Field(default=0, ge=0)
     deterministic_evidence_passed_count: int = Field(default=0, ge=0)
     deterministic_evidence_rejected_count: int = Field(default=0, ge=0)
@@ -361,6 +389,21 @@ class ReviewProcessMetrics(BaseModel):
     included_graph_nodes: int = Field(default=0, ge=0)
     included_graph_paths: int = Field(default=0, ge=0)
     discarded_graph_paths: int = Field(default=0, ge=0)
+    graph_available_path_count: int = Field(default=0, ge=0)
+    graph_selected_path_count: int = Field(default=0, ge=0)
+    graph_dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
+    graph_selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_selected_production_path_count: int = Field(default=0, ge=0)
+    graph_selected_low_hop_path_count: int = Field(default=0, ge=0)
+    graph_required_production_path_count: int = Field(default=0, ge=0)
+    graph_missing_production_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    graph_reviewer_available_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_dropped_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_token_count: int = Field(default=0, ge=0)
+    graph_reviewer_role_coverage: list[str] = Field(default_factory=list)
+    graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     reviewer_tool_call_count: int = Field(default=0, ge=0)
     unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     edge_confidence_contribution: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -372,6 +415,7 @@ class ReviewProcessMetrics(BaseModel):
     consolidator_proposal_count: int = Field(default=0, ge=0)
     consolidator_accepted_cluster_count: int = Field(default=0, ge=0)
     consolidator_rejected_cluster_count: int = Field(default=0, ge=0)
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     final_root_cause_count: int = Field(default=0, ge=0)
     finding_inflation_ratio: float = Field(default=0.0, ge=0.0)
     event_log_status: Literal["ok", "missing", "parse_error"] = "missing"
@@ -418,6 +462,7 @@ class EvalResult(BaseModel):
     variant_id: str = ""
     context_mode: ReviewContextMode = "graph_hybrid"
     graph_cache_mode: EvalGraphCacheMode = "warm"
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     skill_retrieval_mode: EvalSkillRetrievalMode = "sequential"
     skill_bank_digest: str = ""
     skill_top_k: int = Field(default=5, ge=0, le=50)
@@ -430,12 +475,12 @@ class EvalResult(BaseModel):
     actual_count: int = Field(default=0, ge=0)
     matched_count: int = Field(default=0, ge=0)
     false_positive_count: int = Field(default=0, ge=0)
-    expected_root_cause_count: int = Field(default=0, ge=0)
-    matched_root_cause_count: int = Field(default=0, ge=0)
-    over_merge_count: int = Field(default=0, ge=0)
-    under_merge_count: int = Field(default=0, ge=0)
-    repair_unit_expected_count: int = Field(default=0, ge=0)
-    repair_unit_matched_count: int = Field(default=0, ge=0)
+    expected_root_cause_count: int | None = Field(default=None, ge=0)
+    matched_root_cause_count: int | None = Field(default=None, ge=0)
+    over_merge_count: int | None = Field(default=None, ge=0)
+    under_merge_count: int | None = Field(default=None, ge=0)
+    repair_unit_expected_count: int | None = Field(default=None, ge=0)
+    repair_unit_matched_count: int | None = Field(default=None, ge=0)
     evidence_complete_count: int = Field(default=0, ge=0)
     final_finding_count: int = Field(default=0, ge=0)
     latency_seconds: float = Field(default=0.0, ge=0.0)
@@ -516,7 +561,7 @@ class SampledFixtureResult(BaseModel):
     variant_id: str = ""
     context_mode: ReviewContextMode = "graph_hybrid"
     graph_cache_mode: EvalGraphCacheMode = "warm"
-    matcher_version: str = EVAL_MATCHER_VERSION
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     expected_count: int = Field(default=0, ge=0)
     samples: int = Field(default=1, ge=1)
     runs: list[EvalResult] = Field(default_factory=list)
@@ -567,6 +612,17 @@ class MetricSummary(BaseModel):
     avg_total_tokens: float = Field(default=0.0, ge=0.0)
     p50_total_tokens: float = Field(default=0.0, ge=0.0)
     p95_total_tokens: float = Field(default=0.0, ge=0.0)
+    provider_attempt_count: int = Field(default=0, ge=0)
+    successful_prompt_tokens: int = Field(default=0, ge=0)
+    successful_completion_tokens: int = Field(default=0, ge=0)
+    successful_reasoning_tokens: int = Field(default=0, ge=0)
+    successful_total_tokens: int = Field(default=0, ge=0)
+    successful_cached_prompt_tokens: int = Field(default=0, ge=0)
+    successful_adjacent_common_prefix_tokens: int = Field(default=0, ge=0)
+    cache_observation_count: int = Field(default=0, ge=0)
+    provider_cache_hit_count: int = Field(default=0, ge=0)
+    failed_attempt_count: int = Field(default=0, ge=0)
+    failed_unknown_usage_count: int = Field(default=0, ge=0)
     evidence_binding_rate: float = Field(default=1.0, ge=0.0, le=1.0)
     verifier_accept_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     verifier_reject_rate: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -577,6 +633,21 @@ class MetricSummary(BaseModel):
     included_graph_nodes: int = Field(default=0, ge=0)
     included_graph_paths: int = Field(default=0, ge=0)
     discarded_graph_paths: int = Field(default=0, ge=0)
+    graph_available_path_count: int = Field(default=0, ge=0)
+    graph_selected_path_count: int = Field(default=0, ge=0)
+    graph_dropped_repeated_prefix_path_count: int = Field(default=0, ge=0)
+    graph_selected_direct_path_count: int = Field(default=0, ge=0)
+    graph_selected_production_path_count: int = Field(default=0, ge=0)
+    graph_selected_low_hop_path_count: int = Field(default=0, ge=0)
+    graph_required_production_path_count: int = Field(default=0, ge=0)
+    graph_missing_production_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_context_token_estimate: int = Field(default=0, ge=0)
+    graph_reviewer_available_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_dropped_path_count: int = Field(default=0, ge=0)
+    graph_reviewer_selected_token_count: int = Field(default=0, ge=0)
+    graph_reviewer_role_coverage: list[str] = Field(default_factory=list)
+    graph_path_selection_reason_counts: dict[str, int] = Field(default_factory=dict)
     reviewer_tool_call_count: int = Field(default=0, ge=0)
     unused_context_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     edge_confidence_contribution: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -730,8 +801,10 @@ def _aggregate_structural_metrics(
     expected = sum(item.expected_count for item in results)
     matched = sum(item.matched_count for item in results)
     false_positives = sum(item.false_positive_count for item in results)
-    expected_roots = sum(item.expected_root_cause_count for item in results)
-    matched_roots = sum(item.matched_root_cause_count for item in results)
+    expected_roots = sum(
+        item.expected_root_cause_count or 0 for item in results
+    )
+    matched_roots = sum(item.matched_root_cause_count or 0 for item in results)
     structural = [item.structural_metrics for item in results]
 
     def total(field: str) -> int:
@@ -766,8 +839,8 @@ def _aggregate_structural_metrics(
             total("graph_observability_annotated_count"), expected
         ),
         "root_cause_recall": ratio(matched_roots, expected_roots),
-        "over_merge_count": sum(item.over_merge_count for item in results),
-        "under_merge_count": sum(item.under_merge_count for item in results),
+        "over_merge_count": sum(item.over_merge_count or 0 for item in results),
+        "under_merge_count": sum(item.under_merge_count or 0 for item in results),
     }
 
 
@@ -806,6 +879,40 @@ def _aggregate_process_metrics(
     invalid_runs = sum(1 for item in results if item.process_metrics.workflow_invalid)
     duplicates = sum(item.process_metrics.duplicate_tool_call_count for item in results)
     tokens = sum(item.total_tokens for item in results)
+    provider_attempts = sum(
+        item.process_metrics.provider_attempt_count for item in results
+    )
+    successful_prompt_tokens = sum(
+        item.process_metrics.successful_prompt_tokens for item in results
+    )
+    successful_completion_tokens = sum(
+        item.process_metrics.successful_completion_tokens for item in results
+    )
+    successful_reasoning_tokens = sum(
+        item.process_metrics.successful_reasoning_tokens for item in results
+    )
+    successful_total_tokens = sum(
+        item.process_metrics.successful_total_tokens for item in results
+    )
+    successful_cached_prompt_tokens = sum(
+        item.process_metrics.successful_cached_prompt_tokens for item in results
+    )
+    successful_adjacent_common_prefix_tokens = sum(
+        item.process_metrics.successful_adjacent_common_prefix_tokens
+        for item in results
+    )
+    cache_observations = sum(
+        item.process_metrics.cache_observation_count for item in results
+    )
+    provider_cache_hits = sum(
+        item.process_metrics.provider_cache_hit_count for item in results
+    )
+    failed_attempts = sum(
+        item.process_metrics.failed_attempt_count for item in results
+    )
+    failed_unknown_usage = sum(
+        item.process_metrics.failed_unknown_usage_count for item in results
+    )
     context_tokens = sum(
         item.process_metrics.candidate_context_tokens for item in results
     )
@@ -814,6 +921,66 @@ def _aggregate_process_metrics(
     discarded_paths = sum(
         item.process_metrics.discarded_graph_paths for item in results
     )
+    available_paths = sum(
+        item.process_metrics.graph_available_path_count for item in results
+    )
+    selected_paths = sum(
+        item.process_metrics.graph_selected_path_count for item in results
+    )
+    repeated_prefix_paths = sum(
+        item.process_metrics.graph_dropped_repeated_prefix_path_count
+        for item in results
+    )
+    direct_paths = sum(
+        item.process_metrics.graph_selected_direct_path_count for item in results
+    )
+    production_paths = sum(
+        item.process_metrics.graph_selected_production_path_count
+        for item in results
+    )
+    low_hop_paths = sum(
+        item.process_metrics.graph_selected_low_hop_path_count for item in results
+    )
+    required_production_paths = sum(
+        item.process_metrics.graph_required_production_path_count
+        for item in results
+    )
+    missing_production_paths = sum(
+        item.process_metrics.graph_missing_production_path_count
+        for item in results
+    )
+    reviewer_available_paths = sum(
+        item.process_metrics.graph_reviewer_available_path_count for item in results
+    )
+    reviewer_selected_paths = sum(
+        item.process_metrics.graph_reviewer_selected_path_count for item in results
+    )
+    reviewer_dropped_paths = sum(
+        item.process_metrics.graph_reviewer_dropped_path_count for item in results
+    )
+    reviewer_selected_tokens = sum(
+        item.process_metrics.graph_reviewer_selected_token_count
+        for item in results
+    )
+    reviewer_role_coverage = sorted(
+        {
+            role
+            for item in results
+            for role in item.process_metrics.graph_reviewer_role_coverage
+        }
+    )
+    graph_reviewer_tokens = sum(
+        item.process_metrics.graph_reviewer_context_token_estimate
+        for item in results
+    )
+    path_selection_reasons: dict[str, int] = {}
+    for item in results:
+        for reason, count in (
+            item.process_metrics.graph_path_selection_reason_counts.items()
+        ):
+            path_selection_reasons[reason] = (
+                path_selection_reasons.get(reason, 0) + count
+            )
     reviewer_tools = sum(
         item.process_metrics.reviewer_tool_call_count for item in results
     )
@@ -869,12 +1036,40 @@ def _aggregate_process_metrics(
         "required_step_completion_rate": completed / required if required else 1.0,
         "duplicate_tool_call_rate": duplicates / candidates if candidates else 0.0,
         "cost_per_accepted_finding": tokens / accepted if accepted else 0.0,
+        "provider_attempt_count": provider_attempts,
+        "successful_prompt_tokens": successful_prompt_tokens,
+        "successful_completion_tokens": successful_completion_tokens,
+        "successful_reasoning_tokens": successful_reasoning_tokens,
+        "successful_total_tokens": successful_total_tokens,
+        "successful_cached_prompt_tokens": successful_cached_prompt_tokens,
+        "successful_adjacent_common_prefix_tokens": (
+            successful_adjacent_common_prefix_tokens
+        ),
+        "cache_observation_count": cache_observations,
+        "provider_cache_hit_count": provider_cache_hits,
+        "failed_attempt_count": failed_attempts,
+        "failed_unknown_usage_count": failed_unknown_usage,
         "avg_candidate_context_tokens": context_tokens / len(results)
         if results
         else 0.0,
         "included_graph_nodes": included_nodes,
         "included_graph_paths": included_paths,
         "discarded_graph_paths": discarded_paths,
+        "graph_available_path_count": available_paths,
+        "graph_selected_path_count": selected_paths,
+        "graph_dropped_repeated_prefix_path_count": repeated_prefix_paths,
+        "graph_selected_direct_path_count": direct_paths,
+        "graph_selected_production_path_count": production_paths,
+        "graph_selected_low_hop_path_count": low_hop_paths,
+        "graph_required_production_path_count": required_production_paths,
+        "graph_missing_production_path_count": missing_production_paths,
+        "graph_reviewer_context_token_estimate": graph_reviewer_tokens,
+        "graph_reviewer_available_path_count": reviewer_available_paths,
+        "graph_reviewer_selected_path_count": reviewer_selected_paths,
+        "graph_reviewer_dropped_path_count": reviewer_dropped_paths,
+        "graph_reviewer_selected_token_count": reviewer_selected_tokens,
+        "graph_reviewer_role_coverage": reviewer_role_coverage,
+        "graph_path_selection_reason_counts": path_selection_reasons,
         "reviewer_tool_call_count": reviewer_tools,
         "unused_context_ratio": float(mean(unused_ratios)) if unused_ratios else 0.0,
         "edge_confidence_contribution": (
@@ -941,12 +1136,12 @@ def _aggregate_skill_retrieval_metrics(
 
 
 def _aggregate_quality_metrics(results: list[EvalResult]) -> dict[str, int | float]:
-    expected_roots = sum(item.expected_root_cause_count for item in results)
-    matched_roots = sum(item.matched_root_cause_count for item in results)
-    over_merges = sum(item.over_merge_count for item in results)
-    under_merges = sum(item.under_merge_count for item in results)
-    repair_expected = sum(item.repair_unit_expected_count for item in results)
-    repair_matched = sum(item.repair_unit_matched_count for item in results)
+    expected_roots = sum(item.expected_root_cause_count or 0 for item in results)
+    matched_roots = sum(item.matched_root_cause_count or 0 for item in results)
+    over_merges = sum(item.over_merge_count or 0 for item in results)
+    under_merges = sum(item.under_merge_count or 0 for item in results)
+    repair_expected = sum(item.repair_unit_expected_count or 0 for item in results)
+    repair_matched = sum(item.repair_unit_matched_count or 0 for item in results)
     evidence_complete = sum(item.evidence_complete_count for item in results)
     final_findings = sum(item.final_finding_count for item in results)
     return {
@@ -973,7 +1168,7 @@ class EvalReport(BaseModel):
 
     suite: str = Field(default="golden")
     variant: EvalVariant | None = None
-    matcher_version: str = EVAL_MATCHER_VERSION
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION
     skill_bank_digest: str = ""
     generated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     fixture_count: int = Field(default=0, ge=0)

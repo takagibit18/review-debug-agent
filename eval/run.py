@@ -15,7 +15,13 @@ from eval.metrics import build_eval_report, write_human_review_template
 from eval.report import render_report, save_report_json
 from eval.run_summary import summarize_event_log
 from eval.runner import load_fixtures, run_suite
-from eval.schemas import EVAL_MATCHER_VERSION, EvalReport, EvalResult, EvalVariant
+from eval.schemas import (
+    DEFAULT_EVAL_MATCHER_VERSION,
+    EVAL_MATCHER_VERSIONS,
+    EvalReport,
+    EvalResult,
+    EvalVariant,
+)
 from eval.trend import build_quality_trend, expand_report_inputs
 from src.config import get_settings
 
@@ -128,6 +134,13 @@ def crawl_cmd(
     help="Model sampling temperature for eval runs. Defaults to EVAL_TEMPERATURE or 0.0.",
 )
 @click.option(
+    "--matcher-version",
+    default=DEFAULT_EVAL_MATCHER_VERSION,
+    type=click.Choice(list(EVAL_MATCHER_VERSIONS)),
+    show_default=True,
+    help="Issue matcher version; semantic-v2 is for historical replay.",
+)
+@click.option(
     "--variant-id",
     default=None,
     help="Stable eval variant id recorded in every result.",
@@ -204,6 +217,7 @@ def eval_cmd(
     fixture_concurrency: int | None,
     review_max_iterations: int | None,
     temperature: float | None,
+    matcher_version: str,
     variant_id: str | None,
     context_mode: str | None,
     graph_cache_mode: str | None,
@@ -264,6 +278,7 @@ def eval_cmd(
             temperature=(
                 temperature if temperature is not None else settings.eval_temperature
             ),
+            matcher_version=matcher_version,
             output_json=output_json,
             repo_filters=repo_filters,
             fixture_id_filters=fixture_id_filters,
@@ -440,6 +455,7 @@ async def _evaluate(
     fixture_concurrency: int = 1,
     review_max_iterations: int | None = None,
     temperature: float = 0.0,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
     output_json: str | None = None,
     repo_filters: tuple[str, ...] = (),
     fixture_id_filters: tuple[str, ...] = (),
@@ -465,6 +481,7 @@ async def _evaluate(
         fixture_concurrency=max(1, fixture_concurrency),
         review_max_iterations=max(1, review_max_iterations),
         temperature=temperature,
+        matcher_version=matcher_version,
         variant=variant,
     )
     results: list[EvalResult] = [item.runs[0] for item in sampled_results if item.runs]
@@ -474,7 +491,7 @@ async def _evaluate(
         sampled_results=sampled_results,
     )
     report.variant = variant
-    report.matcher_version = EVAL_MATCHER_VERSION
+    report.matcher_version = matcher_version
     bank_digests = {
         item.skill_bank_digest for item in results if item.skill_bank_digest
     }

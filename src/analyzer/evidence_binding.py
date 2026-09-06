@@ -72,7 +72,9 @@ def bind_candidate_evidence(
                 tool_evidence,
                 manifests,
             )
-            selected = _select_binding(evidence, matches)
+            selected = _deterministic_unique_binding(evidence, matches)
+            if selected is None:
+                selected = _select_binding(evidence, matches)
             if selected is not None:
                 _apply_binding(evidence, selected)
                 if selected.context_manifest_id:
@@ -171,7 +173,13 @@ def _select_binding(
 
     declared_manifest = evidence.context_manifest_id.strip()
     declared_hash = evidence.context_hash.strip()
+    if declared_hash and not declared_manifest:
+        return None
     if declared_manifest:
+        if not declared_hash:
+            # An explicit manifest claim is only authoritative when its hash is
+            # also declared; otherwise there is no exact provenance to select.
+            return None
         manifest_matches = [
             item
             for item in matches
@@ -189,6 +197,17 @@ def _select_binding(
 
     manifest_matches = [item for item in matches if item.kind == "manifest"]
     return manifest_matches[0] if len(manifest_matches) == 1 else None
+
+
+def _deterministic_unique_binding(
+    evidence: EvidenceProvenance,
+    matches: list[TrustedEvidenceBinding],
+) -> TrustedEvidenceBinding | None:
+    """Recover only an unannotated claim with exactly one observed binding."""
+
+    if evidence.context_manifest_id.strip() or evidence.context_hash.strip():
+        return None
+    return matches[0] if len(matches) == 1 else None
 
 
 def _apply_binding(

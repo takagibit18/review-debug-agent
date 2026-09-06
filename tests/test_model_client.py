@@ -414,3 +414,24 @@ def test_deepseek_rejects_thinking_with_forced_tool() -> None:
                 policy=ModelCallPolicy(thinking="high", forced_tool="verify"),
             )
         )
+
+
+def test_chat_records_request_hash_and_adjacent_common_prefix() -> None:
+    fake = _FakeOpenAIClient()
+    client = _make_client(fake)
+    messages = [
+        Message(role="system", content="stable review policy"),
+        Message(role="user", content="stable review payload"),
+    ]
+
+    asyncio.run(client.chat(messages=messages))
+    first_attempt = client.consume_call_telemetry()[0]
+    asyncio.run(client.chat(messages=messages))
+    second_attempt = client.consume_call_telemetry()[0]
+
+    assert first_attempt["request_hash"]
+    assert second_attempt["request_hash"] == first_attempt["request_hash"]
+    assert first_attempt["adjacent_common_prefix_tokens"] == 0
+    assert second_attempt["adjacent_common_prefix_tokens"] > 0
+    assert second_attempt["adjacent_prefix_hash"]
+    assert second_attempt["provider_cache_hit"] is False

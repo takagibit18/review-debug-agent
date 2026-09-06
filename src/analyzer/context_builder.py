@@ -4,23 +4,16 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from src.analyzer.context_state import ContextState, DecisionStep
 from src.analyzer.schemas import DebugRequest, ReviewRequest
+from src.models.token_telemetry import estimate_tokens as shared_estimate_tokens
 
 if TYPE_CHECKING:
     from src.analyzer.context_compressor import ContextCompressor
-
-_tiktoken: Any
-try:
-    import tiktoken as _tiktoken_module
-
-    _tiktoken = _tiktoken_module
-except Exception:  # noqa: BLE001
-    _tiktoken = None
 
 
 class ContextPart(BaseModel):
@@ -30,6 +23,10 @@ class ContextPart(BaseModel):
     label: str
     content: str
     token_count: int = Field(default=0, ge=0)
+    source_complete: bool = Field(
+        default=True,
+        description="Whether the source slice is known to contain the complete source file",
+    )
 
 
 class ContextBuilder:
@@ -233,12 +230,7 @@ class ContextBuilder:
         return ""
 
     def estimate_tokens(self, text: str) -> int:
-        if not text:
-            return 0
-        if _tiktoken is None:
-            return max(1, len(text) // 4)
-        encoding = _tiktoken.get_encoding("cl100k_base")
-        return len(encoding.encode(text))
+        return shared_estimate_tokens(text)
 
     def truncate_context(
         self, parts: list[ContextPart], budget: int
@@ -257,6 +249,7 @@ class ContextBuilder:
                     label=part.label,
                     content=part.content,
                     token_count=count,
+                    source_complete=part.source_complete,
                 )
             )
             total += count

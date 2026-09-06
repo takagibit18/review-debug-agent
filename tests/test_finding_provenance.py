@@ -188,7 +188,7 @@ def _write_integrity_repo(tmp_path: Path) -> None:
     )
 
 
-def test_diff_evidence_accepts_unchanged_line_inside_complete_hunk(
+def test_structured_diff_evidence_without_contract_is_blocked(
     tmp_path: Path,
 ) -> None:
     _write_integrity_repo(tmp_path)
@@ -223,8 +223,11 @@ def test_diff_evidence_accepts_unchanged_line_inside_complete_hunk(
         candidate_context=context,
     )
 
-    assert result.passed_count == 1
-    assert result.rejected_count == 0
+    assert result.passed_count == 0
+    assert result.rejected_count == 1
+    assert "evidence_incomplete" in {
+        failure.code for failure in result.results[0].failures
+    }
 
 
 def test_diff_evidence_outside_hunk_is_rejected_as_unobserved(

@@ -43,6 +43,7 @@ from src.models.schemas import (
     ModelResponse,
     TokenUsage,
 )
+from src.models.token_telemetry import estimate_tokens, serialize_json, token_component
 from src.tools.base import ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,15 @@ _EMPTY_ISSUES_SUMMARY_CONCERN_PATTERN = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+def _optional_non_negative_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
 
 
 class InferenceEngine:
@@ -101,17 +111,33 @@ class InferenceEngine:
         tool_feedback: list[dict[str, Any]] | None = None,
         feedback_digest_index: dict[str, dict[str, Any]] | None = None,
         draft_findings: list[DraftFinding] | None = None,
+        validator_result: dict[str, Any] | None = None,
         prompt_input_token_budget: int | None = None,
         iteration: int = 0,
         force_submit: bool = False,
         near_last_iteration: bool = False,
         defer_submit: bool = False,
+        stage: str | None = None,
         skill_selection: SkillSelection | None = None,
         skill_telemetry: dict[str, Any] | None = None,
     ) -> tuple[AnalysisPlan, TokenUsage]:
         file_contents = file_contents or {}
         settings = get_settings()
-        submit_only = force_submit or near_last_iteration
+        submit_only = force_submit or near_last_iteration or stage == "submit_only"
+        inferred_stage = (
+            "validate"
+            if any(
+                str(item.get("function", {}).get("name", ""))
+                == "validate_review_draft"
+                for item in (tool_schemas or [])
+                if isinstance(item, dict)
+                and isinstance(item.get("function"), dict)
+            )
+            else "explore"
+        )
+        # A final/near-limit call is submit-only even when an older caller did
+        # not pass the newer explicit stage label.
+        call_stage = "submit_only" if submit_only else (stage or inferred_stage)
         requested_budget = (
             prompt_input_token_budget
             if prompt_input_token_budget is not None
@@ -131,32 +157,45 @@ class InferenceEngine:
         cb = ContextBuilder()
         context_telemetry: dict[str, Any] = {}
         summary_enabled = settings.context_summary_enabled and not submit_only
+        prompt_context = state
+        prompt_diff_text = diff_text
+        prompt_file_contents = file_contents
+        prompt_project_structure = project_structure
+        if submit_only and isinstance(request, ReviewRequest):
+            # Submit-only keeps evidence handoff explicit and bounded.  The full
+            # reviewer projection was already available to the previous turn;
+            # only the validated/minimal spans below are reintroduced.
+            prompt_context = state.model_copy(deep=True)
+            prompt_context.candidate_context_manifests = []
+            prompt_diff_text = ""
+            prompt_file_contents = {}
+            prompt_project_structure = ""
         if isinstance(request, ReviewRequest):
             if summary_enabled:
                 messages = await build_review_messages_async(
                     request,
-                    state,
-                    diff_text,
-                    file_contents,
+                    prompt_context,
+                    prompt_diff_text,
+                    prompt_file_contents,
                     prompt_token_budget=budget,
                     context_builder=cb,
                     compressor_model_client=self._model_client,
                     summary_enabled=True,
                     summary_max_tokens_per_part=get_settings().summary_max_tokens_per_part,
                     summary_model_name=request.model_name or get_settings().model_name,
-                    project_structure=project_structure,
+                    project_structure=prompt_project_structure,
                     telemetry_sink=context_telemetry,
                     skill_selection=skill_selection,
                 )
             else:
                 messages = build_review_messages(
                     request,
-                    state,
-                    diff_text,
-                    file_contents,
+                    prompt_context,
+                    prompt_diff_text,
+                    prompt_file_contents,
                     prompt_token_budget=budget,
                     context_builder=cb,
-                    project_structure=project_structure,
+                    project_structure=prompt_project_structure,
                     telemetry_sink=context_telemetry,
                     skill_selection=skill_selection,
                 )
@@ -201,6 +240,8 @@ class InferenceEngine:
                     tool_feedback or [],
                     feedback_digest_index or {},
                     draft_findings or [],
+                    validator_result=validator_result,
+                    candidate_context_manifests=state.candidate_context_manifests,
                     token_budget=final_feedback_budget,
                 )
             )
@@ -285,7 +326,18 @@ class InferenceEngine:
             thinking="off" if submit_only else "high",
             forced_tool=self._submit_tool_name(request) if submit_only else None,
         )
-        conversation_messages = self._conversation.messages()
+        # Once deterministic validation has passed, the submit-only call is a
+        # fresh, bounded handoff.  Replaying every prior assistant/tool turn
+        # would re-send repeated source/tool feedback.  Legacy forced-finalize
+        # callers without validator state retain the provider replay contract.
+        minimal_submit_only = bool(
+            submit_only
+            and isinstance(validator_result, dict)
+            and validator_result.get("submit_allowed") is True
+        )
+        conversation_messages = (
+            [] if minimal_submit_only else self._conversation.messages()
+        )
         conversation_history_count = len(conversation_messages)
         if submit_only:
             assert finalize_conversation_insert_at is not None
@@ -311,13 +363,17 @@ class InferenceEngine:
             final_submit_feedback_token_budget=final_feedback_budget,
             final_evidence_telemetry=final_evidence_telemetry,
             force_submit=submit_only,
+            stage=call_stage,
+            relation_graph_summary=state.relation_graph_summary,
         )
-        response = await self._model_client.chat(
+        response = await self._chat_with_telemetry(
             messages=messages,
             config=config,
             tools=tools,
             policy=policy,
-            conversation=self._conversation,
+            iteration=iteration,
+            stage=call_stage,
+            force_submit=submit_only,
         )
         response_id = self._persist_model_response(response, iteration)
         self._record_length_finish(response, iteration, config)
@@ -351,11 +407,15 @@ class InferenceEngine:
                 prior_history_start=conversation_history_start,
                 prior_history_count=conversation_history_count,
                 invalid_tool_calls=response.tool_calls,
+                stage=call_stage,
             )
             repair_response.usage.total_tokens += initial_usage.total_tokens
             repair_response.usage.prompt_tokens += initial_usage.prompt_tokens
             repair_response.usage.completion_tokens += initial_usage.completion_tokens
             repair_response.usage.reasoning_tokens += initial_usage.reasoning_tokens
+            repair_response.usage_present = (
+                repair_response.usage_present or response.usage_present
+            )
             if repair_plan.draft_review is not None:
                 repair_plan.draft_finding_calls = plan.draft_finding_calls
                 repair_plan.draft_finding_source_response_id = (
@@ -411,6 +471,172 @@ class InferenceEngine:
         )
         return plan, response.usage
 
+    async def _chat_with_telemetry(
+        self,
+        *,
+        messages: list[Message],
+        config: ModelConfig,
+        tools: list[dict[str, Any]],
+        policy: ModelCallPolicy,
+        iteration: int,
+        stage: str,
+        force_submit: bool,
+    ) -> ModelResponse:
+        """Call the provider and emit one safe event for every provider attempt."""
+
+        try:
+            response = await self._model_client.chat(
+                messages=messages,
+                config=config,
+                tools=tools,
+                policy=policy,
+                conversation=self._conversation,
+            )
+        except Exception as exc:
+            self._record_provider_attempts(
+                attempts=self._consume_provider_attempts(),
+                response=None,
+                error=exc,
+                iteration=iteration,
+                stage=stage,
+                force_submit=force_submit,
+                policy=policy,
+                tool_schema_count=len(tools),
+            )
+            raise
+
+        self._record_provider_attempts(
+            attempts=self._consume_provider_attempts(),
+            response=response,
+            error=None,
+            iteration=iteration,
+            stage=stage,
+            force_submit=force_submit,
+            policy=policy,
+            tool_schema_count=len(tools),
+        )
+        return response
+
+    def _consume_provider_attempts(self) -> list[dict[str, Any]]:
+        consumer = getattr(self._model_client, "consume_call_telemetry", None)
+        if not callable(consumer):
+            return []
+        try:
+            attempts = consumer()
+        except Exception:  # noqa: BLE001
+            return []
+        return [item for item in attempts if isinstance(item, dict)]
+
+    def _record_provider_attempts(
+        self,
+        *,
+        attempts: list[dict[str, Any]],
+        response: ModelResponse | None,
+        error: Exception | None,
+        iteration: int,
+        stage: str,
+        force_submit: bool,
+        policy: ModelCallPolicy,
+        tool_schema_count: int,
+    ) -> None:
+        if self._trace_event_writer is None:
+            return
+        if not attempts:
+            attempts = [
+                {
+                    "provider_attempt": 1,
+                    "success": response is not None,
+                    "usage_present": bool(response and response.usage_present),
+                    "prompt_tokens": response.usage.prompt_tokens if response else 0,
+                    "completion_tokens": response.usage.completion_tokens
+                    if response
+                    else 0,
+                    "total_tokens": response.usage.total_tokens if response else 0,
+                    "reasoning_tokens": response.usage.reasoning_tokens
+                    if response
+                    else 0,
+                    "cached_prompt_tokens": response.usage.cached_prompt_tokens
+                    if response
+                    else None,
+                    "actual_reasoning_effort": response.actual_reasoning_effort
+                    if response
+                    else "unknown",
+                    "provider_request_id": response.provider_request_id
+                    if response
+                    else "",
+                    "usage_unknown": response is None,
+                }
+            ]
+        for raw in attempts:
+            success = bool(raw.get("success", response is not None))
+            usage_present = bool(raw.get("usage_present", success))
+            payload: dict[str, Any] = {
+                "iteration": iteration,
+                "provider_attempt": int(raw.get("provider_attempt", 1) or 1),
+                "stage": stage,
+                "force_submit": force_submit,
+                "thinking": str(raw.get("thinking", policy.thinking)),
+                "actual_reasoning_effort": str(
+                    raw.get(
+                        "actual_reasoning_effort",
+                        response.actual_reasoning_effort
+                        if response is not None
+                        else "unknown",
+                    )
+                ),
+                "forced_tool": str(
+                    raw.get("forced_tool", policy.forced_tool or "none")
+                ),
+                "tool_schema_count": int(
+                    raw.get("tool_schema_count", tool_schema_count) or 0
+                ),
+                "prompt_tokens": max(0, int(raw.get("prompt_tokens", 0) or 0)),
+                "completion_tokens": max(
+                    0, int(raw.get("completion_tokens", 0) or 0)
+                ),
+                "total_tokens": max(0, int(raw.get("total_tokens", 0) or 0)),
+                "reasoning_tokens": max(
+                    0, int(raw.get("reasoning_tokens", 0) or 0)
+                ),
+                "cached_prompt_tokens": _optional_non_negative_int(
+                    raw.get("cached_prompt_tokens")
+                ),
+                "request_hash": str(raw.get("request_hash", "") or ""),
+                "request_estimated_tokens": max(
+                    0, int(raw.get("request_estimated_tokens", 0) or 0)
+                ),
+                "adjacent_common_prefix_tokens": max(
+                    0, int(raw.get("adjacent_common_prefix_tokens", 0) or 0)
+                ),
+                "adjacent_prefix_hash": str(
+                    raw.get("adjacent_prefix_hash", "") or ""
+                ),
+                "provider_cache_hit": bool(
+                    raw.get("cached_prompt_tokens") is not None
+                    and int(raw.get("cached_prompt_tokens", 0) or 0) > 0
+                ),
+                "usage_present": usage_present,
+                "success": success,
+                "provider_request_id": str(raw.get("provider_request_id", "") or ""),
+                "usage_unknown": bool(
+                    raw.get("usage_unknown", not success and not usage_present)
+                ),
+            }
+            if not success:
+                if error is not None:
+                    payload.setdefault("failure_type", error.__class__.__name__)
+                    payload.setdefault(
+                        "failure_status", getattr(error, "status_code", None)
+                    )
+                    payload.setdefault(
+                        "provider_code", str(getattr(error, "code", "") or "")
+                    )
+                else:
+                    payload.setdefault("failure_type", str(raw.get("failure_type", "")))
+                    payload.setdefault("failure_status", raw.get("failure_status"))
+                    payload.setdefault("provider_code", str(raw.get("provider_code", "")))
+            self._trace_event_writer(EventType.MODEL_CALL, "provider_attempt", payload)
+
     async def _retry_submit_review_validation_repair(
         self,
         *,
@@ -422,6 +648,7 @@ class InferenceEngine:
         prior_history_start: int,
         prior_history_count: int,
         invalid_tool_calls: list[dict[str, Any]],
+        stage: str = "submit_only",
     ) -> tuple[AnalysisPlan, ModelResponse, dict[str, Any], str]:
         for raw_call in invalid_tool_calls:
             call_id = str(raw_call.get("id", "")).strip()
@@ -453,12 +680,14 @@ class InferenceEngine:
         ]
         config = self._build_submit_config(request)
         policy = ModelCallPolicy(thinking="off", forced_tool="submit_review")
-        response = await self._model_client.chat(
+        response = await self._chat_with_telemetry(
             messages=repair_messages,
             config=config,
             tools=self._submit_only_tools(tool_schemas, request),
             policy=policy,
-            conversation=self._conversation,
+            iteration=iteration,
+            stage=stage,
+            force_submit=True,
         )
         response_id = self._persist_model_response(response, iteration)
         plan, parse_meta = self._parse_tool_calls(
@@ -885,13 +1114,12 @@ class InferenceEngine:
                         role="user",
                         content=(
                             f"{iter_tag}prefetched_tool_context: "
-                            + json.dumps(
+                            + serialize_json(
                                 {
                                     "tool": function_block.get("name", "unknown"),
                                     "arguments": function_block.get("arguments", "{}"),
                                     "result": result_payload,
-                                },
-                                ensure_ascii=True,
+                                }
                             )
                         ),
                     )
@@ -939,6 +1167,8 @@ class InferenceEngine:
             "included_tool_result_count": 0,
             "available_concern_count": 0,
             "included_concern_count": 0,
+            "validator_result_included": 0,
+            "manifest_span_count": 0,
             "included_count": 0,
             "deduplicated_count": 0,
             "truncated_count": 0,
@@ -952,6 +1182,8 @@ class InferenceEngine:
         digest_index: dict[str, dict[str, Any]],
         draft_findings: list[DraftFinding],
         *,
+        validator_result: dict[str, Any] | None = None,
+        candidate_context_manifests: list[dict[str, Any]] | None = None,
         token_budget: int,
     ) -> tuple[Message | None, dict[str, int]]:
         """Build a bounded, deduplicated evidence handoff for submit-only calls."""
@@ -973,6 +1205,23 @@ class InferenceEngine:
                     f"- {draft.id}: {location}\n  claim: {draft.claim}",
                 )
             )
+
+        if validator_result:
+            candidates.append(
+                (
+                    "validator",
+                    "- validator_result: "
+                    + cls._json_preview(
+                        cls._compact_validator_result(validator_result), 1800
+                    ),
+                )
+            )
+
+        manifest_evidence = cls._manifest_evidence_for_drafts(
+            candidate_context_manifests or [], draft_findings
+        )
+        for evidence in manifest_evidence:
+            candidates.append(("manifest", "- " + evidence))
 
         for item in reversed(tool_feedback):
             if not isinstance(item, dict):
@@ -1072,6 +1321,10 @@ class InferenceEngine:
                 telemetry["included_draft_finding_count"] += 1
             elif kind == "tool":
                 telemetry["included_tool_result_count"] += 1
+            elif kind == "validator":
+                telemetry["validator_result_included"] += 1
+            elif kind == "manifest":
+                telemetry["manifest_span_count"] += 1
             else:
                 telemetry["included_concern_count"] += 1
             if shortened:
@@ -1081,6 +1334,98 @@ class InferenceEngine:
         content = "\n".join(lines)
         telemetry["estimated_tokens"] = builder.estimate_tokens(content)
         return Message(role="user", content=content), telemetry
+
+    @staticmethod
+    def _compact_validator_result(result: dict[str, Any]) -> dict[str, Any]:
+        """Keep only validator decisions needed by a submit-only reviewer."""
+
+        compact: dict[str, Any] = {}
+        for key in (
+            "validated_draft_ids",
+            "validated_finding_ids",
+            "validator_passed",
+            "submit_allowed",
+            "effective_issue_count",
+            "unresolved_evidence_gaps",
+            "policy_warnings",
+        ):
+            if key in result:
+                compact[key] = result[key]
+        issue_results = result.get("issue_results")
+        if isinstance(issue_results, list):
+            compact["issue_results"] = [
+                {
+                    key: item[key]
+                    for key in (
+                        "original_index",
+                        "normalized_location",
+                        "severity",
+                        "passes_current_filter",
+                        "fail_reasons",
+                    )
+                    if key in item
+                }
+                for item in issue_results[:16]
+                if isinstance(item, dict)
+            ]
+        return compact
+
+    @staticmethod
+    def _manifest_evidence_for_drafts(
+        manifests: list[dict[str, Any]], drafts: list[DraftFinding]
+    ) -> list[str]:
+        """Select small manifest id/hash-bound spans relevant to known drafts."""
+
+        if not manifests or not drafts:
+            return []
+        output: list[str] = []
+        for manifest in manifests:
+            manifest_id = str(manifest.get("candidate_id", "")).strip()
+            if not manifest_id:
+                continue
+            raw_spans = manifest.get("included_spans", [])
+            if not isinstance(raw_spans, list):
+                continue
+            selected: list[dict[str, Any]] = []
+            for span in raw_spans:
+                if not isinstance(span, dict):
+                    continue
+                path = str(span.get("file", "")).replace("\\", "/").lstrip("./")
+                try:
+                    start = int(span.get("start_line", 0) or 0)
+                    end = int(span.get("end_line", start) or start)
+                except (TypeError, ValueError):
+                    continue
+                if any(
+                    draft.file.replace("\\", "/").lstrip("./") == path
+                    and (draft.line is None or start <= draft.line <= end)
+                    for draft in drafts
+                ):
+                    content = str(span.get("content", "") or "")
+                    if len(content) > 640:
+                        content = content[:640].rstrip() + "\n...[truncated]"
+                    selected.append(
+                        {
+                            "file": path,
+                            "start_line": start,
+                            "end_line": end,
+                            "symbol_id": span.get("symbol_id", ""),
+                            "role": span.get("role", ""),
+                            "content": content,
+                            "retrieval_source": span.get("retrieval_source", ""),
+                            "context_hash": span.get("context_hash", ""),
+                        }
+                    )
+                if len(selected) >= 3:
+                    break
+            if selected:
+                output.append(
+                    "manifest_evidence manifest_id="
+                    + manifest_id
+                    + " spans="
+                    + serialize_json(selected)
+                )
+        return output
 
     @staticmethod
     def _tool_result_payload(result: Any) -> dict[str, Any]:
@@ -1101,7 +1446,7 @@ class InferenceEngine:
                 parsed = {"raw": arguments}
         else:
             parsed = arguments
-        serialized = json.dumps(parsed, ensure_ascii=True, sort_keys=True, default=str)
+        serialized = serialize_json(parsed)
         return f"{name}:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
 
     @staticmethod
@@ -1114,9 +1459,7 @@ class InferenceEngine:
         else:
             parsed = value
         try:
-            serialized = json.dumps(
-                parsed, ensure_ascii=True, sort_keys=True, default=str
-            )
+            serialized = serialize_json(parsed)
         except Exception:  # noqa: BLE001
             serialized = str(parsed)
         if len(serialized) <= max_chars:
@@ -1316,12 +1659,14 @@ class InferenceEngine:
         final_submit_feedback_token_budget: int,
         final_evidence_telemetry: dict[str, int],
         force_submit: bool,
+        stage: str = "explore",
+        relation_graph_summary: dict[str, Any] | None = None,
     ) -> None:
         if self._trace_event_writer is None:
             return
         builder = ContextBuilder()
         message_tokens = sum(builder.estimate_tokens(item.content) for item in messages)
-        tool_schema_json = json.dumps(tools, ensure_ascii=True, sort_keys=True)
+        tool_schema_json = serialize_json(tools)
         tool_schema_tokens = builder.estimate_tokens(tool_schema_json)
         message_shapes = [
             {
@@ -1342,24 +1687,35 @@ class InferenceEngine:
             for role in role_counts
         }
         tool_shapes = [self._tool_schema_shape(item, builder) for item in tools]
-        assembled_request_chars = len(
-            json.dumps(
-                {
-                    "model": config.model,
-                    "messages": [
-                        item.model_dump(mode="json", exclude_none=True)
-                        for item in messages
-                    ],
-                    "temperature": config.temperature,
-                    "max_tokens": config.max_tokens,
-                    "top_p": config.top_p,
-                    "tools": tools,
-                    "thinking": policy.thinking,
-                    "forced_tool": policy.forced_tool,
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-            )
+        wire_messages = [self._safe_wire_message(item) for item in messages]
+        assembled_request_text = serialize_json(
+            {
+                "model": config.model,
+                "messages": wire_messages,
+                "temperature": config.temperature,
+                "max_tokens": config.max_tokens,
+                "top_p": config.top_p,
+                "tools": tools,
+                "tool_choice": config.tool_choice,
+                "extra_body": config.extra_body,
+                "thinking": policy.thinking,
+                "forced_tool": policy.forced_tool,
+            }
+        )
+        assembled_request_chars = len(assembled_request_text)
+        assembled_request_tokens = estimate_tokens(assembled_request_text)
+        component_records = self._build_component_records(
+            messages=messages,
+            tools=tools,
+            tool_feedback=tool_feedback,
+            relation_graph_summary=relation_graph_summary or {},
+            wire_messages=wire_messages,
+            assembled_request_text=assembled_request_text,
+        )
+        component_token_sum = sum(
+            int(item["estimated_tokens"])
+            for item in component_records
+            if item["component"] != "assembled_request_total"
         )
         prefetch_coverage = self._measure_prefetch_coverage(
             file_contents,
@@ -1381,6 +1737,12 @@ class InferenceEngine:
                 "estimated_message_tokens": message_tokens,
                 "estimated_tool_schema_tokens": tool_schema_tokens,
                 "estimated_prompt_tokens": message_tokens + tool_schema_tokens,
+                "assembled_request_estimated_tokens": assembled_request_tokens,
+                "component_token_sum": component_token_sum,
+                "assembled_envelope_overhead_tokens": max(
+                    0, assembled_request_tokens - component_token_sum
+                ),
+                "tokenizer": "cl100k_base",
                 "message_count": len(messages),
                 "message_count_by_role": role_counts,
                 "message_chars": sum(len(item.content) for item in messages),
@@ -1390,8 +1752,10 @@ class InferenceEngine:
                 "tool_schema_chars": len(tool_schema_json),
                 "tool_schema_shapes": tool_shapes,
                 "assembled_request_chars": assembled_request_chars,
+                "component_records": component_records,
                 "max_output_tokens": config.max_tokens,
                 "thinking": policy.thinking,
+                "stage": stage,
                 "forced_tool": policy.forced_tool or "none",
                 "prefetch_coverage": prefetch_coverage,
                 "force_submit": force_submit,
@@ -1400,6 +1764,106 @@ class InferenceEngine:
                 **context_telemetry,
             },
         )
+
+    @staticmethod
+    def _safe_wire_message(message: Message) -> dict[str, Any]:
+        """Serialize message fields used for input sizing without transient thinking."""
+
+        item: dict[str, Any] = {
+            "role": message.role,
+            "content": message.content,
+        }
+        if message.tool_call_id is not None:
+            item["tool_call_id"] = message.tool_call_id
+        if message.tool_calls:
+            item["tool_calls"] = message.tool_calls
+        return item
+
+    @classmethod
+    def _build_component_records(
+        cls,
+        *,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        tool_feedback: list[dict[str, Any]],
+        relation_graph_summary: dict[str, Any],
+        wire_messages: list[dict[str, Any]],
+        assembled_request_text: str,
+    ) -> list[dict[str, Any]]:
+        """Build size/hash records for all visible request components."""
+
+        by_component: dict[str, list[str]] = {}
+        for message in messages:
+            component = cls._message_component(message)
+            by_component.setdefault(component, []).append(message.content)
+
+        records: list[dict[str, Any]] = []
+
+        def add(name: str, text: str) -> None:
+            records.append(token_component(name, text))
+
+        add("system", "\n".join(by_component.get("system", [])))
+        review_payload = "\n".join(by_component.get("review_payload", []))
+        if review_payload:
+            payload_start = review_payload.find("{")
+            if payload_start >= 0:
+                review_payload = review_payload[payload_start:]
+        add("review_payload", review_payload)
+
+        graph_manifests: list[Any] = []
+        graph_paths: list[Any] = []
+        if review_payload:
+            try:
+                decoded = json.loads(review_payload)
+            except json.JSONDecodeError:
+                decoded = {}
+            if isinstance(decoded, dict):
+                raw_manifests = decoded.get("candidate_context_manifests", [])
+                if isinstance(raw_manifests, list):
+                    for manifest in raw_manifests:
+                        if not isinstance(manifest, dict):
+                            continue
+                        graph_manifests.append(manifest)
+                        raw_paths = manifest.get("included_graph_paths", [])
+                        if isinstance(raw_paths, list):
+                            graph_paths.extend(
+                                {"candidate_id": manifest.get("candidate_id"), "path": path}
+                                for path in raw_paths
+                                if isinstance(path, dict)
+                            )
+        add("graph_manifest_projection", serialize_json(graph_manifests))
+        add("graph_path_projection", serialize_json(graph_paths))
+        add("relation_graph_summary", serialize_json(relation_graph_summary))
+        add(
+            "conversation_history",
+            serialize_json(
+                [
+                    message
+                    for message in wire_messages
+                    if message.get("role") in {"assistant", "tool"}
+                ]
+            ),
+        )
+        add("tool_feedback", serialize_json(tool_feedback))
+        add(
+            "final_submit_evidence",
+            "\n".join(by_component.get("final_submit_evidence", [])),
+        )
+        add(
+            "defer_notice",
+            "\n".join(by_component.get("defer_submit_notice", [])),
+        )
+        add(
+            "finalize_notice",
+            "\n".join(by_component.get("finalize_notice", [])),
+        )
+        add(
+            "near_last_notice",
+            "\n".join(by_component.get("near_last_notice", [])),
+        )
+        add("tool_schemas", serialize_json(tools))
+        add("assembled_request_total", assembled_request_text)
+        return records
 
     @staticmethod
     def _message_component(message: Message) -> str:
@@ -1414,6 +1878,8 @@ class InferenceEngine:
             return "final_submit_evidence"
         if content.startswith("FINAL CALL"):
             return "finalize_notice"
+        if content.startswith("Note: you are at the last allowed iteration"):
+            return "near_last_notice"
         if content.startswith("Review the payload"):
             return "review_payload"
         if content.startswith("Return tool calls if needed"):
@@ -1424,7 +1890,7 @@ class InferenceEngine:
     def _tool_schema_shape(
         schema: dict[str, Any], builder: ContextBuilder
     ) -> dict[str, Any]:
-        serialized = json.dumps(schema, ensure_ascii=True, sort_keys=True)
+        serialized = serialize_json(schema)
         function = schema.get("function", {})
         name = (
             function.get("name", "unknown") if isinstance(function, dict) else "unknown"

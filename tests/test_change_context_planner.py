@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 from src.analyzer.code_graph import (
@@ -134,6 +135,9 @@ def test_depth_truncation_limits_execution_flow(tmp_path: Path) -> None:
     leaf_id = next(node_id for node_id in deep_nodes if "|leaf|" in node_id)
     assert leaf_id not in shallow_nodes
     assert leaf_id in deep_nodes
+    assert deep.manifests[0].required_production_path_count >= 1
+    assert deep.manifests[0].selected_production_path_count >= 1
+    assert deep.manifests[0].missing_production_path_count == 0
 
 
 def test_node_and_span_deduplication(tmp_path: Path) -> None:
@@ -157,6 +161,86 @@ def test_node_and_span_deduplication(tmp_path: Path) -> None:
     assert len({path.path_id for path in manifest.included_graph_paths}) == len(
         manifest.included_graph_paths
     )
+
+
+def test_repeated_first_hop_prefixes_are_capped_with_audit_counts(
+    tmp_path: Path,
+) -> None:
+    source = _write(
+        tmp_path / "fanout.py",
+        "def leaf_0():\n    return 0\n\n"
+        "def leaf_1():\n    return 1\n\n"
+        "def leaf_2():\n    return 2\n\n"
+        "def leaf_3():\n    return 3\n\n"
+        "def hub():\n"
+        "    return leaf_0() + leaf_1() + leaf_2() + leaf_3()\n\n"
+        "def changed():\n    return hub()  # changed\n",
+    )
+    diff = _diff("fanout.py", 17, "    return hub()", "    return hub()  # changed")
+
+    graph, _, result = _plan(
+        tmp_path,
+        [source],
+        diff,
+        max_depth=2,
+        max_nodes=100,
+        max_context_tokens=10_000,
+        max_paths_per_prefix=2,
+    )
+    manifest = result.manifests[0]
+
+    selected_prefixes = Counter(
+        (path.edges[0].target, path.edges[0].path)
+        for path in manifest.included_graph_paths
+        if len(path.edges) > 1
+    )
+
+    assert manifest.available_graph_path_count > manifest.selected_reviewer_path_count
+    assert manifest.dropped_repeated_prefix_path_count >= 1
+    assert manifest.path_selection_reason_counts["repeated_first_hop_prefix"] >= 1
+    assert selected_prefixes
+    assert max(selected_prefixes.values()) <= 2
+    assert any(
+        graph.nodes[path.edges[-1].target].name.startswith("leaf_")
+        for path in manifest.included_graph_paths
+        if len(path.edges) > 1
+    )
+
+
+def test_direct_production_paths_are_retained_before_redundant_fanout(
+    tmp_path: Path,
+) -> None:
+    source = _write(
+        tmp_path / "ordering.py",
+        "def SafeHashWrapper(value):\n    return value\n\n"
+        "def reorder_items(items):\n    return list(items)\n\n"
+        "def changed(items):\n    return SafeHashWrapper(reorder_items(items))\n",
+    )
+    diff = _diff(
+        "ordering.py",
+        7,
+        "    return SafeHashWrapper(items)",
+        "    return SafeHashWrapper(reorder_items(items))",
+    )
+
+    graph, _, result = _plan(
+        tmp_path,
+        [source],
+        diff,
+        max_depth=2,
+        max_nodes=20,
+        max_context_tokens=2_000,
+        max_paths_per_prefix=1,
+    )
+    manifest = result.manifests[0]
+    direct_targets = {
+        graph.nodes[path.edges[0].target].name
+        for path in manifest.included_graph_paths
+        if len(path.edges) == 1
+    }
+
+    assert {"SafeHashWrapper", "reorder_items"} <= direct_targets
+    assert manifest.selected_direct_path_count >= 2
 
 
 def test_low_confidence_ambiguous_call_is_excluded_from_evidence_paths(
@@ -321,3 +405,58 @@ def test_manifest_respects_base_prompt_budget(
         expected["candidate_id"]
     ]
     assert payload["truncated"]["any"] is True
+
+
+def test_multi_hop_production_path_keeps_compact_endpoint_signatures_under_budget(
+    tmp_path: Path,
+) -> None:
+    leaf_body = "".join(
+        f"    value_{index} = value + {index}\n" for index in range(80)
+    )
+    source = _write(
+        tmp_path / "flow.py",
+        "def leaf(value):\n"
+        + leaf_body
+        + "    return value_79\n\n"
+        + "def middle(value):\n    return leaf(value)\n\n"
+        + "def entry(value):\n    return middle(value)  # changed\n",
+    )
+    entry_line = source.read_text(encoding="utf-8").splitlines().index(
+        "    return middle(value)  # changed"
+    ) + 1
+    diff = _diff(
+        "flow.py",
+        entry_line,
+        "    return middle(value)",
+        "    return middle(value)  # changed",
+    )
+
+    graph, _, result = _plan(
+        tmp_path,
+        [source],
+        diff,
+        max_depth=2,
+        max_nodes=20,
+        max_context_tokens=180,
+    )
+    manifest = result.manifests[0]
+    production_paths = [
+        path
+        for path in manifest.included_graph_paths
+        if len(path.edges) >= 2 and path.semantic_role == "execution_flow"
+    ]
+
+    assert manifest.required_production_path_count == 1
+    assert manifest.missing_production_path_count == 0
+    assert production_paths
+    leaf_node_ids = {
+        node_id for path in production_paths for node_id in path.node_ids
+        if graph.nodes[node_id].name == "leaf"
+    }
+    assert leaf_node_ids
+    leaf_symbol_ids = {graph.nodes[node_id].symbol_id for node_id in leaf_node_ids}
+    assert any(
+        span.symbol_id in leaf_symbol_ids
+        and span.start_line == span.end_line
+        for span in manifest.included_spans
+    )

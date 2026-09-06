@@ -9,7 +9,7 @@ It intentionally does not decide whether the reported behavior is a bug.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,8 @@ from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import FindingCandidate, ReviewRequest
 from src.analyzer.verifier_context import (
     build_candidate_verifier_context,
+    context_budget_exhausted_for_evidence,
+    context_budget_exhausted_for_location,
     location_in_candidate_context,
     provenance_in_candidate_context,
 )
@@ -86,6 +88,28 @@ class IntegrityFailure:
     message: str
     field: str = ""
     location: str = ""
+    file: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
+    retrieval_source: str = ""
+    context_manifest_id: str = ""
+    manifest_hash_prefix: str = ""
+
+    def as_detail(self) -> dict[str, Any]:
+        """Return a stable structured representation for event logs and reports."""
+
+        return {
+            "code": self.code,
+            "message": self.message,
+            "field": self.field,
+            "location": self.location,
+            "file": self.file,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "retrieval_source": self.retrieval_source,
+            "context_manifest_id": self.context_manifest_id,
+            "manifest_hash_prefix": self.manifest_hash_prefix,
+        }
 
 
 @dataclass(frozen=True)
@@ -130,6 +154,15 @@ class IntegrityGuardResult:
             item.candidate_id: item.failures
             for item in self.results
             if item.failures
+        }
+
+    @property
+    def failure_details(self) -> dict[str, list[dict[str, Any]]]:
+        """Return detailed failures keyed by candidate while preserving code views."""
+
+        return {
+            candidate_id: [failure.as_detail() for failure in failures]
+            for candidate_id, failures in self.failures.items()
         }
 
 
@@ -183,6 +216,18 @@ class FindingIntegrityGuard:
             if isinstance(item, dict)
         }
         changed = changed_new_lines_by_file(request.diff_text or "")
+        prepared_candidates: list[FindingCandidate] = []
+        preparation_failures: dict[str, tuple[IntegrityFailure, ...]] = {}
+        for candidate in bound_candidates:
+            prepared, failures = self._prepare_candidate_evidence(
+                candidate,
+                request=request,
+                repo_root=self._root_for(request),
+                changed=changed,
+                context=contexts_by_id.get(candidate.candidate_id),
+            )
+            prepared_candidates.append(prepared)
+            preparation_failures[candidate.candidate_id] = failures
         results = tuple(
             self._validate_candidate(
                 candidate,
@@ -190,14 +235,156 @@ class FindingIntegrityGuard:
                 repo_root=self._root_for(request),
                 changed=changed,
                 context=contexts_by_id.get(candidate.candidate_id),
-                initial_failures=binding_failures.get(candidate.candidate_id, ()),
+                initial_failures=(
+                    *binding_failures.get(candidate.candidate_id, ()),
+                    *preparation_failures.get(candidate.candidate_id, ()),
+                ),
             )
-            for candidate in bound_candidates
+            for candidate in prepared_candidates
+        )
+        result_by_id = {result.candidate_id: result for result in results}
+        finalized_candidates = tuple(
+            candidate.model_copy(
+                update={
+                    "verification_status": (
+                        "accepted"
+                        if result_by_id.get(candidate.candidate_id, None)
+                        and result_by_id[candidate.candidate_id].passed
+                        else "verification_blocked"
+                    )
+                }
+            )
+            for candidate in prepared_candidates
         )
         return IntegrityGuardResult(
             results=results,
-            bound_candidates=tuple(bound_candidates),
+            bound_candidates=finalized_candidates,
         )
+
+    def _prepare_candidate_evidence(
+        self,
+        candidate: FindingCandidate,
+        *,
+        request: ReviewRequest,
+        repo_root: Path,
+        changed: dict[str, set[int]],
+        context: dict[str, Any] | None,
+    ) -> tuple[FindingCandidate, tuple[IntegrityFailure, ...]]:
+        """Drop invalid optional structured evidence before final publication."""
+
+        issue = candidate.issue
+        if not (
+            isinstance(issue, ReviewIssue)
+            and issue.is_structured_hypothesis
+            and issue.severity in _RISK_SEVERITIES
+        ):
+            return candidate, ()
+
+        required_roles = {"cause", "contract"}
+        if issue.trigger.strip():
+            required_roles.add("trigger")
+        if issue.impact.strip():
+            required_roles.add("impact")
+        retained: dict[str, list[Any]] = {}
+        required_failures: list[IntegrityFailure] = []
+        for role, evidence_items in (
+            ("cause", issue.cause_evidence),
+            ("contract", issue.contract_evidence),
+            ("trigger", issue.trigger_evidence),
+            ("impact", issue.impact_evidence),
+        ):
+            valid_items: list[Any] = []
+            for index, evidence_item in enumerate(evidence_items):
+                failures = self._validate_evidence_item(
+                    evidence_item,
+                    request=request,
+                    repo_root=repo_root,
+                    changed=changed,
+                    context=context,
+                    field=f"{role}_evidence[{index}]",
+                )
+                if not failures:
+                    valid_items.append(evidence_item)
+                elif role in required_roles:
+                    required_failures.extend(failures)
+            retained[f"{role}_evidence"] = valid_items
+        prepared_issue = issue.model_copy(update=retained)
+        return (
+            candidate.model_copy(update={"issue": prepared_issue}),
+            tuple(required_failures),
+        )
+
+    def _validate_evidence_item(
+        self,
+        evidence_item: Any,
+        *,
+        request: ReviewRequest,
+        repo_root: Path,
+        changed: dict[str, set[int]],
+        context: dict[str, Any] | None,
+        field: str,
+    ) -> list[IntegrityFailure]:
+        """Validate one evidence role and return failures with full provenance."""
+
+        evidence_location = self._evidence_location(evidence_item)
+        failures = _decorate_failures(
+            self._validate_location(
+                evidence_location,
+                repo_root=repo_root,
+                field=field,
+                require_line=True,
+            ),
+            evidence=evidence_item,
+        )
+        metadata = _evidence_failure_metadata(evidence_item)
+        if not evidence_item.retrieval_source:
+            failures.append(
+                IntegrityFailure(
+                    "evidence_binding_missing",
+                    "Evidence does not identify a retrieval source.",
+                    field=f"{field}.retrieval_source",
+                    location=evidence_item.location,
+                    **metadata,
+                )
+            )
+        if not evidence_item.statement.strip():
+            failures.append(
+                IntegrityFailure(
+                    "evidence_binding_missing",
+                    "Evidence has no statement tying the location to the finding.",
+                    field=f"{field}.statement",
+                    location=evidence_item.location,
+                    **metadata,
+                )
+            )
+        if evidence_location.valid and not provenance_in_candidate_context(
+            context, evidence_item
+        ):
+            evidence_role = field.partition("_evidence")[0]
+            budget_exhausted = context_budget_exhausted_for_evidence(
+                context,
+                evidence_item,
+                role=evidence_role,
+            )
+            failures.append(
+                IntegrityFailure(
+                    (
+                        "verifier_context_budget_exhausted"
+                        if budget_exhausted
+                        else "evidence_not_observed"
+                    ),
+                    (
+                        "Evidence was observed but omitted from retained reviewer "
+                        "context by the verifier budget."
+                        if budget_exhausted
+                        else "Evidence provenance is not present in retained reviewer context."
+                    ),
+                    field=field,
+                    location=evidence_item.location,
+                    **metadata,
+                )
+            )
+        return failures
 
     def _validate_candidate(
         self,
@@ -247,6 +434,7 @@ class FindingIntegrityGuard:
                         "Evidence candidate_id does not match its finding candidate.",
                         field="evidence.candidate_id",
                         location=evidence.location,
+                        **_evidence_failure_metadata(evidence),
                     )
                 )
 
@@ -317,44 +505,34 @@ class FindingIntegrityGuard:
             ("impact", issue.impact_evidence),
         ):
             for index, evidence_item in enumerate(evidence_items):
-                field = f"{role}_evidence[{index}]"
-                evidence_location = self._evidence_location(evidence_item)
                 failures.extend(
-                    self._validate_location(
-                        evidence_location,
+                    self._validate_evidence_item(
+                        evidence_item,
+                        request=request,
                         repo_root=repo_root,
-                        field=field,
-                        require_line=True,
+                        changed=changed,
+                        context=context,
+                        field=f"{role}_evidence[{index}]",
                     )
                 )
-                if not evidence_item.retrieval_source:
+
+        if issue.is_structured_hypothesis and issue.severity in _RISK_SEVERITIES:
+            required_roles = {"cause", "contract"}
+            if issue.trigger.strip():
+                required_roles.add("trigger")
+            if issue.impact.strip():
+                required_roles.add("impact")
+            for role in sorted(required_roles):
+                if not getattr(issue, f"{role}_evidence"):
                     failures.append(
                         IntegrityFailure(
-                            "evidence_binding_missing",
-                            "Evidence does not identify a retrieval source.",
-                            field=f"{field}.retrieval_source",
-                            location=evidence_item.location,
+                            "evidence_incomplete",
+                            f"Structured risk finding is missing {role} evidence.",
+                            field=f"{role}_evidence",
+                            location=issue.location,
+                            **_location_failure_metadata(display),
                         )
                     )
-                if not evidence_item.statement.strip():
-                    failures.append(
-                        IntegrityFailure(
-                            "evidence_binding_missing",
-                            "Evidence has no statement tying the location to the finding.",
-                            field=f"{field}.statement",
-                            location=evidence_item.location,
-                        )
-                    )
-                if evidence_location.valid:
-                    if not provenance_in_candidate_context(context, evidence_item):
-                        failures.append(
-                            IntegrityFailure(
-                                "evidence_not_observed",
-                                "Evidence provenance is not present in retained reviewer context.",
-                                field=field,
-                                location=evidence_item.location,
-                            )
-                        )
 
         if issue.severity in _RISK_SEVERITIES and self._requires_changed_anchor(
             request, changed
@@ -399,6 +577,7 @@ class FindingIntegrityGuard:
                             "Evidence candidate_id does not match its finding candidate.",
                             field="evidence.candidate_id",
                             location=evidence.location,
+                            **_evidence_failure_metadata(evidence),
                         )
                     )
         return tuple(failures)
@@ -570,17 +749,79 @@ class FindingIntegrityGuard:
             return []
         if location_in_candidate_context(context, location):
             return []
+        budget_exhausted = context_budget_exhausted_for_location(context, location)
         return [
             IntegrityFailure(
-                "evidence_not_observed",
-                "Referenced code was not present in retained reviewer context.",
+                (
+                    "verifier_context_budget_exhausted"
+                    if budget_exhausted
+                    else "evidence_not_observed"
+                ),
+                (
+                    "Referenced code was observed but omitted from retained reviewer "
+                    "context by the verifier budget."
+                    if budget_exhausted
+                    else "Referenced code was not present in retained reviewer context."
+                ),
                 field=field,
                 location=location.canonical,
+                **_location_failure_metadata(location),
             )
         ]
 
     def _root_for(self, request: ReviewRequest) -> Path:
         return self._repo_root or Path(request.repo_path).resolve()
+
+
+def _evidence_failure_metadata(evidence: Any) -> dict[str, Any]:
+    """Extract safe provenance fields for structured failure telemetry."""
+
+    digest = str(getattr(evidence, "context_hash", "") or "").strip()
+    file = normalize_repo_path(str(getattr(evidence, "file", "") or ""))
+    start_line = getattr(evidence, "line", None)
+    end_line = getattr(evidence, "end_line", None) or start_line
+    return {
+        "file": file,
+        "start_line": start_line if isinstance(start_line, int) else None,
+        "end_line": end_line if isinstance(end_line, int) else None,
+        "retrieval_source": str(
+            getattr(evidence, "retrieval_source", "") or ""
+        ).strip(),
+        "context_manifest_id": str(
+            getattr(evidence, "context_manifest_id", "") or ""
+        ).strip(),
+        "manifest_hash_prefix": digest[:12],
+    }
+
+
+def _location_failure_metadata(location: LocationParseResult) -> dict[str, Any]:
+    """Extract structured location fields for non-evidence failures."""
+
+    return {
+        "file": location.path or "",
+        "start_line": location.line,
+        "end_line": location.end_line or location.line,
+    }
+
+
+def _decorate_failures(
+    failures: list[IntegrityFailure],
+    *,
+    evidence: Any,
+) -> list[IntegrityFailure]:
+    """Fill structured evidence metadata without changing failure identity."""
+
+    metadata = _evidence_failure_metadata(evidence)
+    decorated: list[IntegrityFailure] = []
+    for failure in failures:
+        updates = {
+            key: value
+            for key, value in metadata.items()
+            if not getattr(failure, key)
+            and value not in ("", None)
+        }
+        decorated.append(replace(failure, **updates) if updates else failure)
+    return decorated
 
 
 def _location_intersects_changed_lines(
