@@ -6,6 +6,8 @@ import asyncio
 import json
 from pathlib import Path, PurePath
 
+import pytest
+
 from src.analyzer.event_log import EventType
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport, Severity
 from src.analyzer.schemas import (
@@ -14,6 +16,7 @@ from src.analyzer.schemas import (
     DebugResponse,
     ReviewRequest,
 )
+from src.analyzer.review_skills import ReviewSkillLoader
 from src.models.exceptions import ModelTimeoutError
 from src.models.schemas import DraftFindingInput, TokenUsage
 from src.orchestrator.agent_loop import AgentOrchestrator
@@ -101,6 +104,113 @@ class SlowReadonlyTool(BaseTool):
         await asyncio.sleep(self._delay)
         self._events.append(self._name)
         return {"name": self._name}
+
+
+def test_review_skill_selection_is_pinned_across_fake_model_iterations(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("REVIEW_SKILL_RETRIEVAL_MODE", "deterministic")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "core.md").write_text("Core.", encoding="utf-8")
+    bank = skills_dir / "learned.jsonl"
+    first_record = {
+        "id": "skill-first",
+        "status": "active",
+        "category": "contracts",
+        "principle": "Check the Python contract.",
+        "why": "Callers retain it.",
+        "languages": ["python"],
+        "source_feedback_ids": [],
+    }
+    bank.write_text(json.dumps(first_record) + "\n", encoding="utf-8")
+    orchestrator = AgentOrchestrator(
+        review_skill_loader=ReviewSkillLoader(skills_dir),
+        context_mode="agent_search",
+        review_skill_top_k=1,
+    )
+    captured = []
+
+    class _CaptureEngine:
+        async def analyze(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.append((kwargs["skill_selection"], kwargs["skill_telemetry"]))
+            return AnalysisPlan(), TokenUsage(total_tokens=0)
+
+    monkeypatch.setattr(orchestrator, "_build_engine", lambda: _CaptureEngine())
+    request = ReviewRequest(
+        repo_path=str(tmp_path),
+        diff_mode=True,
+        diff_text=(
+            "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        ),
+    )
+    orchestrator._reset_run(2, str(tmp_path))  # noqa: SLF001
+    state = orchestrator.prepare_context(request)
+    asyncio.run(orchestrator.analyze(state, request, []))
+    second_record = {**first_record, "id": "skill-second"}
+    bank.write_text(
+        json.dumps(first_record) + "\n" + json.dumps(second_record) + "\n",
+        encoding="utf-8",
+    )
+    orchestrator._iteration = 1  # noqa: SLF001
+    asyncio.run(orchestrator.analyze(state, request, []))
+
+    assert [item.skill.id for item in captured[0][0].selected] == ["skill-first"]
+    assert captured[0][0] is captured[1][0]
+    assert captured[0][1]["reused_pinned_selection"] is False
+    assert captured[1][1]["reused_pinned_selection"] is True
+    assert captured[0][1]["top_k"] == 1
+    assert captured[0][1]["malformed_active_records"] == 0
+    assert captured[0][1]["legacy_only_fallback"] is False
+    assert "old" not in json.dumps(captured[0][1])
+
+
+def test_review_skill_selection_rejects_core_over_hard_budget(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("REVIEW_SKILL_RETRIEVAL_MODE", "deterministic")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    core = "Core must remain complete."
+    (skills_dir / "core.md").write_text(core, encoding="utf-8")
+    (skills_dir / "learned.jsonl").write_text("", encoding="utf-8")
+    orchestrator = AgentOrchestrator(
+        review_skill_loader=ReviewSkillLoader(skills_dir, max_chars=20)
+    )
+    orchestrator._reset_run(1, str(tmp_path))  # noqa: SLF001
+    with pytest.raises(ValueError, match="Core exceeds"):
+        orchestrator._select_review_skills(  # noqa: SLF001
+            "", orchestrator.prepare_context(ReviewRequest(repo_path=str(tmp_path)))
+        )
+
+
+def test_review_skill_selection_falls_back_to_core_only_on_selector_error(
+    tmp_path: Path,
+) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "core.md").write_text("Core remains available.", encoding="utf-8")
+    (skills_dir / "learned.jsonl").write_text("", encoding="utf-8")
+
+    class _FailingLoader(ReviewSkillLoader):
+        def retrieve(self, query, *, top_k=5):  # type: ignore[no-untyped-def]
+            raise RuntimeError("selector unavailable")
+
+    loader = _FailingLoader(skills_dir, max_chars=128)
+    orchestrator = AgentOrchestrator(
+        review_skill_loader=loader,
+        review_skill_retrieval_mode="deterministic",
+    )
+    orchestrator._reset_run(1, str(tmp_path))  # noqa: SLF001
+    selection, telemetry = orchestrator._select_review_skills(  # noqa: SLF001
+        "", orchestrator.prepare_context(ReviewRequest(repo_path=str(tmp_path)))
+    )
+    assert "Core remains available." in selection.context
+    assert selection.selected == ()
+    assert telemetry["fallback"] is True
+    assert telemetry["error_class"] == "RuntimeError"
+    assert telemetry["char_budget"] == 128
 
 
 def test_review_run_stops_after_single_iteration(tmp_path, monkeypatch) -> None:

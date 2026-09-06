@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from src.analyzer.context_builder import ContextBuilder
+from src.analyzer.context_builder import ContextBuilder, ContextPart
 from src.analyzer.context_compressor import ContextCompressor
 from src.analyzer.context_priority import (
     SUMMARY_LABEL_PREFIX,
@@ -17,7 +17,7 @@ from src.analyzer.context_priority import (
     select_graph_prompt_parts,
 )
 from src.analyzer.context_state import ContextState
-from src.analyzer.review_skills import ReviewSkillLoader
+from src.analyzer.review_skills import ReviewSkillLoader, SkillSelection
 from src.analyzer.reviewer_projection import project_manifest_for_reviewer
 from src.analyzer.schemas import DebugRequest, ReviewRequest
 from src.config import get_settings
@@ -167,10 +167,15 @@ def review_prompt_parts(context_mode: str) -> tuple[str, str]:
 def review_system_prompt(
     context_mode: str,
     *,
+    skill_context: str | None = None,
     skill_loader: ReviewSkillLoader | None = None,
 ) -> str:
     common, policy = review_prompt_parts(context_mode)
-    skills = (skill_loader or ReviewSkillLoader()).render()
+    skills = (
+        skill_context
+        if skill_context is not None
+        else (skill_loader or ReviewSkillLoader()).render()
+    )
     return common + "\n\n" + skills + "\n" + policy
 
 
@@ -257,6 +262,7 @@ def build_review_messages(
     context_builder: ContextBuilder | None = None,
     project_structure: str | None = None,
     telemetry_sink: dict[str, Any] | None = None,
+    skill_selection: SkillSelection | None = None,
     skill_loader: ReviewSkillLoader | None = None,
 ) -> list[Message]:
     """Build review-mode messages with optional priority truncation of payload parts."""
@@ -283,6 +289,7 @@ def build_review_messages(
             role="system",
             content=review_system_prompt(
                 context.context_mode,
+                skill_context=(skill_selection.context if skill_selection else None),
                 skill_loader=skill_loader,
             ),
         ),
@@ -373,6 +380,7 @@ async def build_review_messages_async(
     summary_max_tokens_per_part: int = 1000,
     summary_model_name: str = "",
     telemetry_sink: dict[str, Any] | None = None,
+    skill_selection: SkillSelection | None = None,
     skill_loader: ReviewSkillLoader | None = None,
 ) -> list[Message]:
     """Build review-mode messages with optional second-layer summary compaction."""
@@ -415,6 +423,7 @@ async def build_review_messages_async(
             role="system",
             content=review_system_prompt(
                 context.context_mode,
+                skill_context=(skill_selection.context if skill_selection else None),
                 skill_loader=skill_loader,
             ),
         ),

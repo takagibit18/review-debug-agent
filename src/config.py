@@ -32,6 +32,7 @@ ExecuteBackend = Literal["subprocess", "docker"]
 GitHubAuthMode = Literal["token", "app"]
 EvalGitSslBackend = Literal["system", "openssl", "schannel"]
 RelationGraphResolverMode = Literal["ast", "resolver", "lsp"]
+ReviewSkillRetrievalMode = Literal["sequential", "deterministic"]
 
 _DEFAULT_EXECUTE_ALLOWED_COMMANDS: tuple[str, ...] = (
     "python",
@@ -311,6 +312,27 @@ class Settings(BaseModel):
     review_context_mode: ReviewContextMode = Field(
         default_factory=_default_review_context_mode,
         description="Explicit review context strategy. Constructor value overrides environment compatibility inputs.",
+    )
+    review_skill_retrieval_mode: ReviewSkillRetrievalMode = Field(
+        default_factory=lambda: cast(
+            ReviewSkillRetrievalMode,
+            os.getenv("REVIEW_SKILL_RETRIEVAL_MODE", "sequential").strip().lower(),
+        )
+    )
+    review_skill_top_k: int = Field(
+        default_factory=lambda: int(os.getenv("REVIEW_SKILL_TOP_K", "5")), ge=0, le=50
+    )
+    review_skill_char_budget: int = Field(
+        default_factory=lambda: int(os.getenv("REVIEW_SKILL_CHAR_BUDGET", "4000")),
+        ge=64,
+        le=100_000,
+    )
+    review_skill_legacy_fallback_limit: int = Field(
+        default_factory=lambda: int(
+            os.getenv("REVIEW_SKILL_LEGACY_FALLBACK_LIMIT", "1")
+        ),
+        ge=0,
+        le=50,
     )
     relation_graph_enabled: bool = Field(
         default_factory=lambda: _parse_bool_env("RELATION_GRAPH_ENABLED", True),

@@ -179,6 +179,30 @@ def test_eval_result_serializes_zero_value_process_metrics() -> None:
     assert result.model_dump()["process_metrics"]["candidate_issue_count"] == 0
 
 
+def test_extract_review_process_metrics_includes_skill_aggregates(tmp_path: Path) -> None:
+    log_path = tmp_path / "skills.jsonl"
+    log_path.write_text(
+        json.dumps({
+            "event_type": "phase_end",
+            "phase": "review_complete",
+            "payload": {
+                "review_skill_loaded_count": 2,
+                "review_skill_chars": 600,
+                "review_skill_tokens": 150,
+                "review_skill_retrieval_latency_ms": 2.5,
+                "review_skill_fallback_count": 0,
+            },
+        }),
+        encoding="utf-8",
+    )
+    metrics = run_summary_module.extract_review_process_metrics(log_path)
+    assert metrics.review_skill_loaded_count == 2
+    assert metrics.review_skill_chars == 600
+    assert metrics.review_skill_tokens == 150
+    assert metrics.review_skill_retrieval_latency_ms == 2.5
+    assert metrics.review_skill_fallback_count == 0
+
+
 def test_metric_summary_aggregates_process_metrics() -> None:
     process_metrics_type = getattr(
         __import__("eval.schemas", fromlist=["ReviewProcessMetrics"]),

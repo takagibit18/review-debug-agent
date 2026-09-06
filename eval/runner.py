@@ -42,6 +42,7 @@ from src.analyzer.schemas import (
     ReviewRequest,
     ReviewResponse,
 )
+from src.analyzer.review_skills import ReviewSkillLoader
 from src.config import get_settings
 from src.orchestrator.agent_loop import AgentOrchestrator
 
@@ -52,6 +53,29 @@ _MIN_WARNING_CONFIDENCE = 0.85
 _CACHE_LOCKS: dict[str, threading.Lock] = {}
 _CACHE_LOCKS_GUARD = threading.Lock()
 _EVAL_EXPECTED_LOCATION_WARNING_CONFIDENCE = 0.7
+
+
+def _effective_skill_contract(variant: EvalVariant) -> dict[str, int]:
+    """Resolve the loader contract once for both Eval and production wiring."""
+
+    settings = get_settings()
+    return {
+        "skill_top_k": (
+            settings.review_skill_top_k
+            if variant.skill_top_k is None
+            else variant.skill_top_k
+        ),
+        "skill_char_budget": (
+            settings.review_skill_char_budget
+            if variant.skill_char_budget is None
+            else variant.skill_char_budget
+        ),
+        "skill_legacy_fallback_limit": (
+            settings.review_skill_legacy_fallback_limit
+            if variant.skill_legacy_fallback_limit is None
+            else variant.skill_legacy_fallback_limit
+        ),
+    }
 
 
 def load_fixtures(
@@ -706,6 +730,7 @@ async def run_single(
     expected_count = len(fixture.expected.issues)
     selected_variant = variant or _default_eval_variant()
     selected_matcher_version = _normalize_matcher_version(matcher_version)
+    skill_contract = _effective_skill_contract(selected_variant)
     stage_timings: dict[str, float] = {}
     try:
         with tempfile.TemporaryDirectory(prefix="eval-fixture-") as tmp_dir:
@@ -724,7 +749,9 @@ async def run_single(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
                     **_variant_result_fields(
-                        selected_variant, matcher_version=selected_matcher_version
+                        selected_variant,
+                        matcher_version=selected_matcher_version,
+                        skill_contract=skill_contract,
                     ),
                     schema_valid=False,
                     expected_count=expected_count,
@@ -748,7 +775,9 @@ async def run_single(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
                     **_variant_result_fields(
-                        selected_variant, matcher_version=selected_matcher_version
+                        selected_variant,
+                        matcher_version=selected_matcher_version,
+                        skill_contract=skill_contract,
                     ),
                     schema_valid=False,
                     expected_count=expected_count,
@@ -774,6 +803,15 @@ async def run_single(
                 review_diff_first_changed_files=True,
                 relation_graph_index_path=relation_graph_index_path,
                 context_mode=selected_variant.context_mode,
+                review_skill_retrieval_mode=selected_variant.skill_retrieval_mode,
+                review_skill_top_k=skill_contract["skill_top_k"],
+                review_skill_loader=ReviewSkillLoader(
+                    selected_variant.skill_bank_path or None,
+                    max_chars=skill_contract["skill_char_budget"],
+                    legacy_fallback_limit=skill_contract[
+                        "skill_legacy_fallback_limit"
+                    ],
+                ),
             )
             sandbox_context = _build_fixture_context(fixture, repo_root)
 
@@ -842,12 +880,23 @@ async def run_single(
             placeholder = _is_placeholder_response(parsed_response)
             empty_business_output = _is_empty_business_output(parsed_response)
             schema_valid = _eval_schema_valid(parsed_response)
+            selection = getattr(orchestrator, "review_skill_selection", None)
+            variant_fields = _variant_result_fields(
+                selected_variant,
+                matcher_version=selected_matcher_version,
+                skill_contract=skill_contract,
+            )
+            if selection is not None and selected_variant.skill_bank_path:
+                variant_fields["skill_bank_digest"] = selection.bank_digest
+            skill_metrics = _skill_result_fields(
+                fixture.expected.expected_skill_ids,
+                [item.skill.id for item in selection.selected] if selection else [],
+                selection.skipped if selection else (),
+            )
             return EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
-                **_variant_result_fields(
-                    selected_variant, matcher_version=selected_matcher_version
-                ),
+                **variant_fields,
                 run_id=parsed_response.run_id,
                 schema_valid=schema_valid,
                 expected_count=expected_count,
@@ -857,6 +906,7 @@ async def run_single(
                 **root_cause_quality,
                 latency_seconds=latency,
                 total_tokens=total_tokens,
+                **skill_metrics,
                 event_log_path=event_log_path,
                 stage_timings=stage_timings,
                 error=(
@@ -894,7 +944,9 @@ async def run_single(
             fixture_id=fixture.id,
             fixture_type=fixture.type,
             **_variant_result_fields(
-                selected_variant, matcher_version=selected_matcher_version
+                selected_variant,
+                matcher_version=selected_matcher_version,
+                skill_contract=skill_contract,
             ),
             schema_valid=False,
             expected_count=expected_count,
@@ -2029,14 +2081,54 @@ def _default_eval_variant() -> EvalVariant:
 
 def _variant_result_fields(
     variant: EvalVariant,
+    skill_contract: dict[str, int] | None = None,
     *,
     matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
-) -> dict[str, str]:
-    return {
+) -> dict[str, Any]:
+    resolved_contract = skill_contract or _effective_skill_contract(variant)
+    fields: dict[str, Any] = {
         "variant_id": variant.id,
         "context_mode": variant.context_mode,
         "graph_cache_mode": variant.graph_cache_mode,
+        "skill_retrieval_mode": variant.skill_retrieval_mode,
         "matcher_version": _normalize_matcher_version(matcher_version),
+        **resolved_contract,
+    }
+    if variant.skill_bank_path:
+        fields["skill_bank_digest"] = ReviewSkillLoader(
+            variant.skill_bank_path
+        ).bank_digest()
+    return fields
+
+
+def _skill_result_fields(
+    expected: list[str] | None,
+    retrieved: list[str],
+    skipped: tuple[tuple[str, str], ...],
+) -> dict[str, Any]:
+    if expected is None:
+        return {"expected_skill_ids": None, "retrieved_skill_ids": retrieved}
+    expected_set = set(expected)
+    retrieved_set = set(retrieved)
+    matched = len(expected_set & retrieved_set)
+    irrelevant = len(retrieved_set - expected_set)
+    budget_losses = sum(
+        skill_id in expected_set and reason in {"budget", "after_budget_break"}
+        for skill_id, reason in skipped
+    )
+    return {
+        "expected_skill_ids": expected,
+        "retrieved_skill_ids": retrieved,
+        "skill_recall_at_k": matched / len(expected_set) if expected_set else 1.0,
+        "skill_precision_at_k": (
+            matched / len(retrieved_set)
+            if retrieved_set
+            else (1.0 if not expected_set else 0.0)
+        ),
+        "skill_irrelevant_rate": (
+            irrelevant / len(retrieved_set) if retrieved_set else 0.0
+        ),
+        "skill_budget_loss_count": budget_losses,
     }
 
 

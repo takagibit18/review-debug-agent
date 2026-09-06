@@ -56,6 +56,31 @@ def test_runtime_run_summary_collects_publish_status_and_event_metrics(
     assert summary.submit_validation_errors == ["Invalid JSON arguments"]
 
 
+def test_runtime_summary_collects_review_skill_metrics(tmp_path: Path) -> None:
+    log = tmp_path / "skills.jsonl"
+    log.write_text(
+        json.dumps({
+            "run_id": "run-skills",
+            "event_type": "phase_end",
+            "phase": "review_complete",
+            "payload": {
+                "review_skill_loaded_count": 2,
+                "review_skill_chars": 700,
+                "review_skill_tokens": 175,
+                "review_skill_retrieval_latency_ms": 1.25,
+                "review_skill_fallback_count": 1,
+            },
+        }),
+        encoding="utf-8",
+    )
+    summary = summarize_event_log(log)
+    assert summary.review_skill_loaded_count == 2
+    assert summary.review_skill_chars == 700
+    assert summary.review_skill_tokens == 175
+    assert summary.review_skill_retrieval_latency_ms == 1.25
+    assert summary.review_skill_fallback_count == 1
+
+
 def test_summarize_run_artifacts_includes_artifact_paths(tmp_path: Path) -> None:
     event_log = tmp_path / "run-2.jsonl"
     response_json = tmp_path / "response.json"

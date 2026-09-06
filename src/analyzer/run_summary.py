@@ -55,6 +55,11 @@ class RunSummary(BaseModel):
     provider_cache_hit_count: int = 0
     failed_attempt_count: int = 0
     failed_unknown_usage_count: int = 0
+    review_skill_loaded_count: int = Field(default=0, ge=0)
+    review_skill_chars: int = Field(default=0, ge=0)
+    review_skill_tokens: int = Field(default=0, ge=0)
+    review_skill_retrieval_latency_ms: float = Field(default=0.0, ge=0.0)
+    review_skill_fallback_count: int = Field(default=0, ge=0)
     publish_status: PublishStatus = "not_requested"
     model_raw_issue_count: int = 0
     verifier_candidate_count: int = 0
@@ -350,6 +355,21 @@ def _update_summary(summary: RunSummary, event: dict[str, Any]) -> None:
         summary.length_recoveries_failed = int(
             payload.get("length_recoveries_failed", 0) or 0
         )
+        summary.review_skill_loaded_count = _non_negative_int(
+            payload.get("review_skill_loaded_count")
+        )
+        summary.review_skill_chars = _non_negative_int(
+            payload.get("review_skill_chars")
+        )
+        summary.review_skill_tokens = _non_negative_int(
+            payload.get("review_skill_tokens")
+        )
+        summary.review_skill_retrieval_latency_ms = _non_negative_float(
+            payload.get("review_skill_retrieval_latency_ms")
+        )
+        summary.review_skill_fallback_count = _non_negative_int(
+            payload.get("review_skill_fallback_count")
+        )
 
     if event_type == "finding_candidates_built":
         summary.model_raw_issue_count = int(
@@ -453,6 +473,13 @@ def _optional_non_negative_int(value: object) -> int | None:
     if value is None:
         return None
     return _non_negative_int(value)
+
+
+def _non_negative_float(value: object) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _normalize_termination_reason(reason: str) -> str:
