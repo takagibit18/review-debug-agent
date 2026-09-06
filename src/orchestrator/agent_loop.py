@@ -22,6 +22,12 @@ from src.analyzer.finding_integrity import FindingIntegrityGuard, build_candidat
 from src.analyzer.inference_engine import InferenceEngine
 from src.analyzer.output_formatter import ReviewReport
 from src.analyzer.review_policy import evaluate_issue_filter
+from src.analyzer.review_skills import (
+    RETRIEVAL_VERSION,
+    ReviewSkillLoader,
+    SkillSelection,
+    build_skill_query,
+)
 from src.analyzer.result_processor import ResultProcessor
 from src.analyzer.schemas import (
     AnalysisPlan,
@@ -81,6 +87,9 @@ class AgentOrchestrator:
         relation_graph_index_path: str | Path | None = None,
         context_mode: ReviewContextMode | None = None,
         context_strategy: ContextStrategy | None = None,
+        review_skill_loader: ReviewSkillLoader | None = None,
+        review_skill_retrieval_mode: Literal["sequential", "deterministic"] | None = None,
+        review_skill_top_k: int | None = None,
     ) -> None:
         self._settings = get_settings()
         self._external_registry: ToolRegistry | None = registry
@@ -162,6 +171,15 @@ class AgentOrchestrator:
             context_mode or self._settings.review_context_mode
         )
         self._context_strategy_override = context_strategy
+        self._review_skill_loader = review_skill_loader
+        self._review_skill_retrieval_mode = (
+            review_skill_retrieval_mode or self._settings.review_skill_retrieval_mode
+        )
+        self._review_skill_top_k_override = (
+            None if review_skill_top_k is None else max(0, int(review_skill_top_k))
+        )
+        self._review_skill_selection: SkillSelection | None = None
+        self._review_skill_telemetry: dict[str, Any] = {}
         self._review_workflow = ReviewWorkflowTracker()
         self._workflow_reprompt_count = 0
         self._model_raw_issue_count = 0
@@ -924,10 +942,15 @@ class AgentOrchestrator:
                 max_chars_per_file=self._settings.file_context_max_chars_per_file,
                 max_chars_total=self._settings.file_context_max_chars_total,
             )
+            skill_selection, skill_telemetry = self._select_review_skills(
+                diff_text, state
+            )
         else:
             error_log_text = self._context_builder.load_error_log(
                 request.error_log_path, request.error_log_text
             )
+            skill_selection = None
+            skill_telemetry = None
 
         engine = self._build_engine()
         if engine is None:
@@ -982,6 +1005,8 @@ class AgentOrchestrator:
                     force_submit=force_submit,
                     near_last_iteration=(self._iteration + 1) >= self._max_iterations,
                     defer_submit=defer_review_submit,
+                    skill_selection=skill_selection,
+                    skill_telemetry=skill_telemetry,
                 )
                 self._latest_tokens = usage.total_tokens
                 self._persist_draft_finding_calls(result)
@@ -1064,6 +1089,123 @@ class AgentOrchestrator:
             },
         )
         return result
+
+    def _select_review_skills(
+        self, diff_text: str, state: ContextState
+    ) -> tuple[SkillSelection, dict[str, Any]]:
+        """Create one selection per run and expose bounded reuse telemetry."""
+
+        reused = self._review_skill_selection is not None
+        if not reused:
+            started = perf_counter()
+            loader = self._review_skill_loader or ReviewSkillLoader(
+                max_chars=self._settings.review_skill_char_budget,
+                legacy_fallback_limit=(
+                    self._settings.review_skill_legacy_fallback_limit
+                ),
+            )
+            fallback = False
+            error_class = ""
+            try:
+                if self._review_skill_retrieval_mode == "deterministic":
+                    query = build_skill_query(
+                        diff_text, state.candidate_context_manifests
+                    )
+                    top_k = (
+                        self._review_skill_top_k_override
+                        if self._review_skill_top_k_override is not None
+                        else self._settings.review_skill_top_k
+                    )
+                    selection = loader.retrieve(
+                        query, top_k=top_k
+                    )
+                else:
+                    selection = loader.select_sequential()
+            except Exception as exc:  # noqa: BLE001
+                fallback = True
+                error_class = exc.__class__.__name__
+                try:
+                    selection = loader.core_only()
+                except ValueError as core_exc:
+                    self._record_event(
+                        EventType.ERROR,
+                        "review_skills",
+                        {
+                            "error_type": core_exc.__class__.__name__,
+                            "fallback": "failed",
+                            "reason": "core_exceeds_hard_budget",
+                        },
+                    )
+                    raise
+                self._record_event(
+                    EventType.ERROR,
+                    "review_skills",
+                    {"error_type": error_class, "fallback": "core_only"},
+                )
+            ids = [item.skill.id for item in selection.selected]
+            selection_id = hashlib.sha256(
+                f"{self._review_skill_retrieval_mode}:{selection.bank_digest}:{ids}".encode()
+            ).hexdigest()[:16]
+            reason_counts: dict[str, int] = {}
+            for _, reason in selection.skipped:
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            self._review_skill_selection = selection
+            self._review_skill_telemetry = {
+                "retrieval_version": RETRIEVAL_VERSION,
+                "mode": self._review_skill_retrieval_mode,
+                "selection_id": selection_id,
+                "bank_digest": selection.bank_digest,
+                "total_records": selection.total_records,
+                "active_records": selection.active_records,
+                "scoped_active_records": selection.scoped_active_records,
+                "unscoped_active_records": selection.unscoped_active_records,
+                "malformed_active_records": selection.malformed_active_records,
+                "legacy_only_fallback": selection.legacy_only_fallback,
+                "legacy_fallback_selected_count": sum(
+                    "unscoped_legacy" in item.reasons
+                    for item in selection.selected
+                ),
+                "candidate_count": selection.candidate_count,
+                "loaded_skill_ids": ids,
+                "loaded": [
+                    {
+                        "id": item.skill.id,
+                        "score": item.score,
+                        "reasons": list(item.reasons),
+                    }
+                    for item in selection.selected
+                ],
+                "skipped": [
+                    {"id": skill_id, "reason": reason}
+                    for skill_id, reason in selection.skipped
+                ],
+                "skipped_count_by_reason": reason_counts,
+                "top_k": (
+                    self._review_skill_top_k_override
+                    if self._review_skill_top_k_override is not None
+                    else self._settings.review_skill_top_k
+                ),
+                "char_budget": loader.max_chars,
+                "core_chars": selection.core_chars,
+                "learned_chars": selection.learned_chars,
+                "total_chars": selection.total_chars,
+                "estimated_tokens": selection.estimated_tokens,
+                "retrieval_latency_ms": round(
+                    (perf_counter() - started) * 1000, 3
+                ),
+                "fallback": fallback,
+                "error_class": error_class,
+            }
+        telemetry = dict(self._review_skill_telemetry)
+        telemetry["reused_pinned_selection"] = reused
+        assert self._review_skill_selection is not None
+        return self._review_skill_selection, telemetry
+
+    @property
+    def review_skill_selection(self) -> SkillSelection | None:
+        """Expose the pinned selection for eval artifact generation."""
+
+        return self._review_skill_selection
 
     def _review_tool_specs_for_stage(
         self,
@@ -1558,6 +1700,8 @@ class AgentOrchestrator:
             ),
         )
         self._last_plan = None
+        self._review_skill_selection = None
+        self._review_skill_telemetry = {}
         self._draft_finding_store = DraftFindingStore()
         self._tool_feedback = []
         self._feedback_digest_index = {}
@@ -2268,6 +2412,38 @@ class AgentOrchestrator:
             "cache_hit": graph.get("cache_hit"),
             "cache_hit_rate": graph.get("cache_hit_rate"),
             "fallback_reason": graph.get("fallback_reason", ""),
+            "review_skill_loaded_count": len(
+                self._review_skill_selection.selected
+                if self._review_skill_selection is not None
+                else ()
+            ),
+            "review_skill_chars": (
+                self._review_skill_selection.total_chars
+                if self._review_skill_selection is not None
+                else 0
+            ),
+            "review_skill_tokens": (
+                self._review_skill_selection.estimated_tokens
+                if self._review_skill_selection is not None
+                else 0
+            ),
+            "review_skill_retrieval_latency_ms": self._review_skill_telemetry.get(
+                "retrieval_latency_ms", 0.0
+            ),
+            "review_skill_fallback_count": int(
+                bool(self._review_skill_telemetry.get("fallback"))
+            ),
+            "review_skill_malformed_active_count": int(
+                self._review_skill_telemetry.get("malformed_active_records", 0)
+            ),
+            "review_skill_legacy_only_fallback": bool(
+                self._review_skill_telemetry.get("legacy_only_fallback", False)
+            ),
+            "review_skill_legacy_fallback_selected_count": int(
+                self._review_skill_telemetry.get(
+                    "legacy_fallback_selected_count", 0
+                )
+            ),
         }
         self._record_event(EventType.PHASE_END, "review_complete", payload)
 

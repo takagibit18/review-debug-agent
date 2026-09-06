@@ -8,7 +8,14 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from eval.run import main
-from eval.schemas import EvalResult, Fixture, FixtureInput, FixtureSource, FixtureWorkspace
+from eval.schemas import (
+    EvalReport,
+    EvalResult,
+    Fixture,
+    FixtureInput,
+    FixtureSource,
+    FixtureWorkspace,
+)
 
 
 def _minimal_report(path: Path) -> None:
@@ -250,3 +257,49 @@ def test_merge_reports_combines_batch_results_and_recomputes_metrics(
         "positive-a",
         "negative-a",
     ]
+
+
+def test_merge_reports_preserves_one_fixed_skill_bank_digest(tmp_path: Path) -> None:
+    inputs: list[str] = []
+    for name in ("batch-a.json", "batch-b.json"):
+        path = tmp_path / name
+        path.write_text(
+            EvalReport(skill_bank_digest="fixed-bank").model_dump_json(),
+            encoding="utf-8",
+        )
+        inputs.append(str(path))
+    output = tmp_path / "merged.json"
+
+    result = CliRunner().invoke(
+        main,
+        ["merge-reports", *inputs, "--output-json", str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert EvalReport.model_validate_json(
+        output.read_text(encoding="utf-8")
+    ).skill_bank_digest == "fixed-bank"
+
+
+def test_merge_reports_rejects_mixed_skill_bank_digests(tmp_path: Path) -> None:
+    report_a = tmp_path / "batch-a.json"
+    report_b = tmp_path / "batch-b.json"
+    report_a.write_text(
+        EvalReport(skill_bank_digest="fixed-bank").model_dump_json(),
+        encoding="utf-8",
+    )
+    report_b.write_text(EvalReport().model_dump_json(), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "merge-reports",
+            str(report_a),
+            str(report_b),
+            "--output-json",
+            str(tmp_path / "merged.json"),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "different or unspecified Skill Banks" in result.output

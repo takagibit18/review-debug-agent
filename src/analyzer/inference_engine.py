@@ -15,6 +15,7 @@ from src.analyzer.context_state import ContextState
 from src.analyzer.event_log import EventType
 from src.analyzer.location import normalize_location
 from src.analyzer.output_formatter import ReviewReport
+from src.analyzer.review_skills import SkillSelection
 from src.analyzer.prompts import (
     FINALIZE_REVIEW_NOTICE,
     FINALIZE_DEBUG_NOTICE,
@@ -105,6 +106,8 @@ class InferenceEngine:
         force_submit: bool = False,
         near_last_iteration: bool = False,
         defer_submit: bool = False,
+        skill_selection: SkillSelection | None = None,
+        skill_telemetry: dict[str, Any] | None = None,
     ) -> tuple[AnalysisPlan, TokenUsage]:
         file_contents = file_contents or {}
         settings = get_settings()
@@ -143,6 +146,7 @@ class InferenceEngine:
                     summary_model_name=request.model_name or get_settings().model_name,
                     project_structure=project_structure,
                     telemetry_sink=context_telemetry,
+                    skill_selection=skill_selection,
                 )
             else:
                 messages = build_review_messages(
@@ -154,6 +158,7 @@ class InferenceEngine:
                     context_builder=cb,
                     project_structure=project_structure,
                     telemetry_sink=context_telemetry,
+                    skill_selection=skill_selection,
                 )
         else:
             if summary_enabled:
@@ -182,6 +187,9 @@ class InferenceEngine:
                     project_structure=project_structure,
                     telemetry_sink=context_telemetry,
                 )
+
+        if skill_telemetry is not None:
+            context_telemetry["review_skills"] = dict(skill_telemetry)
 
         final_evidence_telemetry = self._empty_final_evidence_telemetry(
             final_feedback_budget

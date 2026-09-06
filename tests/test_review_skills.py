@@ -5,9 +5,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from src.analyzer.context_state import ContextState
 from src.analyzer.prompts import build_review_messages, review_system_prompt
-from src.analyzer.review_skills import ReviewSkillLoader
+from src.analyzer.review_skills import (
+    ReviewSkill,
+    ReviewSkillLoader,
+    SkillQuery,
+    _match_skill,
+    build_skill_query,
+)
 from src.analyzer.schemas import ReviewRequest
 
 
@@ -113,3 +121,315 @@ def test_reviewer_system_prompt_contains_skills_for_both_context_modes(
         )
         assert messages[0].content == prompt
         assert messages[1].role == "user"
+
+
+def _write_records(tmp_path: Path, records: list[dict[str, object]]) -> None:
+    tmp_path.joinpath("core.md").write_text("Core invariant.", encoding="utf-8")
+    tmp_path.joinpath("learned.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _record(skill_id: str, **overrides: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "id": skill_id,
+        "status": "active",
+        "category": "contracts",
+        "principle": f"Principle {skill_id}",
+        "why": "Because contracts matter.",
+        "source_feedback_ids": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def test_optional_metadata_is_normalized_and_malformed_values_fall_back() -> None:
+    old = ReviewSkill.from_record(_record("old"))
+    malformed = ReviewSkill.from_record(
+        _record(
+            "bad",
+            languages="python",
+            path_globs=[1],
+            triggers={"asyncio": True},
+        )
+    )
+    assert old is not None and old.description == old.principle
+    assert malformed is not None
+    assert malformed.languages == malformed.path_globs == malformed.triggers == ()
+    assert malformed.metadata_warnings == ("languages", "path_globs", "triggers")
+    assert old.metadata_warnings == ()
+
+
+def test_scoped_trigger_is_a_relevance_gate(tmp_path: Path) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record(
+                "skill-async",
+                languages=["python"],
+                path_globs=["**/*.py"],
+                triggers=["asyncio"],
+            )
+        ],
+    )
+    query = build_skill_query(
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n+++ b/app.py\n"
+        "@@ -1 +1 @@\n-value = old(value)\n+value = format(value)\n"
+    )
+
+    result = ReviewSkillLoader(tmp_path).retrieve(query)
+
+    assert result.selected == ()
+    assert dict(result.skipped)["skill-async"] == "trigger_mismatch"
+
+
+def test_malformed_metadata_is_skipped_but_missing_metadata_remains_legacy(
+    tmp_path: Path,
+) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-missing"),
+            _record(
+                "skill-malformed",
+                languages="python",
+                path_globs=["**/*.py"],
+                triggers=["asyncio"],
+            ),
+        ],
+    )
+
+    result = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("app.py",), ("python",), "app.py ordinary")
+    )
+
+    assert [item.skill.id for item in result.selected] == ["skill-missing"]
+    assert dict(result.skipped)["skill-malformed"] == "malformed_metadata"
+    assert result.unscoped_active_records == 1
+    assert result.malformed_active_records == 1
+    assert result.legacy_only_fallback is True
+
+
+def test_malformed_metadata_changes_bank_digest(tmp_path: Path) -> None:
+    missing = _record("skill-one")
+    malformed = _record("skill-one", languages="python")
+    (tmp_path / "core.md").write_text("Core invariant.", encoding="utf-8")
+    bank = tmp_path / "learned.jsonl"
+
+    bank.write_text(json.dumps(missing) + "\n", encoding="utf-8")
+    missing_digest = ReviewSkillLoader(tmp_path).bank_digest()
+    bank.write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+    malformed_digest = ReviewSkillLoader(tmp_path).bank_digest()
+
+    assert missing_digest != malformed_digest
+
+
+def test_no_scoped_match_respects_legacy_fallback_limit(tmp_path: Path) -> None:
+    _write_records(
+        tmp_path,
+        [_record(f"legacy-{index:02d}") for index in range(20)],
+    )
+
+    result = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("app.py",), ("python",), "app.py"), top_k=5
+    )
+
+    assert [item.skill.id for item in result.selected] == ["legacy-00"]
+    assert len(result.skipped) == 19
+    assert all(reason == "legacy_fallback_limit" for _, reason in result.skipped)
+    assert result.legacy_only_fallback is True
+
+
+def test_score_weights_are_capped_per_signal_category() -> None:
+    query = SkillQuery(
+        ("app.py",),
+        ("python",),
+        "app.py asyncio import",
+        graph_edge_kinds=("calls",),
+    )
+    skills = [
+        _record("skill-trigger", triggers=("asyncio",)),
+        _record("skill-path-language", languages=("python",), path_globs=("**/*.py",)),
+        _record(
+            "skill-graph",
+            languages=("python",),
+            path_globs=("**/*.py",),
+            triggers=("calls",),
+        ),
+        _record("skill-multi-trigger", triggers=("asyncio", "import")),
+        _record(
+            "skill-multi-path",
+            languages=("python",),
+            path_globs=("**/*.py", "app.py"),
+        ),
+    ]
+
+    for record in skills:
+        skill = ReviewSkill.from_record(record)
+        assert skill is not None
+        match, reason = _match_skill(skill, query)
+        assert match is not None, reason
+        if skill.id in {"skill-trigger", "skill-multi-trigger"}:
+            assert match.score == 100
+        elif skill.id == "skill-graph":
+            assert match.score == 75
+        else:
+            assert match.score == 60
+
+
+def test_retrieval_filters_status_and_explicit_scope_then_ranks_signals(
+    tmp_path: Path,
+) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-trigger", languages=["PYTHON"], triggers=["ASYNCIO"]),
+            _record("skill-path", languages=["python"], path_globs=["src/**/*.py"]),
+            _record("skill-other", languages=["rust"]),
+            _record("skill-candidate", status="candidate", languages=["python"]),
+            _record("skill-deprecated", status="deprecated", languages=["python"]),
+        ],
+    )
+    query = build_skill_query(
+        "diff --git a/src/pkg/app.py b/src/pkg/app.py\n"
+        "--- a/src/pkg/app.py\n+++ b/src/pkg/app.py\n"
+        "@@ -1 +1 @@\n-import time\n+import asyncio\n"
+    )
+    result = ReviewSkillLoader(tmp_path).retrieve(query)
+    assert [item.skill.id for item in result.selected] == [
+        "skill-trigger",
+        "skill-path",
+    ]
+    assert dict(result.skipped)["skill-other"] == "language_mismatch"
+    assert dict(result.skipped)["skill-candidate"] == "status"
+    assert dict(result.skipped)["skill-deprecated"] == "status"
+    assert result.total_chars <= 4000
+
+
+def test_top_k_tie_break_and_bank_digest_are_file_order_independent(
+    tmp_path: Path,
+) -> None:
+    records = [
+        _record("skill-b", languages=["python"]),
+        _record("skill-a", languages=["python"]),
+    ]
+    _write_records(tmp_path, records)
+    loader = ReviewSkillLoader(tmp_path)
+    query = SkillQuery(("app.py",), ("python",), "app.py")
+    first = loader.retrieve(query, top_k=1)
+    _write_records(tmp_path, list(reversed(records)))
+    second = loader.retrieve(query, top_k=1)
+    assert [item.skill.id for item in first.selected] == ["skill-a"]
+    assert first.selected == second.selected
+    assert first.bank_digest == second.bank_digest
+    records[0]["why"] = "Changed bank content."
+    _write_records(tmp_path, records)
+    assert loader.retrieve(query).bank_digest != first.bank_digest
+
+
+def test_budget_skips_oversized_item_and_keeps_full_core(tmp_path: Path) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-large", triggers=["asyncio"], principle="X" * 500),
+            _record("skill-small", languages=["python"], principle="Short."),
+        ],
+    )
+    result = ReviewSkillLoader(tmp_path, max_chars=140).retrieve(
+        SkillQuery(("app.py",), ("python",), "asyncio")
+    )
+    assert [item.skill.id for item in result.selected] == ["skill-small"]
+    assert ("skill-large", "budget") in result.skipped
+    assert "Core invariant." in result.context
+    assert len(result.context) <= 140
+
+
+def test_recursive_path_glob_also_matches_zero_nested_directories(
+    tmp_path: Path,
+) -> None:
+    _write_records(
+        tmp_path,
+        [_record("skill-path", path_globs=["src/**/*.py"])],
+    )
+    result = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("src/app.py",), ("python",), "")
+    )
+    assert [item.skill.id for item in result.selected] == ["skill-path"]
+
+
+def test_retrieval_rejects_core_that_cannot_fit(tmp_path: Path) -> None:
+    _write_records(tmp_path, [])
+    tmp_path.joinpath("core.md").write_text("X" * 100, encoding="utf-8")
+    with pytest.raises(ValueError, match="Core exceeds"):
+        ReviewSkillLoader(tmp_path, max_chars=60).retrieve(
+            SkillQuery((), (), "")
+        )
+
+
+def test_query_extracts_diff_and_optional_graph_signals() -> None:
+    diff = (
+        "diff --git a/web/view.tsx b/web/view.tsx\n"
+        "--- a/web/view.tsx\n+++ b/web/view.tsx\n"
+        "@@ -1 +1 @@ render\n-old\n+await load()\n"
+    )
+    base = build_skill_query(diff)
+    enriched = build_skill_query(
+        diff,
+        [{
+            "changed_anchor": {"symbol_id": "View.render", "change_kind": "api_handler"},
+            "included_spans": [{"symbol_id": "load"}],
+            "included_graph_paths": [{
+                "node_ids": ["View.render", "load"],
+                "edges": [{"kind": "calls"}],
+            }],
+        }],
+    )
+    assert base.changed_files == ("web/view.tsx",)
+    assert base.languages == ("typescript",)
+    assert "await load()" in base.lexical_corpus
+    assert base.changed_symbols == ()
+    assert enriched.changed_symbols == ("load", "view.render")
+    assert enriched.change_kinds == ("api_handler",)
+    assert enriched.graph_edge_kinds == ("calls",)
+
+
+def test_sequential_selection_accounts_for_records_after_budget_break(
+    tmp_path: Path,
+) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-first", principle="X" * 500),
+            _record("skill-second", principle="Short."),
+        ],
+    )
+    result = ReviewSkillLoader(tmp_path, max_chars=140).select_sequential()
+    assert result.selected == ()
+    assert result.skipped == (
+        ("skill-first", "budget"),
+        ("skill-second", "after_budget_break"),
+    )
+
+
+def test_prompt_accepts_an_explicit_deterministic_selection(tmp_path: Path) -> None:
+    _write_records(
+        tmp_path,
+        [
+            _record("skill-python", languages=["python"]),
+            _record("skill-rust", languages=["rust"]),
+        ],
+    )
+    selection = ReviewSkillLoader(tmp_path).retrieve(
+        SkillQuery(("app.py",), ("python",), "")
+    )
+    messages = build_review_messages(
+        ReviewRequest(repo_path="."),
+        ContextState(context_mode="agent_search"),
+        "",
+        {},
+        skill_selection=selection,
+    )
+    assert "Principle skill-python" in messages[0].content
+    assert "Principle skill-rust" not in messages[0].content

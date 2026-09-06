@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from src.config import get_settings
 
 
@@ -9,6 +12,32 @@ def test_public_github_app_only_defaults_to_false(monkeypatch) -> None:
     monkeypatch.delenv("PLATFORM_PUBLIC_GITHUB_APP_ONLY", raising=False)
 
     assert get_settings().platform_public_github_app_only is False
+
+
+def test_review_skill_retrieval_defaults_and_environment(monkeypatch) -> None:
+    for name in (
+        "REVIEW_SKILL_RETRIEVAL_MODE",
+        "REVIEW_SKILL_TOP_K",
+        "REVIEW_SKILL_CHAR_BUDGET",
+        "REVIEW_SKILL_LEGACY_FALLBACK_LIMIT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    defaults = get_settings()
+    assert defaults.review_skill_retrieval_mode == "sequential"
+    assert defaults.review_skill_top_k == 5
+    assert defaults.review_skill_char_budget == 4000
+    assert defaults.review_skill_legacy_fallback_limit == 1
+
+    monkeypatch.setenv("REVIEW_SKILL_RETRIEVAL_MODE", "deterministic")
+    monkeypatch.setenv("REVIEW_SKILL_TOP_K", "3")
+    assert get_settings().review_skill_retrieval_mode == "deterministic"
+    assert get_settings().review_skill_top_k == 3
+
+
+def test_review_skill_retrieval_rejects_invalid_mode(monkeypatch) -> None:
+    monkeypatch.setenv("REVIEW_SKILL_RETRIEVAL_MODE", "random")
+    with pytest.raises(ValidationError):
+        get_settings()
 
 
 def test_public_github_app_only_reads_true_from_environment(monkeypatch) -> None:

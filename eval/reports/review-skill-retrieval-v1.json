@@ -1,0 +1,309 @@
+{
+  "annotated_fixture_count": 6,
+  "bank_digest": "16f444a4756464e59863b0a7a5be79b3fe1f98ed3e22fecdf7ee0651106fa13a",
+  "bank_path": "eval/skill_banks/retrieval-v1",
+  "char_budget": 4000,
+  "legacy_fallback_limit": 1,
+  "metrics": {
+    "budget_loss_rate": 0.0,
+    "candidate_or_deprecated_selection_count": 0,
+    "hard_budget_violation_count": 0,
+    "irrelevant_rate": 0.0,
+    "precision_at_k": 1.0,
+    "recall_at_k": 1.0
+  },
+  "results": [
+    {
+      "budget_loss_count": 0,
+      "expected_skill_ids": [
+        "skill-derived-state"
+      ],
+      "fixture_id": "golden_fastapi_fastapi_pr15077_reverse",
+      "matches": [
+        {
+          "id": "skill-derived-state",
+          "reasons": [
+            "trigger:stream_item_type",
+            "path:fastapi/routing.py",
+            "language:python"
+          ],
+          "score": 160
+        }
+      ],
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "retrieved_skill_ids": [
+        "skill-derived-state"
+      ],
+      "skipped": [
+        {
+          "id": "skill-wrapper-equality",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-offline-fallback",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-provider-fallback",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-runtime-region",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-candidate-control",
+          "reason": "status"
+        },
+        {
+          "id": "skill-deprecated-control",
+          "reason": "status"
+        }
+      ],
+      "total_chars": 458
+    },
+    {
+      "budget_loss_count": 0,
+      "expected_skill_ids": [
+        "skill-runtime-region"
+      ],
+      "fixture_id": "golden_NethermindEth_nethermind_pr5381",
+      "matches": [
+        {
+          "id": "skill-runtime-region",
+          "reasons": [
+            "trigger:nogc",
+            "path:src/Nethermind/Nethermind.Merge.Plugin/**/*.cs",
+            "language:csharp"
+          ],
+          "score": 160
+        }
+      ],
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "retrieved_skill_ids": [
+        "skill-runtime-region"
+      ],
+      "skipped": [
+        {
+          "id": "skill-wrapper-equality",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-offline-fallback",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-provider-fallback",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-derived-state",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-candidate-control",
+          "reason": "status"
+        },
+        {
+          "id": "skill-deprecated-control",
+          "reason": "status"
+        }
+      ],
+      "total_chars": 499
+    },
+    {
+      "budget_loss_count": 0,
+      "expected_skill_ids": [
+        "skill-provider-fallback"
+      ],
+      "fixture_id": "golden_openclaw_openclaw_pr37717",
+      "matches": [
+        {
+          "id": "skill-provider-fallback",
+          "reasons": [
+            "trigger:baseurl",
+            "path:src/agents/pi-embedded-runner/model.ts",
+            "language:typescript"
+          ],
+          "score": 160
+        }
+      ],
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "retrieved_skill_ids": [
+        "skill-provider-fallback"
+      ],
+      "skipped": [
+        {
+          "id": "skill-wrapper-equality",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-offline-fallback",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-runtime-region",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-derived-state",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-candidate-control",
+          "reason": "status"
+        },
+        {
+          "id": "skill-deprecated-control",
+          "reason": "status"
+        }
+      ],
+      "total_chars": 441
+    },
+    {
+      "budget_loss_count": 0,
+      "expected_skill_ids": [],
+      "fixture_id": "golden_pydantic_pydantic_pr12568",
+      "matches": [],
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "retrieved_skill_ids": [],
+      "skipped": [
+        {
+          "id": "skill-wrapper-equality",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-offline-fallback",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-provider-fallback",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-runtime-region",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-derived-state",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-candidate-control",
+          "reason": "status"
+        },
+        {
+          "id": "skill-deprecated-control",
+          "reason": "status"
+        }
+      ],
+      "total_chars": 182
+    },
+    {
+      "budget_loss_count": 0,
+      "expected_skill_ids": [
+        "skill-wrapper-equality"
+      ],
+      "fixture_id": "golden_pytest-dev_pytest_pr9350",
+      "matches": [
+        {
+          "id": "skill-wrapper-equality",
+          "reasons": [
+            "trigger:safehashwrapper",
+            "path:src/_pytest/fixtures.py",
+            "language:python"
+          ],
+          "score": 160
+        }
+      ],
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "retrieved_skill_ids": [
+        "skill-wrapper-equality"
+      ],
+      "skipped": [
+        {
+          "id": "skill-offline-fallback",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-provider-fallback",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-runtime-region",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-derived-state",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-candidate-control",
+          "reason": "status"
+        },
+        {
+          "id": "skill-deprecated-control",
+          "reason": "status"
+        }
+      ],
+      "total_chars": 468
+    },
+    {
+      "budget_loss_count": 0,
+      "expected_skill_ids": [
+        "skill-offline-fallback"
+      ],
+      "fixture_id": "golden_Uberi_speech_recognition_pr657",
+      "matches": [
+        {
+          "id": "skill-offline-fallback",
+          "reasons": [
+            "trigger:requests",
+            "path:speech_recognition/__init__.py",
+            "language:python"
+          ],
+          "score": 160
+        }
+      ],
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "retrieved_skill_ids": [
+        "skill-offline-fallback"
+      ],
+      "skipped": [
+        {
+          "id": "skill-wrapper-equality",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-provider-fallback",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-runtime-region",
+          "reason": "language_mismatch"
+        },
+        {
+          "id": "skill-derived-state",
+          "reason": "path_mismatch"
+        },
+        {
+          "id": "skill-candidate-control",
+          "reason": "status"
+        },
+        {
+          "id": "skill-deprecated-control",
+          "reason": "status"
+        }
+      ],
+      "total_chars": 429
+    }
+  ],
+  "retrieval_version": "deterministic-v1",
+  "top_k": 5
+}

@@ -18,6 +18,10 @@ class EvalComparison(BaseModel):
     p95_latency_delta_ratio: float = 0.0
     p95_tokens_delta_ratio: float = 0.0
     evidence_binding_rate_delta: float = 0.0
+    skill_recall_at_k_delta: float | None = None
+    skill_precision_at_k_delta: float | None = None
+    skill_irrelevant_rate_delta: float | None = None
+    skill_bank_digest_match: bool | None = None
     passed: bool = True
     failures: list[str] = Field(default_factory=list)
 
@@ -50,6 +54,11 @@ def compare_reports(
         baseline_metrics.evidence_binding_rate,
     )
     failures: list[str] = []
+    digest_match: bool | None = None
+    if baseline.skill_bank_digest or candidate.skill_bank_digest:
+        digest_match = baseline.skill_bank_digest == candidate.skill_bank_digest
+        if not digest_match:
+            failures.append("skill_bank_digest_mismatch")
     if hit_delta < -0.05:
         failures.append("hit_rate_regression")
     if fp_delta > 0:
@@ -66,6 +75,19 @@ def compare_reports(
         p95_latency_delta_ratio=latency_ratio,
         p95_tokens_delta_ratio=token_ratio,
         evidence_binding_rate_delta=evidence_delta,
+        skill_recall_at_k_delta=_optional_delta(
+            candidate_metrics.skill_recall_at_k,
+            baseline_metrics.skill_recall_at_k,
+        ),
+        skill_precision_at_k_delta=_optional_delta(
+            candidate_metrics.skill_precision_at_k,
+            baseline_metrics.skill_precision_at_k,
+        ),
+        skill_irrelevant_rate_delta=_optional_delta(
+            candidate_metrics.skill_irrelevant_rate,
+            baseline_metrics.skill_irrelevant_rate,
+        ),
+        skill_bank_digest_match=digest_match,
         passed=not failures,
         failures=failures,
     )
@@ -73,6 +95,12 @@ def compare_reports(
 
 def _delta(candidate: float, baseline: float) -> float:
     return round(candidate - baseline, 6)
+
+
+def _optional_delta(candidate: float | None, baseline: float | None) -> float | None:
+    if candidate is None or baseline is None:
+        return None
+    return _delta(candidate, baseline)
 
 
 def _ratio_delta(candidate: float, baseline: float) -> float:

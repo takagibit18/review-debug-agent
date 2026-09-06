@@ -145,6 +145,39 @@ def crawl_cmd(
     help="Graph cache contract for this variant.",
 )
 @click.option(
+    "--skill-retrieval-mode",
+    default=None,
+    type=click.Choice(["sequential", "deterministic"]),
+    help="Review Skill loading mode for this variant.",
+)
+@click.option(
+    "--skill-bank-path",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Optional fixed Review Skill Bank directory.",
+)
+@click.option(
+    "--skill-top-k",
+    default=None,
+    type=click.IntRange(min=0, max=50),
+    help="Optional Review Skill Top-K override; defaults to REVIEW_SKILL_TOP_K.",
+)
+@click.option(
+    "--skill-char-budget",
+    default=None,
+    type=click.IntRange(min=64, max=100_000),
+    help="Optional Review Skill char budget; defaults to REVIEW_SKILL_CHAR_BUDGET.",
+)
+@click.option(
+    "--skill-legacy-fallback-limit",
+    default=None,
+    type=click.IntRange(min=0, max=50),
+    help=(
+        "Optional legacy fallback cap; defaults to "
+        "REVIEW_SKILL_LEGACY_FALLBACK_LIMIT."
+    ),
+)
+@click.option(
     "--output-json",
     default=None,
     type=click.Path(exists=False),
@@ -174,6 +207,11 @@ def eval_cmd(
     variant_id: str | None,
     context_mode: str | None,
     graph_cache_mode: str | None,
+    skill_retrieval_mode: str | None,
+    skill_bank_path: str | None,
+    skill_top_k: int | None,
+    skill_char_budget: int | None,
+    skill_legacy_fallback_limit: int | None,
     output_json: str | None,
     repo_filters: tuple[str, ...],
     fixture_id_filters: tuple[str, ...],
@@ -194,6 +232,13 @@ def eval_cmd(
             ),
             context_mode=selected_mode,
             graph_cache_mode=selected_cache_mode,
+            skill_retrieval_mode=(
+                skill_retrieval_mode or settings.review_skill_retrieval_mode
+            ),
+            skill_bank_path=skill_bank_path or "",
+            skill_top_k=skill_top_k,
+            skill_char_budget=skill_char_budget,
+            skill_legacy_fallback_limit=skill_legacy_fallback_limit,
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -304,11 +349,17 @@ def merge_reports_cmd(inputs: tuple[str, ...], suite: str, output_json: str) -> 
     sampled_results = [
         result for report in reports for result in report.sampled_results
     ]
+    bank_digests = {report.skill_bank_digest for report in reports}
+    if len(bank_digests) > 1:
+        raise click.ClickException(
+            "Cannot merge reports produced with different or unspecified Skill Banks."
+        )
     report = build_eval_report(
         suite=suite,
         results=results,
         sampled_results=sampled_results,
     )
+    report.skill_bank_digest = next(iter(bank_digests), "")
     report_path = save_report_json(report, output_path=output_json)
     artifact_paths = write_eval_artifacts(report, report_path)
     render_report(report)
@@ -424,6 +475,14 @@ async def _evaluate(
     )
     report.variant = variant
     report.matcher_version = EVAL_MATCHER_VERSION
+    bank_digests = {
+        item.skill_bank_digest for item in results if item.skill_bank_digest
+    }
+    if len(bank_digests) > 1:
+        raise click.ClickException(
+            "Skill Bank changed during eval; discard the run and rerun with a fixed bank."
+        )
+    report.skill_bank_digest = next(iter(bank_digests), "")
     report_path = save_report_json(report, output_path=output_json)
     artifact_paths = write_eval_artifacts(report, report_path)
     review_sheet = write_human_review_template(

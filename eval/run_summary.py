@@ -266,6 +266,21 @@ def extract_review_process_metrics(
                 payload.get("completion_tokens")
             )
             metrics.total_tokens = _non_negative_int(payload.get("total_tokens"))
+            metrics.review_skill_loaded_count = _non_negative_int(
+                payload.get("review_skill_loaded_count")
+            )
+            metrics.review_skill_chars = _non_negative_int(
+                payload.get("review_skill_chars")
+            )
+            metrics.review_skill_tokens = _non_negative_int(
+                payload.get("review_skill_tokens")
+            )
+            metrics.review_skill_retrieval_latency_ms = _non_negative_float(
+                payload.get("review_skill_retrieval_latency_ms")
+            )
+            metrics.review_skill_fallback_count = _non_negative_int(
+                payload.get("review_skill_fallback_count")
+            )
             metrics.graph_status = str(payload.get("graph_status", ""))
             metrics.graph_cache_mode = str(
                 payload.get("graph_cache_mode", "not_applicable")

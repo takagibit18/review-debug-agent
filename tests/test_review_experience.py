@@ -144,6 +144,38 @@ def test_fake_improver_creates_candidate_that_is_not_loaded_until_activation(
     assert skill_store.read()[0].status == "deprecated"
 
 
+def test_skill_metadata_round_trips_through_lifecycle(tmp_path: Path) -> None:
+    store = SkillStore(tmp_path / "learned.jsonl")
+    skill = store.add_candidate(
+        {
+            **_proposal("fb-001"),
+            "description": "Serialized event-loop callbacks.",
+            "languages": ["PYTHON", "python"],
+            "path_globs": [r"src\\**\\*.py"],
+            "triggers": ["ASYNCIO"],
+        }
+    )
+    assert skill.languages == ("python",)
+    assert skill.path_globs == ("src/**/*.py",)
+    assert skill.triggers == ("asyncio",)
+
+    active = store.update_status(skill.id, "active")
+    deprecated = store.update_status(skill.id, "deprecated")
+    assert active.description == deprecated.description == "Serialized event-loop callbacks."
+    assert active.languages == deprecated.languages == ("python",)
+    persisted = json.loads((tmp_path / "learned.jsonl").read_text(encoding="utf-8"))
+    assert persisted["path_globs"] == ["src/**/*.py"]
+
+
+def test_contrastive_prompt_requests_optional_routing_metadata() -> None:
+    feedback = [FeedbackRecord.model_validate(_feedback())]
+    improver = PromptImprover(lambda _: _proposal("fb-001"))
+    improver.propose(feedback)
+    assert "languages" in improver.last_prompt
+    assert "path_globs" in improver.last_prompt
+    assert "triggers" in improver.last_prompt
+
+
 def test_model_improver_parses_plain_json_and_creates_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
