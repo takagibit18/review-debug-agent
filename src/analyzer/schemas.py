@@ -10,6 +10,13 @@ from src.analyzer.context_state import ContextState
 from src.analyzer.output_formatter import ReviewIssue, ReviewReport
 from src.models.schemas import DraftFindingInput
 
+ReviewOutcome = Literal[
+    "no_candidates",
+    "accepted",
+    "partially_rejected",
+    "all_candidates_rejected",
+]
+
 
 class ReviewRequest(BaseModel):
     """Structured input for a review run."""
@@ -83,6 +90,10 @@ class ReviewResponse(BaseModel):
     workflow_missing_steps: list[str] = Field(
         default_factory=list,
         description="Required workflow steps that remained incomplete.",
+    )
+    review_outcome: ReviewOutcome = Field(
+        default="no_candidates",
+        description="Verifier outcome independent of workflow validity.",
     )
 
 
@@ -232,3 +243,6 @@ class FindingCandidate(BaseModel):
     evidence_locations: list[str] = Field(default_factory=list)
     originating_iteration: int = Field(ge=0)
     source_issue_index: int = Field(default=0, ge=0)
+    verification_status: Literal[
+        "pending", "accepted", "rejected", "verification_blocked"
+    ] = "pending"

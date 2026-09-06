@@ -344,6 +344,24 @@ class Settings(BaseModel):
         ge=128,
         le=64000,
     )
+    relation_graph_reviewer_context_token_budget: int = Field(
+        default_factory=lambda: int(
+            os.getenv("RELATION_GRAPH_REVIEWER_CONTEXT_TOKEN_BUDGET", "900")
+        ),
+        ge=128,
+        le=16000,
+        description=(
+            "Independent serialized Graph reviewer projection budget; source-span "
+            "selection uses relation_graph_max_context_tokens."
+        ),
+    )
+    relation_graph_max_paths_per_prefix: int = Field(
+        default_factory=lambda: int(
+            os.getenv("RELATION_GRAPH_MAX_PATHS_PER_PREFIX", "2")
+        ),
+        ge=1,
+        le=10,
+    )
     relation_graph_min_evidence_confidence: float = Field(
         default_factory=lambda: float(
             os.getenv("RELATION_GRAPH_MIN_EVIDENCE_CONFIDENCE", "0.65")

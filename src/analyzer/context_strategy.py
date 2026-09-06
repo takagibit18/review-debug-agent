@@ -61,6 +61,16 @@ class AgentSearchContextStrategy:
                 "cache_hit": None,
                 "cache_hit_rate": None,
                 "fallback_reason": "",
+                "available_graph_path_count": 0,
+                "selected_reviewer_path_count": 0,
+                "dropped_repeated_prefix_path_count": 0,
+                "selected_direct_path_count": 0,
+                "selected_production_path_count": 0,
+                "selected_low_hop_path_count": 0,
+                "required_production_path_count": 0,
+                "missing_production_path_count": 0,
+                "graph_reviewer_context_token_estimate": 0,
+                "path_selection_reason_counts": {},
             },
         )
 
@@ -99,6 +109,16 @@ class GraphHybridContextStrategy:
                     "manifest_count": 0,
                     "manifest_token_cost": 0,
                     "fallback_reason": "missing_diff_or_workspace",
+                    "available_graph_path_count": 0,
+                    "selected_reviewer_path_count": 0,
+                    "dropped_repeated_prefix_path_count": 0,
+                    "selected_direct_path_count": 0,
+                    "selected_production_path_count": 0,
+                    "selected_low_hop_path_count": 0,
+                    "required_production_path_count": 0,
+                    "missing_production_path_count": 0,
+                    "graph_reviewer_context_token_estimate": 0,
+                    "path_selection_reason_counts": {},
                 },
             )
 
@@ -135,6 +155,9 @@ class GraphHybridContextStrategy:
                 min_evidence_confidence=(
                     self._settings.relation_graph_min_evidence_confidence
                 ),
+                max_paths_per_prefix=(
+                    self._settings.relation_graph_max_paths_per_prefix
+                ),
             ).plan(graph, anchors)
         except Exception as exc:  # noqa: BLE001
             self._emit(
@@ -157,6 +180,12 @@ class GraphHybridContextStrategy:
                     "manifest_count": 0,
                     "manifest_token_cost": 0,
                     "fallback_reason": exc.__class__.__name__,
+                    "available_graph_path_count": 0,
+                    "selected_reviewer_path_count": 0,
+                    "dropped_repeated_prefix_path_count": 0,
+                    "selected_direct_path_count": 0,
+                    "graph_reviewer_context_token_estimate": 0,
+                    "path_selection_reason_counts": {},
                 },
             )
 
@@ -178,6 +207,20 @@ class GraphHybridContextStrategy:
             "context_token_cost": plan.total_token_cost,
             "included_graph_path_count": plan.total_included_paths,
             "discarded_graph_path_count": plan.total_discarded_paths,
+            "available_graph_path_count": plan.available_graph_path_count,
+            "selected_reviewer_path_count": plan.selected_reviewer_path_count,
+            "dropped_repeated_prefix_path_count": (
+                plan.dropped_repeated_prefix_path_count
+            ),
+            "selected_direct_path_count": plan.selected_direct_path_count,
+            "selected_production_path_count": plan.selected_production_path_count,
+            "selected_low_hop_path_count": plan.selected_low_hop_path_count,
+            "required_production_path_count": plan.required_production_path_count,
+            "missing_production_path_count": plan.missing_production_path_count,
+            "graph_reviewer_context_token_estimate": (
+                plan.graph_reviewer_context_token_estimate
+            ),
+            "path_selection_reason_counts": plan.path_selection_reason_counts,
             "parsed_file_count": index_result.parsed_file_count,
             "build_latency_seconds": index_result.build_latency_seconds,
             "incremental_update_latency_seconds": (
@@ -251,6 +294,20 @@ class GraphHybridContextStrategy:
                 "included_node_count": plan.total_included_nodes,
                 "included_path_count": plan.total_included_paths,
                 "discarded_path_count": plan.total_discarded_paths,
+                "available_graph_path_count": plan.available_graph_path_count,
+                "selected_reviewer_path_count": plan.selected_reviewer_path_count,
+                "dropped_repeated_prefix_path_count": (
+                    plan.dropped_repeated_prefix_path_count
+                ),
+                "selected_direct_path_count": plan.selected_direct_path_count,
+                "selected_production_path_count": plan.selected_production_path_count,
+                "selected_low_hop_path_count": plan.selected_low_hop_path_count,
+                "required_production_path_count": plan.required_production_path_count,
+                "missing_production_path_count": plan.missing_production_path_count,
+                "graph_reviewer_context_token_estimate": (
+                    plan.graph_reviewer_context_token_estimate
+                ),
+                "path_selection_reason_counts": plan.path_selection_reason_counts,
             },
         )
         for manifest in plan.manifests:
@@ -280,6 +337,30 @@ class GraphHybridContextStrategy:
                     ],
                     "included_path_count": len(manifest.included_graph_paths),
                     "discarded_path_count": len(manifest.discarded_paths),
+                    "available_graph_path_count": manifest.available_graph_path_count,
+                    "selected_reviewer_path_count": (
+                        manifest.selected_reviewer_path_count
+                    ),
+                    "dropped_repeated_prefix_path_count": (
+                        manifest.dropped_repeated_prefix_path_count
+                    ),
+                    "selected_direct_path_count": manifest.selected_direct_path_count,
+                    "selected_production_path_count": (
+                        manifest.selected_production_path_count
+                    ),
+                    "selected_low_hop_path_count": manifest.selected_low_hop_path_count,
+                    "required_production_path_count": (
+                        manifest.required_production_path_count
+                    ),
+                    "missing_production_path_count": (
+                        manifest.missing_production_path_count
+                    ),
+                    "graph_reviewer_context_token_estimate": (
+                        manifest.graph_reviewer_context_token_estimate
+                    ),
+                    "path_selection_reason_counts": (
+                        manifest.path_selection_reason_counts
+                    ),
                     "truncation_reasons": manifest.truncation_reasons,
                 },
             )

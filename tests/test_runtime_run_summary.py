@@ -147,6 +147,98 @@ def test_runtime_summary_collects_integrity_and_workflow_outcomes(
     assert summary.workflow_reprompt_count == 1
 
 
+def test_runtime_summary_collects_graph_path_diversity_metrics(tmp_path: Path) -> None:
+    log = tmp_path / "graph.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "event_type": "context_plan_completed",
+                "phase": "context_planner",
+                "payload": {
+                    "available_graph_path_count": 12,
+                    "selected_reviewer_path_count": 7,
+                    "dropped_repeated_prefix_path_count": 4,
+                    "selected_direct_path_count": 3,
+                    "selected_production_path_count": 2,
+                    "selected_low_hop_path_count": 1,
+                    "required_production_path_count": 2,
+                    "missing_production_path_count": 0,
+                    "graph_reviewer_context_token_estimate": 321,
+                    "path_selection_reason_counts": {
+                        "selected_direct": 3,
+                        "repeated_first_hop_prefix": 4,
+                    },
+                },
+            },
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "event_type": "context_telemetry",
+                "phase": "analyze",
+                "payload": {
+                    "graph_reviewer_prompt_projection": {
+                        "available_path_count": 9,
+                        "selected_path_count": 4,
+                        "dropped_path_count": 5,
+                        "selected_token_count": 222,
+                        "selected_role_coverage": [
+                            "execution_flow",
+                            "related_test",
+                        ],
+                    }
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "event_type": "model_call",
+                "phase": "provider_attempt",
+                "payload": {
+                    "success": True,
+                    "usage_present": True,
+                    "prompt_tokens": 1000,
+                    "completion_tokens": 120,
+                    "reasoning_tokens": 80,
+                    "total_tokens": 1200,
+                    "cached_prompt_tokens": 700,
+                    "adjacent_common_prefix_tokens": 650,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = summarize_event_log(log)
+
+    assert summary.graph_available_path_count == 12
+    assert summary.graph_selected_path_count == 7
+    assert summary.graph_dropped_repeated_prefix_path_count == 4
+    assert summary.graph_selected_direct_path_count == 3
+    assert summary.graph_selected_production_path_count == 2
+    assert summary.graph_selected_low_hop_path_count == 1
+    assert summary.graph_required_production_path_count == 2
+    assert summary.graph_missing_production_path_count == 0
+    assert summary.graph_reviewer_context_token_estimate == 321
+    assert summary.graph_reviewer_available_path_count == 9
+    assert summary.graph_reviewer_selected_path_count == 4
+    assert summary.graph_reviewer_dropped_path_count == 5
+    assert summary.graph_reviewer_selected_token_count == 222
+    assert summary.graph_reviewer_role_coverage == ["execution_flow", "related_test"]
+    assert summary.provider_attempt_count == 1
+    assert summary.successful_prompt_tokens == 1000
+    assert summary.successful_total_tokens == 1200
+    assert summary.successful_cached_prompt_tokens == 700
+    assert summary.successful_adjacent_common_prefix_tokens == 650
+    assert summary.cache_observation_count == 1
+    assert summary.provider_cache_hit_count == 1
+    assert summary.graph_path_selection_reason_counts == {
+        "selected_direct": 3,
+        "repeated_first_hop_prefix": 4,
+    }
+
+
 def test_runtime_summary_ignores_retired_verifier_fields(tmp_path: Path) -> None:
     log = tmp_path / "historical.jsonl"
     log.write_text(

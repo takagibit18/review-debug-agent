@@ -61,6 +61,10 @@ class ValidateReviewDraftInput(BaseModel):
         description="The list of candidate issues you plan to include in submit_review; "
         "pass every issue here first so the tool can validate each one before submission",
     )
+    draft_ids: list[str] = Field(
+        default_factory=list,
+        description="Optional runtime draft ids represented by this candidate payload",
+    )
 
 
 class ValidateReviewDraftTool(BaseTool):
@@ -116,6 +120,26 @@ class ValidateReviewDraftTool(BaseTool):
             "effective_issue_count": effective_issue_count,
             "should_submit_empty_issues": effective_issue_count == 0
             and not summary_warnings,
+            "validated_draft_ids": list(data.draft_ids),
+            "validated_finding_ids": [],
+            "unresolved_evidence_gaps": [
+                reason
+                for item in issue_results
+                for reason in item.get("fail_reasons", [])
+            ],
+            "policy_warnings": list(summary_warnings),
+            "validator_passed": bool(
+                not summary_warnings
+                and all(item["passes_current_filter"] for item in issue_results)
+                and (
+                    effective_issue_count > 0
+                    or (effective_issue_count == 0 and not summary_warnings)
+                )
+            ),
+            "submit_allowed": bool(
+                not summary_warnings
+                and all(item["passes_current_filter"] for item in issue_results)
+            ),
         }
 
     def _validate_issue(

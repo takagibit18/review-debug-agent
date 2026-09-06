@@ -18,7 +18,8 @@ from typing import Any
 
 from eval.run_summary import extract_review_process_metrics
 from eval.schemas import (
-    EVAL_MATCHER_VERSION,
+    DEFAULT_EVAL_MATCHER_VERSION,
+    EVAL_MATCHER_VERSIONS,
     EvalIssueMatch,
     EvalResult,
     EvalVariant,
@@ -698,11 +699,13 @@ async def run_single(
     temperature: float = 0.0,
     review_max_iterations: int | None = None,
     variant: EvalVariant | None = None,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
 ) -> EvalResult:
     """Run one fixture and return evaluation metadata."""
     fixture = fixture.model_copy(deep=True)
     expected_count = len(fixture.expected.issues)
     selected_variant = variant or _default_eval_variant()
+    selected_matcher_version = _normalize_matcher_version(matcher_version)
     stage_timings: dict[str, float] = {}
     try:
         with tempfile.TemporaryDirectory(prefix="eval-fixture-") as tmp_dir:
@@ -720,7 +723,9 @@ async def run_single(
                 return EvalResult(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
-                    **_variant_result_fields(selected_variant),
+                    **_variant_result_fields(
+                        selected_variant, matcher_version=selected_matcher_version
+                    ),
                     schema_valid=False,
                     expected_count=expected_count,
                     stage_timings=stage_timings,
@@ -742,7 +747,9 @@ async def run_single(
                 return EvalResult(
                     fixture_id=fixture.id,
                     fixture_type=fixture.type,
-                    **_variant_result_fields(selected_variant),
+                    **_variant_result_fields(
+                        selected_variant, matcher_version=selected_matcher_version
+                    ),
                     schema_valid=False,
                     expected_count=expected_count,
                     stage_timings=stage_timings,
@@ -811,16 +818,26 @@ async def run_single(
                 fixture.id,
                 parsed_response.run_id,
             )
-            matches, matched_count, false_positive_count = _match_issues(
-                fixture, parsed_response
+            matches, matched_count, false_positive_count = _match_issues_for_version(
+                fixture, parsed_response, selected_matcher_version
             )
             structural_metrics = _structural_issue_metrics(fixture, matches)
             root_cause_quality = (
-                _root_cause_quality(fixture, parsed_response, matches)
+                _root_cause_quality_for_version(
+                    fixture,
+                    parsed_response,
+                    matches,
+                    selected_matcher_version,
+                )
                 if isinstance(parsed_response, ReviewResponse)
                 else {}
             )
             raw_output = parsed_response.model_dump(mode="json")
+            raw_output["matcher_version"] = selected_matcher_version
+            process_metrics = extract_review_process_metrics(
+                event_log_path,
+                matcher_version=selected_matcher_version,
+            )
 
             placeholder = _is_placeholder_response(parsed_response)
             empty_business_output = _is_empty_business_output(parsed_response)
@@ -828,7 +845,9 @@ async def run_single(
             return EvalResult(
                 fixture_id=fixture.id,
                 fixture_type=fixture.type,
-                **_variant_result_fields(selected_variant),
+                **_variant_result_fields(
+                    selected_variant, matcher_version=selected_matcher_version
+                ),
                 run_id=parsed_response.run_id,
                 schema_valid=schema_valid,
                 expected_count=expected_count,
@@ -868,13 +887,15 @@ async def run_single(
                     if fixture.type == "review"
                     else []
                 ),
-                process_metrics=extract_review_process_metrics(event_log_path),
+                process_metrics=process_metrics,
             )
     except Exception as exc:  # noqa: BLE001
         return EvalResult(
             fixture_id=fixture.id,
             fixture_type=fixture.type,
-            **_variant_result_fields(selected_variant),
+            **_variant_result_fields(
+                selected_variant, matcher_version=selected_matcher_version
+            ),
             schema_valid=False,
             expected_count=expected_count,
             stage_timings=stage_timings,
@@ -891,6 +912,7 @@ async def run_suite(
     review_max_iterations: int | None = None,
     temperature: float = 0.0,
     variant: EvalVariant | None = None,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
 ) -> list[SampledFixtureResult]:
     """Run all fixtures with optional K-sample aggregation."""
     max_fixture_concurrency = max(1, min(fixture_concurrency, len(fixtures) or 1))
@@ -904,6 +926,8 @@ async def run_suite(
                 "review_max_iterations": review_max_iterations,
                 "temperature": temperature,
             }
+            if matcher_version != DEFAULT_EVAL_MATCHER_VERSION:
+                kwargs["matcher_version"] = matcher_version
             if variant is not None:
                 kwargs["variant"] = variant
             return await run_single_sampled(fixture, **kwargs)
@@ -919,6 +943,7 @@ async def run_single_sampled(
     review_max_iterations: int | None = None,
     temperature: float = 0.0,
     variant: EvalVariant | None = None,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
 ) -> SampledFixtureResult:
     """Run one fixture K times and aggregate stability metrics."""
     sample_count = max(1, samples)
@@ -932,6 +957,7 @@ async def run_single_sampled(
                 temperature=temperature,
                 review_max_iterations=review_max_iterations,
                 variant=variant,
+                matcher_version=matcher_version,
             )
 
     runs = await asyncio.gather(*(_run() for _ in range(sample_count)))
@@ -964,7 +990,11 @@ def _aggregate_sampled_result(
         variant_id=(runs[0].variant_id if runs else ""),
         context_mode=(runs[0].context_mode if runs else "graph_hybrid"),
         graph_cache_mode=(runs[0].graph_cache_mode if runs else "warm"),
-        matcher_version=EVAL_MATCHER_VERSION,
+        matcher_version=(
+            runs[0].matcher_version
+            if runs
+            else DEFAULT_EVAL_MATCHER_VERSION
+        ),
         expected_count=expected_count,
         samples=len(runs) or 1,
         runs=runs,
@@ -1332,7 +1362,10 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
         return 0
 
     model_total = 0
+    provider_total = 0
+    provider_attempt_seen = False
     completed_total: int | None = None
+    completed_successful_total: int | None = None
     for raw_line in log_path.read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
             continue
@@ -1342,7 +1375,15 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
             continue
         payload = event.get("payload", {})
         if event.get("event_type") == "model_call":
-            model_total += int(payload.get("tokens", 0) or 0)
+            if event.get("phase") == "provider_attempt":
+                provider_attempt_seen = True
+                if (
+                    payload.get("success") is True
+                    and payload.get("usage_present") is True
+                ):
+                    provider_total += int(payload.get("total_tokens", 0) or 0)
+            else:
+                model_total += int(payload.get("tokens", 0) or 0)
         elif (
             event.get("event_type") == "phase_end"
             and event.get("phase") == "review_complete"
@@ -1350,6 +1391,13 @@ def _read_total_tokens(repo_root: Path, run_id: str) -> int:
             raw_total = payload.get("total_tokens")
             if isinstance(raw_total, int):
                 completed_total = max(0, raw_total)
+            raw_successful_total = payload.get("successful_total_tokens")
+            if isinstance(raw_successful_total, int):
+                completed_successful_total = max(0, raw_successful_total)
+    if provider_attempt_seen:
+        return provider_total
+    if completed_successful_total is not None:
+        return completed_successful_total
     return completed_total if completed_total is not None else model_total
 
 
@@ -1734,6 +1782,242 @@ def _semantic_match_tokens(value: str) -> set[str]:
     return {aliases.get(word, word) for word in words}
 
 
+def _normalize_matcher_version(value: str | None) -> str:
+    """Return a supported matcher version, defaulting new evaluations to v3."""
+    selected = str(value or DEFAULT_EVAL_MATCHER_VERSION).strip()
+    if selected not in EVAL_MATCHER_VERSIONS:
+        supported = ", ".join(EVAL_MATCHER_VERSIONS)
+        raise ValueError(f"Unsupported matcher version {selected!r}; use {supported}")
+    return selected
+
+
+def _match_issues_for_version(
+    fixture: Fixture,
+    response: ReviewResponse | DebugResponse,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
+) -> tuple[list[EvalIssueMatch], int, int]:
+    """Dispatch issue matching without changing the frozen semantic-v2 path."""
+    selected = _normalize_matcher_version(matcher_version)
+    if selected == "semantic-v2":
+        return _match_issues(fixture, response)
+    return _match_issues_v3(fixture, response)
+
+
+def _match_issues_v3(
+    fixture: Fixture,
+    response: ReviewResponse | DebugResponse,
+) -> tuple[list[EvalIssueMatch], int, int]:
+    """Match strict structured locations while preserving legacy fixtures."""
+    expected = fixture.expected.issues
+    if isinstance(response, ReviewResponse):
+        actual_issues = _effective_review_issues(fixture, response)
+        actual_severity = [issue.severity.value for issue in actual_issues]
+    else:
+        actual_issues = response.steps
+        actual_severity = ["warning" for _ in actual_issues]
+
+    used_actual_indices: set[int] = set()
+    matches: list[EvalIssueMatch] = []
+    matched_count = 0
+    for expected_index, expected_issue in enumerate(expected):
+        hit_index: int | None = None
+        for actual_index, issue in enumerate(actual_issues):
+            if actual_index in used_actual_indices:
+                continue
+            if not _issue_matches_expected_location_v3(expected_issue, issue):
+                continue
+            if _severity_rank(actual_severity[actual_index]) < _severity_rank(
+                expected_issue.severity.value
+            ):
+                continue
+            hit_index = actual_index
+            used_actual_indices.add(actual_index)
+            break
+        matched = hit_index is not None
+        if matched:
+            matched_count += 1
+        matches.append(
+            EvalIssueMatch(
+                expected_index=expected_index,
+                matched=matched,
+                matched_actual_index=hit_index,
+            )
+        )
+    false_positive_count = max(0, len(actual_issues) - matched_count)
+    return matches, matched_count, false_positive_count
+
+
+def _expected_issue_has_structured_location(expected_issue: Any) -> bool:
+    return bool(
+        str(getattr(expected_issue, "path", "") or "").strip()
+        or isinstance(getattr(expected_issue, "line", None), int)
+        or isinstance(getattr(expected_issue, "end_line", None), int)
+    )
+
+
+def _semantic_location_matches_v3(expected_issue: Any, location: str) -> bool:
+    """Require exact path and overlapping lines for structured expectations."""
+    expected_path = (
+        str(getattr(expected_issue, "path", "") or "")
+        .strip()
+        .replace("\\", "/")
+    )
+    expected_line = getattr(expected_issue, "line", None)
+    expected_end_line = getattr(expected_issue, "end_line", None)
+    if not expected_path:
+        return False
+    parsed = normalize_location(location)
+    if not parsed.valid or parsed.path != expected_path:
+        return False
+    if not isinstance(expected_line, int) and not isinstance(expected_end_line, int):
+        return True
+    expected_start = expected_line if isinstance(expected_line, int) else expected_end_line
+    expected_end = expected_end_line if isinstance(expected_end_line, int) else expected_start
+    if expected_start is None or expected_end is None or parsed.line is None:
+        return False
+    actual_start = parsed.line
+    actual_end = parsed.end_line or actual_start
+    return actual_start <= expected_end and actual_end >= expected_start
+
+
+def _issue_matches_expected_location_v3(expected_issue: Any, issue: Any) -> bool:
+    location = str(getattr(issue, "location", "") or "")
+    if _expected_issue_has_structured_location(expected_issue):
+        location_matches = _semantic_location_matches_v3(expected_issue, location)
+    else:
+        # Historical fixtures intentionally only supplied a loose filename
+        # pattern. Keep that contract available for baseline replays.
+        location_matches = _location_matches(
+            str(getattr(expected_issue, "location_pattern", "") or ""),
+            location,
+        )
+    if not location_matches:
+        return False
+    if not _semantic_text_matches(
+        str(getattr(expected_issue, "mechanism_pattern", "") or ""),
+        str(getattr(issue, "causal_mechanism", "") or ""),
+    ):
+        return False
+    if not _semantic_text_matches(
+        str(getattr(expected_issue, "invariant_pattern", "") or ""),
+        str(getattr(issue, "violated_invariant", "") or ""),
+    ):
+        return False
+    expected_paths = {
+        str(path).strip().replace("\\", "/")
+        for path in getattr(expected_issue, "affected_paths", [])
+        if str(path).strip()
+    }
+    if not expected_paths:
+        return True
+    parsed = normalize_location(location)
+    actual_paths = {parsed.path} if parsed.valid else set()
+    actual_paths.update(
+        str(getattr(item, "file", "") or "").strip().replace("\\", "/")
+        for item in getattr(issue, "related_locations", [])
+    )
+    return expected_paths.issubset(actual_paths)
+
+
+def _root_cause_quality_v3(
+    fixture: Fixture,
+    response: ReviewResponse,
+    matches: list[EvalIssueMatch],
+) -> dict[str, int | None]:
+    """Compute root-cause metrics only when the golden issue is causally annotated."""
+    annotated_indices = {
+        index
+        for index, issue in enumerate(fixture.expected.issues)
+        if issue.mechanism_pattern.strip()
+        or issue.invariant_pattern.strip()
+        or issue.repair_unit.strip()
+    }
+    actual = _effective_review_issues(fixture, response)
+    evidence_complete = sum(
+        bool(issue.cause_evidence)
+        and bool(issue.contract_evidence)
+        and (not issue.trigger or bool(issue.trigger_evidence))
+        and (not issue.impact or bool(issue.impact_evidence))
+        for issue in actual
+    )
+    base = {
+        "evidence_complete_count": evidence_complete,
+        "final_finding_count": len(actual),
+    }
+    if not annotated_indices:
+        return {
+            **base,
+            "expected_root_cause_count": None,
+            "matched_root_cause_count": None,
+            "over_merge_count": None,
+            "under_merge_count": None,
+            "repair_unit_expected_count": None,
+            "repair_unit_matched_count": None,
+        }
+
+    expected_root_keys = {
+        index: (
+            issue.root_cause_id.strip() or f"expected-{index}"
+        )
+        for index, issue in enumerate(fixture.expected.issues)
+        if index in annotated_indices
+    }
+    actual_root_keys = {
+        index: (issue.root_cause_id.strip() or f"actual-{index}")
+        for index, issue in enumerate(actual)
+    }
+    expected_to_actual: dict[str, set[str]] = {}
+    actual_to_expected: dict[str, set[str]] = {}
+    repair_expected = sum(
+        1
+        for index in annotated_indices
+        if fixture.expected.issues[index].repair_unit.strip()
+    )
+    repair_matched = 0
+    for match in matches:
+        if match.expected_index not in annotated_indices:
+            continue
+        expected_issue = fixture.expected.issues[match.expected_index]
+        expected_root = expected_root_keys[match.expected_index]
+        if not match.matched or match.matched_actual_index is None:
+            continue
+        actual_index = match.matched_actual_index
+        actual_root = actual_root_keys[actual_index]
+        expected_to_actual.setdefault(expected_root, set()).add(actual_root)
+        actual_to_expected.setdefault(actual_root, set()).add(expected_root)
+        if expected_issue.repair_unit.strip() and _repair_unit_matches(
+            expected_issue.repair_unit, actual[actual_index]
+        ):
+            repair_matched += 1
+    return {
+        **base,
+        "expected_root_cause_count": len(set(expected_root_keys.values())),
+        "matched_root_cause_count": len(expected_to_actual),
+        "over_merge_count": sum(
+            max(0, len(expected_roots) - 1)
+            for expected_roots in actual_to_expected.values()
+        ),
+        "under_merge_count": sum(
+            max(0, len(actual_roots) - 1)
+            for actual_roots in expected_to_actual.values()
+        ),
+        "repair_unit_expected_count": repair_expected,
+        "repair_unit_matched_count": repair_matched,
+    }
+
+
+def _root_cause_quality_for_version(
+    fixture: Fixture,
+    response: ReviewResponse,
+    matches: list[EvalIssueMatch],
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
+) -> dict[str, int | None]:
+    selected = _normalize_matcher_version(matcher_version)
+    if selected == "semantic-v2":
+        return _root_cause_quality(fixture, response, matches)
+    return _root_cause_quality_v3(fixture, response, matches)
+
+
 def _default_eval_variant() -> EvalVariant:
     mode = get_settings().review_context_mode
     return EvalVariant(
@@ -1743,12 +2027,16 @@ def _default_eval_variant() -> EvalVariant:
     )
 
 
-def _variant_result_fields(variant: EvalVariant) -> dict[str, str]:
+def _variant_result_fields(
+    variant: EvalVariant,
+    *,
+    matcher_version: str = DEFAULT_EVAL_MATCHER_VERSION,
+) -> dict[str, str]:
     return {
         "variant_id": variant.id,
         "context_mode": variant.context_mode,
         "graph_cache_mode": variant.graph_cache_mode,
-        "matcher_version": EVAL_MATCHER_VERSION,
+        "matcher_version": _normalize_matcher_version(matcher_version),
     }
 
 

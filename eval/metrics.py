@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from eval.schemas import EvalReport, EvalResult, MetricSummary, SampledFixtureResult
+from eval.schemas import (
+    DEFAULT_EVAL_MATCHER_VERSION,
+    EvalReport,
+    EvalResult,
+    MetricSummary,
+    SampledFixtureResult,
+)
 
 
 def build_metric_summary(
@@ -27,9 +33,19 @@ def build_eval_report(
     """Build suite-level report with aggregated metrics."""
     sampled = sampled_results or []
     metrics = build_metric_summary(results, sampled_results=sampled)
+    versions = {
+        item.matcher_version
+        for item in results
+    } | {item.matcher_version for item in sampled}
+    matcher_version = (
+        next(iter(versions))
+        if len(versions) == 1
+        else ("mixed" if versions else DEFAULT_EVAL_MATCHER_VERSION)
+    )
     return EvalReport(
         suite=suite,
         fixture_count=len(results),
+        matcher_version=matcher_version,
         metrics=metrics,
         results=results,
         sampled_results=sampled,

@@ -446,6 +446,7 @@ def test_format_review_keeps_review_response_contract_shape() -> None:
         "run_id",
         "report",
         "context",
+        "review_outcome",
         "workflow_invalid",
         "workflow_missing_steps",
     }
